@@ -659,6 +659,24 @@ class HttpRuntimeTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("Unknown key(s) in --config: api_base.", err)
 
+    def test_redirect_is_refused_and_not_followed(self):
+        self.server.script = [(302, {"Location": "http://127.0.0.1:9/elsewhere/v1/chat/completions"}, b""), completion(json.dumps(self.observation))]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r["path"] for r in self.server.requests], ["/v1/chat/completions", "/v1/chat/completions"])
+        first = self.provenance("P1")
+        self.assertEqual((first["http_status"], first["attempt_count"], first["parse_error"]), (302, 1, "HTTP 302 (redirect refused: the request is never resent to another location)"))
+        self.assertIsNone(first["transport_warning"])
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_format"), ("P1b", "ok")])
+
+    def test_cleartext_key_warning(self):
+        self.assertIsNone(dr.cleartext_key_warning("http://127.0.0.1:8000/v1/chat/completions", API_KEY))
+        self.assertIsNone(dr.cleartext_key_warning("http://localhost:8000/v1/chat/completions", API_KEY))
+        self.assertIsNone(dr.cleartext_key_warning("https://llm.example.edu/v1/chat/completions", API_KEY))
+        self.assertIsNone(dr.cleartext_key_warning("http://llm.example.edu:8000/v1/chat/completions", None))
+        self.assertEqual(dr.cleartext_key_warning("http://llm.example.edu:8000/v1/chat/completions", API_KEY), "API key from the environment is sent in cleartext to llm.example.edu: base_url uses http://; use https:// or keep the endpoint on this machine.")
+
     def test_retry_after_parses_seconds_and_dates(self):
         self.assertIsNone(dr.parse_retry_after(None))
         self.assertEqual(dr.parse_retry_after("2"), 2.0)

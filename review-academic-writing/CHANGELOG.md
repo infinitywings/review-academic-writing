@@ -1,5 +1,13 @@
 # 变更说明
 
+## 0.13.1（2026-10-26）
+
+http 运行时的两处传输安全收紧，其余不变。
+
+- 重定向一律拒绝：3xx 响应算这一次调用失败（`parse_error` 为 `HTTP 302 (redirect refused: ...)`），请求不会带着 Authorization 头发到另一个地址。
+- `base_url` 用 `http://` 且主机不是回环地址（localhost、127.0.0.1、::1）而又配置了 `api_key_env` 时，stderr 打一行明文传输警告，并写进 `provenance.json` 的 `transport_warning`；不阻止，因为设计文档里的内网端点就是 `http://host:8000/v1`。
+- 测试加 2 个（拒绝重定向、警告判断），共 134 个。
+
 ## 0.13.0（2026-10-26）
 
 `dispatch_reader.py` 新增 `http` 运行时：把同一份通用提示和 packet 发到 OpenAI 兼容的 `POST /v1/chat/completions` 端点，供没有 Claude Code 的服务器使用（`docs/server-deployment.md` 实施顺序第 1 步）。默认运行时仍是 `claude -p`，其他脚本不变。

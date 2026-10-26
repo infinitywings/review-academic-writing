@@ -142,6 +142,7 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 - 请求：system 消息与 claude 运行时相同，user 消息是通用提示加 packet；`temperature`（默认 0）和 `max_tokens` 来自配置；`json_mode` 为 true 时带 `response_format: {"type": "json_object"}`，端点不支持时设为 false，返回的代码围栏会被剥掉。`--model` 覆盖配置里的 `model`，`--timeout` 覆盖 `timeout_seconds`（默认 300 秒）；`--effort` 不适用。可选键：`retry_backoff_seconds`（默认 1）、`price_per_token`、`ca_file`（自签证书的 CA 文件）。
 - HTTP 429、5xx 和连接失败在同一次调用内重试，最多三次，等待 1 秒、2 秒（`Retry-After` 优先，上限 60 秒）；每次尝试的状态码、错误和等待时间记录在 `provenance.json` 的 `attempts`。三次都失败，或 4xx，这一次调用算解析失败，进入与 claude 运行时相同的更正协议（b、c）。
 - `provenance.json` 写 `runtime: "http"`、`base_url`、`url`、`model`、`api_key_env`、`request`（温度、max_tokens、response_format、超时）、`http_status`、`attempt_count`、`attempts`、`response_id`、`response_model`、`finish_reason`、`usage`（响应的 usage 对象）、`input_tokens`、`output_tokens`；`session_id` 是响应的 id，也写进遮罩回执的 `agent_id`，审计文件的 `auditor.agent_id` 为 `http-` 加 id 的后半段。`cost_usd` 为 null，除非配置给出 `price_per_token: {"input": 每输入 token 美元, "output": 每输出 token 美元}`。
+- 重定向一律拒绝（3xx 算这一次调用失败，请求不会带着密钥发到别处）。`base_url` 用 `http://` 且主机不是本机回环时，密钥会明文传输：脚本在 stderr 打一行警告并写进 `provenance.json` 的 `transport_warning`，不阻止；内网之外请用 `https://`。
 - 隔离说明是 `bare chat-completions request with no tools; isolation by request content, not by sandbox`：读者和编辑可以是同一个端点，隔离靠请求内容，不靠进程或沙箱。仓库根目录的 `docs/server-deployment.md` 说明这一运行时在服务器部署里的位置。
 
 ## 运行测试
@@ -152,7 +153,7 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 132 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替。
+预期输出以 `Ran 134 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替。
 
 ## 兼容性
 

@@ -43,6 +43,7 @@ import sys
 import time
 from typing import Any, Callable
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -61,6 +62,7 @@ ISOLATION_NOTE = "claude -p --restricted --strict-mcp-config --tools '' --settin
 HTTP_ISOLATION_NOTE = "bare chat-completions request with no tools; isolation by request content, not by sandbox"
 HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
 HTTP_ATTEMPTS = 3
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 RETRY_AFTER_CAP_SECONDS = 60.0
 CLAUDE_DEFAULT_TIMEOUT = 900.0
 BUDGET_TARGET_FRACTION = 0.85
@@ -225,12 +227,28 @@ def message_content(envelope: dict[str, Any]) -> tuple[str | None, Any]:
     return None, finish_reason
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: following one would send the Authorization header elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401 - urllib hook
+        return None
+
+
+def cleartext_key_warning(url: str, api_key: str | None) -> str | None:
+    """A warning when an API key would travel over plain http to a host other than loopback."""
+    parts = urllib.parse.urlsplit(url)
+    if api_key and parts.scheme == "http" and (parts.hostname or "") not in LOOPBACK_HOSTS:
+        return f"API key from the environment is sent in cleartext to {parts.hostname}: base_url uses http://; use https:// or keep the endpoint on this machine."
+    return None
+
+
 class HttpRuntime:
     """One OpenAI-compatible chat-completions request per call, with no tools.
 
     The config file names the endpoint, the model, the request parameters, and the
     environment variable that holds the API key. The key itself never comes from the file
-    or the command line and is never written to any output file.
+    or the command line and is never written to any output file. Redirects are refused so
+    the key cannot be forwarded to another origin.
     """
 
     name = "http"
@@ -297,6 +315,10 @@ class HttpRuntime:
             self.ssl_context = ssl.create_default_context(cafile=ca_file)
         except (OSError, ssl.SSLError) as exc:
             raise DispatchError(f"Cannot load ca_file {ca_file}: {exc}") from exc
+        self.opener = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=self.ssl_context))
+        self.transport_warning = cleartext_key_warning(self.url, self.api_key)
+        if self.transport_warning:
+            print(f"warning: {self.transport_warning}", file=sys.stderr)
 
     def agent_id(self, session_id: str | None) -> str:
         short = session_id or "unknown"
@@ -325,7 +347,7 @@ class HttpRuntime:
     def post(self, data: bytes) -> tuple[int, dict[str, str], bytes]:
         request = urllib.request.Request(self.url, data=data, headers=self.headers(), method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=self.ssl_context) as response:
+            with self.opener.open(request, timeout=self.timeout) as response:
                 return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
         except urllib.error.HTTPError as exc:
             return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
@@ -363,6 +385,8 @@ class HttpRuntime:
         error: str | None = None
         if not succeeded:
             error = (f"HTTP {status}" if status is not None else attempts[-1]["error"]) + (f" after {len(attempts)} attempts" if len(attempts) > 1 else "")
+            if status is not None and 300 <= status < 400:
+                error += " (redirect refused: the request is never resent to another location)"
         envelope: dict[str, Any] | None = None
         if succeeded:
             try:
@@ -398,6 +422,7 @@ class HttpRuntime:
             "model": self.model,
             "api_key_env": self.api_key_env,
             "request": {"temperature": self.temperature, "max_tokens": self.max_tokens, "response_format": body.get("response_format"), "timeout_seconds": self.timeout},
+            "transport_warning": self.transport_warning,
             "http_status": status,
             "attempt_count": len(attempts),
             "attempts": attempts,
