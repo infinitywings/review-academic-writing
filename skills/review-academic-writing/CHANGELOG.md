@@ -1,5 +1,19 @@
 # 变更说明
 
+## 0.16.0（2026-10-26）
+
+打包为插件：同一个 skill 目录可以从 Claude Code、Claude Desktop 的 Code 标签和 OpenAI Codex 直接安装；MinerU 不可用时可以显式降级为纯文本抽取。脚本的命令行只增不改，文件格式不变。
+
+- 仓库布局：包目录从 `review-academic-writing/` 移到 `skills/review-academic-writing/`（git mv，历史保留）。仓库根新增 `.claude-plugin/plugin.json`（name `review-academic-writing`，version 与 VERSION 同步，Apache-2.0）和 `.claude-plugin/marketplace.json`（marketplace 名 `infinitywings`，一个条目，source `./`，即仓库本身就是插件）；`.agents/skills/review-academic-writing` 是指向同一目录的符号链接，供 Codex 在仓库内发现（Codex 跟随符号链接；没有符号链接支持的 Windows 检出会得到一个文本文件，这时改用 `$skill-installer` 或复制）。`agents/openai.yaml` 在包内的位置不变。`claude plugin validate .` 对仓库根通过，`claude --plugin-dir . plugin details review-academic-writing` 列出一个 skill。
+- SKILL.md、`references/masked-reading.md`、`references/staged-review.md` 里给宿主模型执行的命令，路径从 `<skill-dir>` 改为 `${CLAUDE_SKILL_DIR}`；Claude Code 加载 SKILL.md 时替换成实际目录。SKILL.md 加一句：在 Codex、手动安装或 references 里未展开时，用包含 SKILL.md 的目录代替。frontmatter 仍只有 name 和 description。
+- `extract_pdf.py extract` 新增 `--fallback pdftotext|pdfplumber` 和 `--pdftotext`：找不到 MinerU 可执行文件、无法运行，或 `server status --json` 判断未就绪时，用 poppler 的 pdftotext（按换页符分页）或 pdfplumber 做纯文本抽取，写出带 `<!-- page N of M -->` 的 Markdown，首行 `<!-- extraction: ... -->` 注释写明是低保真抽取（双栏顺序、上下标、公式、表格、图注可能丢失或并入，没有 OCR）；`extract.json` 记 `extractor`、`fidelity: low`、`fidelity_note`、`mineru_unavailable`、`pages`，`tier` 为 null。`postprocess` 把这条注释从稿件里去掉、抄到抽取说明开头（即 scope 的 `extraction_notes`）；`postprocess` 的响应和 MinerU 路径的 `extract.json` 都多 `fidelity` 字段（MinerU 为 `standard`）。默认不降级：行为与之前一致，退出码 2 并打印启动命令，只在末尾多一句提示 `--fallback`。MinerU 就绪时忽略 `--fallback`；没有文字层的 PDF 拒绝写出稿件。找不到 MinerU 的提示改为 `uv tool install` 的安装命令。
+- README：安装一节改为三种方式（Claude Code / Desktop 经 marketplace 安装、`claude --plugin-dir` 本地测试、Codex 的 `.agents/skills` 与 `$skill-installer`、手动复制），MinerU 一节补降级说明；根 README 同步。`references/plugin-extension.md` 开头注明插件清单已存在、服务组件仍未实现。
+- 测试加 8 个（降级 Markdown 与说明传递 2 个；extract 命令 6 个：无可执行文件时退出 2、服务未就绪走 pdftotext 并经 postprocess、无可执行文件走 pdftotext、假 pdfplumber 模块、MinerU 就绪时忽略降级、无文字拒绝），共 156 个。
+
+### 兼容性
+
+已复制到 `~/.claude/skills/` 的旧副本不受影响；重新复制时源路径改为 `skills/review-academic-writing/`。六个脚本已有的命令行、运行格式、日志 schema 不变。
+
 ## 0.15.0（2026-10-26）
 
 本地部署整理：读者派发可走 Codex 订阅，MinerU 就绪判断改读结构化状态。命令行、文件格式和已有运行时的行为不变。

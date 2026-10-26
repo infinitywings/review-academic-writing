@@ -1,0 +1,12 @@
+{
+  "name": "review-academic-writing",
+  "version": "0.16.0",
+  "description": "Review academic manuscripts with a staged, receipt-chained record, information-limited reader checks, and an independent fidelity audit for every proposed wording.",
+  "author": {
+    "name": "Chenglong Fu"
+  },
+  "homepage": "https://github.com/infinitywings/review-academic-writing",
+  "repository": "https://github.com/infinitywings/review-academic-writing",
+  "license": "Apache-2.0",
+  "keywords": ["academic-writing", "manuscript-review", "peer-review", "skill"]
+}

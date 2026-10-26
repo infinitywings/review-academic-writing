@@ -4,6 +4,9 @@
 Python standard library only. Three subcommands:
 
   extract      run the local MinerU parse (standard tier) on a PDF; never remote.
+               With --fallback pdftotext|pdfplumber, fall back to a text-only,
+               low-fidelity extraction when MinerU is unavailable; by default
+               the command stops and prints the MinerU start commands instead.
   postprocess  clean a MinerU Markdown file for review_packets.py index and write a
                page sidecar plus extraction notes.
   case         build a masked_reader case.json from an index.json, the page sidecar,
@@ -38,6 +41,14 @@ MINERU_START_COMMANDS = [
     "mineru server restart",
     "mineru server status --json",
 ]
+FALLBACK_EXTRACTORS = ("pdftotext", "pdfplumber")
+LOW_FIDELITY_NOTE = (
+    "LOW-FIDELITY EXTRACTION with {extractor}; MinerU was not used ({reason}). "
+    "Two-column reading order, subscripts and superscripts, formulas, tables, and figure captions "
+    "may be lost or merged. Check every region used for a finding against the PDF, and say in the "
+    "scope record that the edition is text-only."
+)
+EXTRACTION_MARKER = re.compile(r"^\s*<!--\s*extraction:\s*(.*?)\s*-->\s*$", re.I)
 PAGE_MARKER = re.compile(r"^\s*<!--\s*page\s+(\d+)(?:\s+of\s+(\d+))?\s*-->\s*$", re.I)
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+\S")
 LIST_ITEM = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+")
@@ -318,7 +329,21 @@ def assign_pages_from_layout(segments: list[Segment], pages: dict[int, str]) -> 
 
 
 def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str, Any]:
-    """Clean MinerU Markdown; return the edition, the sidecar, and the notes text."""
+    """Clean MinerU Markdown; return the edition, the sidecar, and the notes text.
+
+    A `<!-- extraction: ... -->` comment written by a fallback extractor is removed
+    from the edition and copied to the top of the notes, so the scope record carries
+    the low-fidelity warning.
+    """
+    extraction_warnings: list[str] = []
+    kept_lines: list[str] = []
+    for line in markdown.split("\n"):
+        marker = EXTRACTION_MARKER.match(line)
+        if marker:
+            extraction_warnings.append(marker.group(1))
+        else:
+            kept_lines.append(line)
+    markdown = "\n".join(kept_lines)
     segments, markers = segment_markdown(markdown)
     page_source = "markers" if markers else "none"
     layout_labels: list[str] = []
@@ -348,7 +373,11 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
         "page_source": page_source,
         "paragraphs": paragraphs,
     }
-    notes = [f"Extraction notes for {source_name} (MinerU Markdown cleaned by extract_pdf.py postprocess).", ""]
+    origin = "text-only fallback extraction" if extraction_warnings else "MinerU Markdown"
+    notes = [f"Extraction notes for {source_name} ({origin} cleaned by extract_pdf.py postprocess).", ""]
+    notes.extend(extraction_warnings)
+    if extraction_warnings:
+        notes.append("")
     notes.append(f"Paragraphs in the cleaned edition: {len(kept)}. Page numbers from: {page_source}.")
     notes.append(f"Dropped {markers} page marker comment(s); page numbers live in the sidecar, not in the text.")
     if dropped:
@@ -378,7 +407,14 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
         notes.append("Layout labels these blocks as header/footer; they were kept unless they repeated across pages:")
         notes.extend("  - " + label for label in layout_labels[:40])
     notes.append("Not checked here: reading order across columns, hyphenation at line ends, subscripts inside inline LaTeX, and figure content.")
-    return {"markdown": edition, "sidecar": sidecar, "notes": "\n".join(notes) + "\n", "dropped": len(dropped), "markers": markers}
+    return {
+        "markdown": edition,
+        "sidecar": sidecar,
+        "notes": "\n".join(notes) + "\n",
+        "dropped": len(dropped),
+        "markers": markers,
+        "fidelity": "low" if extraction_warnings else "standard",
+    }
 
 
 # ---------------------------------------------------------------- case builder
@@ -482,11 +518,26 @@ def build_case(index: dict[str, Any], sidecar: dict[str, Any], budget: int, asse
 # ---------------------------------------------------------------- MinerU extract
 
 
-def mineru_executable(explicit: str | None) -> str:
-    candidate = explicit or os.environ.get("MINERU") or shutil.which("mineru")
-    if not candidate:
-        raise ExtractError("MinerU executable not found: pass --mineru or set MINERU (see README, tools/mineru-env).")
-    return candidate
+MINERU_INSTALL_HINT = 'pass --mineru, set MINERU, or install it with `uv tool install "mineru==4.0.12" --python 3.12` (see README)'
+MINERU_NOT_FOUND = "MinerU executable not found: " + MINERU_INSTALL_HINT
+
+
+def mineru_executable(explicit: str | None) -> str | None:
+    return explicit or os.environ.get("MINERU") or shutil.which("mineru")
+
+
+def mineru_unavailable(mineru: str | None, timeout: float) -> tuple[str | None, str]:
+    """Return (reason, status_text); reason is None when the local parse server is ready."""
+    if not mineru:
+        return MINERU_NOT_FOUND, ""
+    try:
+        status = subprocess.run([mineru, "server", "status", "--json"], capture_output=True, text=True, timeout=timeout)
+    except OSError as exc:
+        return f"MinerU executable not found or not runnable ({mineru}: {exc.strerror or exc}): " + MINERU_INSTALL_HINT, ""
+    status_text = (status.stdout + status.stderr).strip()
+    if server_ready(status.stdout, status.returncode):
+        return None, status.stdout
+    return "MinerU parse server is not ready", status_text
 
 
 def server_ready(status_output: str, exit_code: int) -> bool:
@@ -537,17 +588,19 @@ def status_summary(status_output: str) -> str:
     return json.dumps(keep, ensure_ascii=False)
 
 
-def run_extract(pdf: Path, out_dir: Path, mineru: str, pages: str, timeout: float) -> dict[str, Any]:
+def run_extract(pdf: Path, out_dir: Path, mineru: str | None, pages: str, timeout: float, fallback: str | None = None, pdftotext: str | None = None) -> dict[str, Any]:
     if pdf.suffix.lower() != ".pdf" or not pdf.is_file():
         raise ExtractError("--pdf must be an existing .pdf file.")
-    status = subprocess.run([mineru, "server", "status", "--json"], capture_output=True, text=True, timeout=timeout)
-    status_text = status.stdout
-    if not server_ready(status_text, status.returncode):
-        raise ExtractError(
-            "MinerU parse server is not ready. Status output:\n" + (status.stdout + status.stderr).strip() + "\n\n"
-            "Start it with:\n  " + "\n  ".join(MINERU_START_COMMANDS)
-            + "\nWait until `mineru server status` reports the parse server ready, then retry. Never use --remote for an unpublished manuscript."
-        )
+    reason, status_text = mineru_unavailable(mineru, timeout)
+    if reason is not None:
+        if fallback is None:
+            raise ExtractError(
+                reason + (". Status output:\n" + status_text if status_text else "") + "\n\n"
+                "Start it with:\n  " + "\n  ".join(MINERU_START_COMMANDS)
+                + "\nWait until `mineru server status` reports the parse server ready, then retry. Never use --remote for an unpublished manuscript.\n"
+                "For a text-only, low-fidelity edition instead (two-column order, formulas, and tables may be lost), rerun with --fallback pdftotext or --fallback pdfplumber."
+            )
+        return run_fallback(pdf, out_dir, fallback, reason, status_text, pdftotext, timeout)
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / (pdf.stem + ".md")
     if target.exists():
@@ -558,6 +611,8 @@ def run_extract(pdf: Path, out_dir: Path, mineru: str, pages: str, timeout: floa
     produced = sorted(p.name for p in out_dir.iterdir() if p.name not in before)
     record = {
         "ok": run.returncode == 0 and target.exists(),
+        "extractor": "mineru",
+        "fidelity": "standard",
         "command": command,
         "exit_code": run.returncode,
         "stdout": run.stdout[-4000:],
@@ -574,6 +629,87 @@ def run_extract(pdf: Path, out_dir: Path, mineru: str, pages: str, timeout: floa
         handle.write("\n")
     if not record["ok"]:
         raise ExtractError(f"MinerU parse failed (exit {run.returncode}); see {out_dir / 'extract.json'}.")
+    return record
+
+
+# ---------------------------------------------------------------- low-fidelity fallback
+
+
+def pdftotext_pages(pdf: Path, executable: str | None, timeout: float) -> tuple[list[str], list[str], str]:
+    """Return (pages, command, stderr) from poppler's pdftotext; pages are split on form feeds."""
+    exe = executable or shutil.which("pdftotext")
+    if not exe:
+        raise ExtractError("pdftotext not found: install poppler (brew install poppler) or pass --pdftotext; or use --fallback pdfplumber.")
+    command = [exe, "-enc", "UTF-8", str(pdf), "-"]
+    run = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    if run.returncode != 0:
+        raise ExtractError(f"pdftotext failed (exit {run.returncode}): {run.stderr.strip()[:500]}")
+    pages = run.stdout.split("\f")
+    if pages and not pages[-1].strip():
+        pages = pages[:-1]
+    return pages, command, run.stderr
+
+
+def pdfplumber_pages(pdf: Path) -> tuple[list[str], list[str], str]:
+    try:
+        import pdfplumber  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ExtractError("pdfplumber is not installed (pip install pdfplumber), or use --fallback pdftotext.") from exc
+    with pdfplumber.open(str(pdf)) as document:
+        pages = [page.extract_text() or "" for page in document.pages]
+    return pages, ["pdfplumber", str(pdf)], ""
+
+
+def fallback_markdown(pages: list[str], note: str) -> str:
+    """Page-marked plain text so postprocess can build the page sidecar and carry the warning."""
+    parts = [f"<!-- extraction: {' '.join(note.split())} -->", ""]
+    total = len(pages)
+    for number, text in enumerate(pages, 1):
+        parts.append(f"<!-- page {number} of {total} -->")
+        parts.append("")
+        body = re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in text.splitlines())).strip()
+        if body:
+            parts.append(body)
+            parts.append("")
+    return "\n".join(parts).rstrip("\n") + "\n"
+
+
+def run_fallback(pdf: Path, out_dir: Path, extractor: str, reason: str, status_text: str, pdftotext: str | None, timeout: float) -> dict[str, Any]:
+    if extractor not in FALLBACK_EXTRACTORS:
+        raise ExtractError(f"--fallback must be one of {', '.join(FALLBACK_EXTRACTORS)}.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / (pdf.stem + ".md")
+    if target.exists():
+        raise ExtractError(f"Output already exists: {target}; choose a new --out-dir.")
+    if extractor == "pdftotext":
+        pages, command, stderr = pdftotext_pages(pdf, pdftotext, timeout)
+    else:
+        pages, command, stderr = pdfplumber_pages(pdf)
+    if not any(page.strip() for page in pages):
+        raise ExtractError(f"{extractor} found no text in {pdf.name} (scanned pages?); the fallback has no OCR, so MinerU is required.")
+    note = LOW_FIDELITY_NOTE.format(extractor=extractor, reason=reason.rstrip("."))
+    write_new(target, fallback_markdown(pages, note))
+    record = {
+        "ok": True,
+        "extractor": extractor,
+        "fidelity": "low",
+        "fidelity_note": note,
+        "mineru_unavailable": reason,
+        "command": command,
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": stderr[-4000:],
+        "server_status": status_text[-4000:],
+        "pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
+        "pages": len(pages),
+        "produced": [target.name],
+        "markdown": str(target),
+        "tier": None,
+        "remote": False,
+    }
+    with (out_dir / "extract.json").open("w", encoding="utf-8") as handle:
+        json.dump(record, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
     return record
 
 
@@ -604,6 +740,8 @@ def _parser() -> argparse.ArgumentParser:
     extract.add_argument("--pages", default="all", help="Page selection passed to MinerU (default all).")
     extract.add_argument("--timeout", type=float, default=3600.0, help="Seconds allowed per MinerU command.")
     extract.add_argument("--remote", action="store_true", help="Refused: unpublished manuscripts are parsed locally only.")
+    extract.add_argument("--fallback", choices=FALLBACK_EXTRACTORS, help="When MinerU is missing or its parse server is not ready, write a text-only low-fidelity edition with this tool instead of stopping (default: stop).")
+    extract.add_argument("--pdftotext", help="pdftotext executable for --fallback pdftotext (default: pdftotext on PATH).")
     post = commands.add_parser("postprocess", help="Clean MinerU Markdown; write edition, page sidecar, and notes.")
     post.add_argument("--input", required=True, help="MinerU Markdown file.")
     post.add_argument("--layout", help="MinerU middle.json or content_list.json for page numbers when the Markdown has no page markers.")
@@ -627,8 +765,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "extract":
             if args.remote:
                 raise ExtractError("--remote is refused: parse unpublished manuscripts with the local MinerU server only.")
-            record = run_extract(Path(args.pdf), Path(args.out_dir), mineru_executable(args.mineru), args.pages, args.timeout)
-            response = {"ok": True, "command": "extract", "markdown": record["markdown"], "produced": record["produced"], "record": str(Path(args.out_dir) / "extract.json")}
+            record = run_extract(Path(args.pdf), Path(args.out_dir), mineru_executable(args.mineru), args.pages, args.timeout, args.fallback, args.pdftotext)
+            response = {"ok": True, "command": "extract", "extractor": record["extractor"], "fidelity": record["fidelity"], "markdown": record["markdown"], "produced": record["produced"], "record": str(Path(args.out_dir) / "extract.json")}
+            if record["fidelity"] == "low":
+                response["warning"] = record["fidelity_note"]
         elif args.command == "postprocess":
             source = Path(args.input)
             with source.open("r", encoding="utf-8") as handle:
@@ -641,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
             write_new(out, result["markdown"])
             write_new(pages_out, json.dumps(result["sidecar"], ensure_ascii=False, indent=2) + "\n")
             write_new(notes_out, result["notes"])
-            response = {"ok": True, "command": "postprocess", "output": str(out), "pages": str(pages_out), "notes": str(notes_out), "paragraphs": len(result["sidecar"]["paragraphs"]), "page_source": result["sidecar"]["page_source"], "dropped_headers": result["dropped"]}
+            response = {"ok": True, "command": "postprocess", "output": str(out), "pages": str(pages_out), "notes": str(notes_out), "paragraphs": len(result["sidecar"]["paragraphs"]), "page_source": result["sidecar"]["page_source"], "dropped_headers": result["dropped"], "fidelity": result["fidelity"]}
         else:
             index = load_json(Path(args.index))
             sidecar = load_json(Path(args.pages))

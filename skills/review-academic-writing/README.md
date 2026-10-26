@@ -2,15 +2,34 @@
 
 这个 skill 审查学术稿件和研究计划：概念是否在首次关键使用前得到解释，段落之间的论证关系是否明确，用词句式是否清楚，建议的修改是否保持科学含义。审稿人把每一步工作存成带回执链的记录，再从记录写报告。可选的遮罩阅读让新上下文的读者逐窗阅读，只携带有限笔记，观察结果作为证据挂进记录。
 
-## 安装到 Claude Code
+## 安装
 
-把整个目录复制到 skills 目录：
+这个目录既是 Claude Code 的 skill，也是仓库根 `.claude-plugin/` 清单所指的插件内容；Codex 通过仓库根的 `.agents/skills/review-academic-writing`（指向本目录的符号链接）发现它。三种装法任选。
 
-```bash
-cp -R review-academic-writing ~/.claude/skills/review-academic-writing
+### Claude Code 和 Claude Desktop（Code 标签）
+
+在会话里先登记 marketplace（名字是 `infinitywings`），再安装插件：
+
+```
+/plugin marketplace add infinitywings/review-academic-writing
+/plugin install review-academic-writing@infinitywings
 ```
 
-Claude Code 读取 `SKILL.md` 并按需读取 `references/`。`agents/openai.yaml` 只供 OpenAI Codex 宿主使用，Claude Code 忽略它。
+Claude Code 2.1.275 以上可以一步完成：`/plugin install review-academic-writing --marketplace infinitywings/review-academic-writing`。命令行等价于 `claude plugin marketplace add infinitywings/review-academic-writing` 加 `claude plugin install review-academic-writing@infinitywings`。装好后 skill 名为 `review-academic-writing:review-academic-writing`；SKILL.md 里的 `${CLAUDE_SKILL_DIR}` 由 Claude Code 替换成本目录的实际路径。
+
+本地改动后不经 marketplace 直接试：在仓库根运行 `claude --plugin-dir .` 启动会话，`claude plugin validate .` 核对两份清单，`claude --plugin-dir . plugin details review-academic-writing` 应列出一个 skill。
+
+### OpenAI Codex
+
+Codex 扫描当前目录到仓库根每一级的 `.agents/skills/` 和用户目录的 `~/.agents/skills/`，并跟随符号链接。在本仓库里打开 Codex 就能用 `$review-academic-writing`；要装到用户目录，把本目录复制或链接到 `~/.agents/skills/review-academic-writing`，或在 Codex 里用 `$skill-installer` 从本仓库安装。`agents/openai.yaml` 给 Codex 和 ChatGPT 宿主提供显示名和调用策略，Claude Code 忽略它。Codex 不替换 `${CLAUDE_SKILL_DIR}`，SKILL.md 里有一句话让模型用包含 SKILL.md 的目录代替。Windows 上没有符号链接支持的检出会把 `.agents/skills/review-academic-writing` 变成一个文本文件，这时用复制安装。
+
+### 手动复制
+
+```bash
+cp -R skills/review-academic-writing ~/.claude/skills/review-academic-writing
+```
+
+Claude Code 读取 `SKILL.md` 并按需读取 `references/`，`${CLAUDE_SKILL_DIR}` 同样会被替换。
 
 ## PDF 抽取环境（MinerU 4 本地模式）
 
@@ -29,6 +48,8 @@ mineru server status --json
 ```
 
 模型约 850 MB（standard 层级），下载到 `~/.mineru/models`；已有模型时跳过下载。`extract_pdf.py` 用 `mineru server status --json` 判断就绪：`running` 为 true，`parse_server.local.healthy` 为 true、`starting` 为 false、`mode` 不是 off。首次加载约一分钟；managed 模式下解析服务常驻，之后每篇只付解析时间。已解析过的同一文件（按内容哈希）会直接返回缓存结果。未发表稿件不要用 `--remote`（官方云服务）；`extract_pdf.py` 拒绝这个选项。注意 MinerU 服务会定期探测官方远程端点是否可达，这只是连通性探测，不发送文件。安装包名与附加依赖以 MinerU 官方安装说明为准，上面的版本号是本次实测的版本。
+
+MinerU 不是必需的。找不到 `mineru` 可执行文件、无法运行，或解析服务没就绪时，`extract` 默认停下并打印上面的启动命令（退出码 2）。要在没有 MinerU 的机器上继续，显式加 `--fallback pdftotext`（poppler，`brew install poppler`，可用 `--pdftotext` 指定路径）或 `--fallback pdfplumber`（`pip install pdfplumber`）：得到的是纯文本稿件，双栏顺序、上下标、公式、表格、图注可能丢失或并入，没有 OCR（没有文字层的扫描件会被拒绝）。`extract.json` 记 `fidelity: low` 和降级原因；稿件首行的 `<!-- extraction: ... -->` 注释由 `postprocess` 移到抽取说明开头，所以 scope 记录的 `extraction_notes` 会写明这是低保真抽取。对这种稿件，凡是用于结论的段落都要回到 PDF 核对。MinerU 就绪时 `--fallback` 被忽略。
 
 ## 可选的句法特征环境（spaCy）
 
@@ -59,6 +80,8 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 	python3 <skill-dir>/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU"
 	python3 <skill-dir>/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md
 	```
+
+	MinerU 不可用而又要继续时，第一条命令加 `--fallback pdftotext`（或 `pdfplumber`），见上面的降级说明；插件安装后 `<skill-dir>` 就是 SKILL.md 里 `${CLAUDE_SKILL_DIR}` 展开的目录。
 
 1. 建立索引：
 
@@ -196,7 +219,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 140 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 156 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 

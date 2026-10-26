@@ -1,7 +1,7 @@
 # 效果验证方案（protocol）
 
 版本：2026-10-21 草案 v1
-对象：`review-academic-writing/` 技能（阶段日志 `scripts/review_steps.py`、前缀包 `scripts/review_packets.py`、遮罩阅读 `scripts/masked_reader.py`）
+对象：`skills/review-academic-writing/` 技能（阶段日志 `scripts/review_steps.py`、前缀包 `scripts/review_packets.py`、遮罩阅读 `scripts/masked_reader.py`）
 设计来源：《AI 学术写作：读者认知与顺序阅读》文献方法调研报告（2026-10-21，第 20–26 页，以及 P4、P5 两节）
 配套文件：`human-study.md`（真人实验）、`materials-checklist.md`（材料与记录）、`scoring-template.json` 与 `scoring-guide.md`（评分）
 

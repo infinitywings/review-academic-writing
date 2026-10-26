@@ -25,6 +25,8 @@ Create actual intermediate files outside the skill directory. Save and inspect o
 
 Use `scripts/review_steps.py` to record stages and check readiness as described in staged-review.md. Its checks concern files, order, coverage, and correspondence; they cannot prove a model's private reasoning, diligence, or the truth of a diagnosis. If the runtime cannot execute the helper, preserve the same staged notes in the working document and disclose that automatic checks were unavailable. Continue the substantive review.
 
+Commands in this file and in `references/` write script paths as `${CLAUDE_SKILL_DIR}/scripts/...`; Claude Code replaces the variable with this skill's directory when it loads SKILL.md. Where it appears unexpanded (Codex, a manual copy, or a reference file), use the directory that contains this SKILL.md in its place.
+
 For quick or narrowly scoped review, reduce the declared coverage and note detail in proportion to the task; retain the sequence and evidence requirements. Do not create candidate issues or edits to fill a quota. Keep full-editor notes separate from the inputs to independent prefix readers. When resuming interrupted work, verify saved records before continuing. Draft notes in the current stage may be corrected before recording it. If a new finding or an earlier error affects an already recorded stage, preserve the old run and start a corrected run with the affected downstream work rechecked; never quietly rewrite the frozen history.
 
 ## Select the task and execution mode
@@ -60,9 +62,11 @@ When the user requests a mask, sliding window, bounded memory, or subagents that
 4. Convert the selected reading edition into UTF-8 Markdown or plain text with verified reading order. For a PDF, use `scripts/extract_pdf.py`: `extract` runs the local MinerU standard-tier parse (never a remote service; it stops with the server start commands when the local parse server is not ready), and `postprocess` cleans the Markdown for indexing and writes a page sidecar and extraction notes for the scope record. Otherwise use the environment's PDF/DOCX capability. Preserve headings, formulas, citations, figure/table captions, and source-page mappings. Check multi-column order and equation loss against the PDF. If the extraction is unreliable, mark the affected region and restrict conclusions there.
 
    ```bash
-   python3 <skill-dir>/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU"
-   python3 <skill-dir>/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md
+   python3 ${CLAUDE_SKILL_DIR}/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU"
+   python3 ${CLAUDE_SKILL_DIR}/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md
    ```
+
+   When MinerU is not installed or its parse server cannot be started, rerun `extract` with `--fallback pdftotext` (or `--fallback pdfplumber`). It writes a text-only edition and marks it low fidelity in `extract.json` and in the extraction notes, so the scope record says so: two-column order, subscripts, formulas, tables, and captions may be lost or merged, and there is no OCR. Check every passage used for a finding against the PDF and restrict conclusions where the text is unreliable.
 
    Copy the extraction notes (`run/manuscript.md.extraction-notes.txt`) into `extraction_notes` of the scope record. For masked reading, `extract_pdf.py case` builds the case from the index, the page sidecar, a word budget per window, a required `--asset-policy`, and a list of figures and tables with their pages and image paths.
 5. Select the actual reading path. Include an abstract or caption in the prefix only if this reader has encountered it. Disclose missing or uninspected figures. Create a new indexed edition for a different reading path.
@@ -74,7 +78,7 @@ Use `assets/reader-profile.json` as a starting shape. Put run artifacts outside 
 Run the standard-library helper against the verified text:
 
 ```bash
-python3 <skill-dir>/scripts/review_packets.py index --input manuscript.md --out run/index.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_packets.py index --input manuscript.md --out run/index.json
 ```
 
 Use the resulting block IDs and exact quotes as locations. Keep the document snapshot identifier with every finding. Treat block IDs as stable only within that snapshot; re-index after revision.
@@ -90,7 +94,7 @@ Select checkpoints at first critical uses, dense transitions, central contributi
 Create one packet per checkpoint:
 
 ```bash
-python3 <skill-dir>/scripts/review_packets.py packet --index run/index.json --profile run/reader-profile.json --stop-after-text 'Exact final sentence at the checkpoint.' --out run/checkpoint-01.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_packets.py packet --index run/index.json --profile run/reader-profile.json --stop-after-text 'Exact final sentence at the checkpoint.' --out run/checkpoint-01.json
 ```
 
 Use `--occurrence N` only to resolve a repeated exact quotation; use `--stop-offset N` for an explicit exclusive character boundary or `--through-block B0003` for a whole-block boundary. Check the last visible text. Never pass `index.json`, the full manuscript, editor notes, expected problems, or sibling packets to the prefix worker.
@@ -98,14 +102,14 @@ Use `--occurrence N` only to resolve a repeated exact quotation; use `--stop-off
 Start an independent worker with **no inherited turns**. On Claude Code, use `scripts/dispatch_reader.py`: it sends the generic prompt from `assets/prompts/` plus the packet to `claude -p` with tools, MCP servers, and settings disabled, saves the prompt, raw result, parsed JSON, and provenance (cost, session, exit code, permission denials) for every call, and runs `check-observation` (`prefix`), drives a masked run to completion (`masked`), asks a branch question (`branch`), or runs the fidelity audit (`audit`). It applies the correction protocol in masked-reading.md and writes `summary.json`. With a Codex subscription, add `--runtime codex` (a `codex exec` call that ignores the user's configuration and is rejected if the model runs any command). On a server with an OpenAI-compatible chat-completions endpoint, add `--runtime http --config llm.json` (the package README describes the file; the API key comes from the environment variable it names). When the host exposes `fork_turns` instead, use `none`; use the host's equivalent on other runtimes. Pass only the generic worker instructions from `assets/prompts/` and that packet's JSON.
 
 ```bash
-python3 <skill-dir>/scripts/dispatch_reader.py prefix --events run/events --packet run/checkpoint-01.json --label P01
+python3 ${CLAUDE_SKILL_DIR}/scripts/dispatch_reader.py prefix --events run/events --packet run/checkpoint-01.json --label P01
 ```
  Avoid giving the worker the full skill or the editor's file paths. Run each checkpoint with a new worker or stateless request; do not reuse a context that has seen a later checkpoint. Queue workers within available capacity.
 
 Freeze each worker's original observation and record its actual input, call/context mode, and any tool accesses separately. Validate the observation:
 
 ```bash
-python3 <skill-dir>/scripts/review_packets.py check-observation --packet run/checkpoint-01.json --observation run/observation-01.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_packets.py check-observation --packet run/checkpoint-01.json --observation run/observation-01.json
 ```
 
 Treat this check as hash/schema/quotation validation only. It cannot prove isolation, truth, or human difficulty. If independent workers are unavailable, perform the full-context review and label proposed first-reading issues as hypotheses. Do not stop the rest of the review.
@@ -159,7 +163,7 @@ Use the user's requested language; preserve original-language quotations and pro
 Validate structured final findings and their correspondence to the completed stage records. Preserve candidate IDs in the final findings; see staged-review.md for `check-final`. The existing source validator remains available as a source/quotation check:
 
 ```bash
-python3 <skill-dir>/scripts/review_packets.py check-review --index run/index.json --review run/review.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_packets.py check-review --index run/index.json --review run/review.json
 ```
 
 Use the environment's document-authoring skill if a Word/PDF report or tracked changes are requested. Keep complete review artifacts in the user's requested destination according to the host's persistence rules.

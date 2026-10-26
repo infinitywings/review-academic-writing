@@ -2,6 +2,8 @@
 
 Read this file only for a request to build an integrated plugin. Treat the following as an architecture proposal. The current skill implements local text indexing, prefix packet construction, structured validation, and an agent workflow; it does not ship an MCP server, browser extension, model API adapter, or document editor integration.
 
+Packaging already exists and is not what this file is about: the repository root carries a Claude Code plugin manifest (`.claude-plugin/plugin.json`, with a marketplace entry in `.claude-plugin/marketplace.json` whose source is the repository itself) and a Codex discovery path (`.agents/skills/review-academic-writing`, a symbolic link to this directory). Both hosts load this same skill directory; the package README gives the install commands. The service components below remain unimplemented.
+
 ## Preserve the same task boundary
 
 Use the skill for reviewer behavior, the packet helper for deterministic text boundaries, and a controller for execution. Add service components only where a host cannot reliably manage independent requests, versioned evidence, or document annotations.

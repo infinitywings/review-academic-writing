@@ -1,0 +1,17 @@
+{
+  "name": "infinitywings",
+  "description": "Plugins published by infinitywings",
+  "owner": {
+    "name": "infinitywings",
+    "url": "https://github.com/infinitywings"
+  },
+  "plugins": [
+    {
+      "name": "review-academic-writing",
+      "source": "./",
+      "description": "Staged academic manuscript review with information-limited readers and a fidelity audit for every proposed wording.",
+      "category": "writing",
+      "tags": ["academic-writing", "manuscript-review"]
+    }
+  ]
+}

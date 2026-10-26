@@ -44,7 +44,7 @@ Windows must partition the blocks once in source order. For assets, `referenced_
 For a PDF extracted with `scripts/extract_pdf.py`, build the case from the index and the page sidecar. Windows hold about `--budget` words, never cross a heading, and contain every block once. Assets come from a list you supply (`[{"id": "Figure1", "page": 4, "path": "/abs/fig1.png", "caption": "..."}]`); `referenced_by` is every block that mentions `Figure N`, `Fig. N`, or `Table N`, and `encountered_by` is the first block on the asset's page. The command reports mentioned figures or tables missing from your list; check each mapping against the PDF.
 
 ```bash
-python3 <skill-dir>/scripts/extract_pdf.py case --index run/index.json --pages run/manuscript.md.pages.json --budget 250 --asset-policy strict-prefix --assets run/assets.json --out run/case.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/extract_pdf.py case --index run/index.json --pages run/manuscript.md.pages.json --budget 250 --asset-policy strict-prefix --assets run/assets.json --out run/case.json
 ```
 
 Remove teaching quality labels, comments, revision labels, and answer keys from reader inputs, filenames, and image margins. Keep them in evaluator-only files. Preserve formulas and distinguish extraction corrections from editorial changes. A path to an image is not visual inspection: an enabled image capability must actually show the image before a reader claims to understand its visual content.
@@ -52,8 +52,8 @@ Remove teaching quality labels, comments, revision labels, and answer keys from 
 ## 3. Start and display one packet
 
 ```bash
-python3 <skill-dir>/scripts/masked_reader.py start --case run/case.json --profile run/profile.json --out run/reader
-python3 <skill-dir>/scripts/masked_reader.py packet --run run/reader --out run/packet-001.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/masked_reader.py start --case run/case.json --profile run/profile.json --out run/reader
+python3 ${CLAUDE_SKILL_DIR}/scripts/masked_reader.py packet --run run/reader --out run/packet-001.json
 ```
 
 Inspect the packet boundary before dispatch. A normal packet contains only the current blocks, the previous reader's finite `carry_memory`, generic task instructions, and IDs eligible for targeted lookup. It excludes earlier raw text, earlier full responses, future text, expert comments, and the editor's map. The last main-body packet explicitly marks the end of the supplied text; an excerpt ending does not imply that the full paper lacks methods or evidence.
@@ -61,7 +61,7 @@ Inspect the packet boundary before dispatch. A normal packet contains only the c
 On Claude Code, `scripts/dispatch_reader.py masked` performs this whole loop: it issues each packet, sends `assets/prompts/masked.txt` plus the packet to a fresh tool-less `claude -p` call, records the response with the call's session id as the agent id, applies the correction protocol in section 4, stops after three lookups without new sources or at `--max-events`, and writes a summary. `dispatch_reader.py branch` does the same for one branch question.
 
 ```bash
-python3 <skill-dir>/scripts/dispatch_reader.py masked --events run/events --run run/reader --case run/case.json --profile run/profile.json --max-events 40
+python3 ${CLAUDE_SKILL_DIR}/scripts/dispatch_reader.py masked --events run/events --run run/reader --case run/case.json --profile run/profile.json --max-events 40
 ```
 
 Start a new worker for **every display event**, including each lookup and the return to the main text. Where available use `fork_turns: none`; otherwise use an equivalent stateless request. Do not continue a conversation that retains earlier raw text and call that bounded memory. Pass the exact packet inline, or authorize reading that one packet file only. Permit only supplied image paths and writing the designated response file. Do not send the full skill, source index, case file, sibling packets, or expert answers to the worker.
@@ -78,8 +78,8 @@ The packet includes the exact response schema. Save a brief current interpretati
 A carried note keeps its `id` and `since`; its text, kind, or sources may be revised. A carried note that is not kept must be listed in `dropped` with a reason. A new note cites only sources the reader has seen and carries the current sequence as `since`. The helper enforces these rules and records in each receipt which notes were added, revised, and dropped, so a fact that later disappears from the notes can be traced to the event where it was dropped and the sources it rested on. These are concise external work products, not a request for private reasoning. The complete observation remains in an external history for the final editor; it does not travel onward. A later explanation may resolve an earlier question, but must not overwrite the original question. The controller must not silently improve, correct, or complete the reader's carried beliefs using the full document.
 
 ```bash
-python3 <skill-dir>/scripts/masked_reader.py record --run run/reader --packet run/packet-001.json --response run/response-001.json --agent-id ACTUAL_WORKER_ID
-python3 <skill-dir>/scripts/masked_reader.py packet --run run/reader --out run/packet-002.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/masked_reader.py record --run run/reader --packet run/packet-001.json --response run/response-001.json --agent-id ACTUAL_WORKER_ID
+python3 ${CLAUDE_SKILL_DIR}/scripts/masked_reader.py packet --run run/reader --out run/packet-002.json
 ```
 
 The next packet follows the recorded action. For lookup, the helper returns only a previously seen block or an asset with an encountered reference or layout position. The lookup reader uses `advance` to return to the original main-text window in another fresh context. Preserve the reason for lookup and what changed after it. This return display has a real call cost; include it when reporting resources.
@@ -95,8 +95,8 @@ Fresh workers are not operating-system sandboxes. If the host cannot expose comp
 A branch asks the reader one question from a recorded display event without changing the main reading. Save the question as JSON with `id`, `question`, `selected_with_full_text` (whether the editor chose it knowing the whole document), and `reason`. Then issue and record the branch:
 
 ```bash
-python3 <skill-dir>/scripts/masked_reader.py branch --run run/reader --from-sequence 7 --question run/q1.json --out run/branch-001.json
-python3 <skill-dir>/scripts/masked_reader.py branch-record --run run/reader --packet run/branch-001.json --response run/branch-response-001.json --agent-id ACTUAL_WORKER_ID
+python3 ${CLAUDE_SKILL_DIR}/scripts/masked_reader.py branch --run run/reader --from-sequence 7 --question run/q1.json --out run/branch-001.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/masked_reader.py branch-record --run run/reader --packet run/branch-001.json --response run/branch-response-001.json --agent-id ACTUAL_WORKER_ID
 ```
 
 The branch packet contains exactly the materials and `carry_memory` of that event plus the question; it never contains later text. Dispatch it to a fresh worker like any other packet. The answer gives `support` as `stated` (the visible text says it; quote it), `inferred` (say how the text supports it), `background` (say which declared background it relies on), or `undetermined` (say which condition or relation stays open), with exact anchors. The helper saves the answer under `branches/`, binds it to that event's receipt, and records how many main events existed when it was made, so a branch made after the run is visibly post hoc. The main path never reads branch records; the next main packet is identical with or without branches. Use branches for reconciliation and for restoring an already-seen passage to test note loss; do not count branch answers as part of the natural reading.

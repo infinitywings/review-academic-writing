@@ -1,6 +1,6 @@
 # review-academic-writing
 
-一个 Claude Code skill：用信息受限的模型读者和带回执链的分阶段记录来审查学术稿件，关注概念是否在首次关键使用前得到解释、论证是否衔接、段落功能是否单一、用词是否平实，以及每条修改是否保持科学含义。
+一个以插件形式发布、可装进 Claude Code、Claude Desktop（Code 标签）和 OpenAI Codex 的 skill：用信息受限的模型读者和带回执链的分阶段记录来审查学术稿件，关注概念是否在首次关键使用前得到解释、论证是否衔接、段落功能是否单一、用词是否平实，以及每条修改是否保持科学含义。
 
 **English.** A Claude Code skill for reviewing academic manuscripts. A full-text editor records its work in five hash-chained stages; fresh-context readers see only a prefix or a sliding window with a bounded, source-tagged note budget; a reconcile stage classifies what those readers could not understand against the editor's frozen checks; every proposed wording must pass an independent, tool-less fidelity audit before it is recorded. The procedure is research-informed and experimental: its outputs are model predictions of reading difficulty, not measurements of human comprehension. Documentation is in Chinese; reader prompts and code are in English.
 
@@ -10,7 +10,7 @@
 - **独立读者。** 前缀 checkpoint 只给读者到某句为止的文本（`scripts/review_packets.py`）；遮罩阅读逐窗展示，每窗新上下文，只携带有限的结构化笔记，每条笔记带来源和出生事件，丢弃必须显式说明（`scripts/masked_reader.py`）；可以从任一已记录的事件分出一个一次性追问，答案不回流主路径。
 - **先冻结再对账。** 编辑的独立检查在任何读者记录进入前先入链；读者观察在 reconcile 阶段按八类分类，再决定是否成为候选问题。
 - **保真门槛。** 每条带替换句的修改要附一份独立审计：九项属性（主张强度、量词、假设、对象、测量结果、时间范围、数值、不确定性、因果与相关）逐项比对，任何一项改变即拒绝记录。
-- **PDF 抽取与读者派发。** `scripts/extract_pdf.py` 封装本地 MinerU 并生成遮罩 case；`scripts/dispatch_reader.py` 用无工具、无状态的 `claude -p` 请求（或 Codex 订阅的 `codex exec`，或服务器上的 OpenAI 兼容接口）派发读者、审计者和分支，保存每次调用的原始字节与出处。
+- **PDF 抽取与读者派发。** `scripts/extract_pdf.py` 封装本地 MinerU 并生成遮罩 case（MinerU 缺失时可显式 `--fallback` 为纯文本抽取，稿件和记录都标明低保真）；`scripts/dispatch_reader.py` 用无工具、无状态的 `claude -p` 请求（或 Codex 订阅的 `codex exec`，或服务器上的 OpenAI 兼容接口）派发读者、审计者和分支，保存每次调用的原始字节与出处。
 - **句法特征提名（可选）。** `scripts/difficulty_features.py` 用 spaCy 数出八个与人类加工困难相关的句法特征，在文档内排名以提名待查段落，并把替换句与原句并排比较；输出固定标明这是候选提名启发式，不是发现。
 
 ## 它不做什么
@@ -23,7 +23,9 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| `review-academic-writing/` | skill 本体：`SKILL.md`、`references/`（分阶段协议、遮罩阅读协议、审稿规则、用词规则、输出契约）、`assets/`（读者画像、笔记模板、审计提示）、`scripts/`、`tests/`、`CHANGELOG.md`、`SHA256SUMS` |
+| `skills/review-academic-writing/` | skill 本体：`SKILL.md`、`references/`（分阶段协议、遮罩阅读协议、审稿规则、用词规则、输出契约）、`assets/`（读者画像、笔记模板、审计提示）、`scripts/`、`server/`、`tests/`、`CHANGELOG.md`、`SHA256SUMS` |
+| `.claude-plugin/` | Claude Code 插件清单 `plugin.json` 和 marketplace 清单 `marketplace.json`（marketplace 名 `infinitywings`，仓库本身就是插件） |
+| `.agents/skills/` | Codex 的发现路径：`review-academic-writing` 是指向 `skills/review-academic-writing/` 的符号链接 |
 | `validation/` | 效果验证方案：2×2 对照（全文 / 前缀 × 无状态 / 有状态）、泄漏测试、内容排序干预、真人实验指标、材料清单、评分表 |
 | `docs/design-2026-10-20.md` | 设计思路：目标、流程、解释来源、笔记来源、修订核对、验证计划 |
 | `docs/literature-review-2026-10-21.md` | 八篇核心文献的方法调研、证据归类与资源审计 |
@@ -31,10 +33,16 @@
 
 ## 快速开始
 
-1. 复制 `review-academic-writing/` 到 `~/.claude/skills/review-academic-writing/`。
-2. 从包目录运行 `python3 -m unittest discover -s tests`，应看到 134 个用例通过（没有 spaCy 时跳过 1 个）。
-3. 按 `review-academic-writing/README.md` 建 MinerU 本地环境（可选；也可以自己提供 Markdown 稿件）。
-4. 在 Claude Code 里提供稿件并调用 skill；助手命令顺序见 `review-academic-writing/README.md`。
+Claude Code 或 Claude Desktop（Code 标签）里：
+
+```
+/plugin marketplace add infinitywings/review-academic-writing
+/plugin install review-academic-writing@infinitywings
+```
+
+Claude Code 2.1.275 以上可以一步完成：`/plugin install review-academic-writing --marketplace infinitywings/review-academic-writing`。Codex 在本仓库目录里直接发现 `$review-academic-writing`；装到用户目录用 `$skill-installer`，或把 `skills/review-academic-writing/` 复制到 `~/.agents/skills/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单。手动复制安装、MinerU 环境（可选，缺失时 `extract_pdf.py extract --fallback pdftotext` 降级为纯文本）和一次审稿的命令顺序见 `skills/review-academic-writing/README.md`。
+
+从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 156 个用例通过（没有 spaCy 时跳过 1 个）。然后在宿主里提供稿件并调用 skill。
 
 ## 状态
 

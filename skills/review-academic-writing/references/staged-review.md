@@ -22,7 +22,7 @@ Record quotations, short local paraphrases, actual observations, checked locatio
 
 The helper checks saved artifacts, source consistency, declared coverage, order of recording, and correspondence to the final findings. It cannot establish that a model thought carefully, cannot rule out a report drafted elsewhere beforehand, and cannot certify scientific truth or human reading difficulty. Apply the procedure honestly and state the checks actually performed.
 
-All paths below are examples. Replace `<skill-dir>` and manuscript/run filenames with real locations. Use a new journal directory; keep original source files intact.
+All paths below are examples. Replace `${CLAUDE_SKILL_DIR}` and manuscript/run filenames with real locations. Use a new journal directory; keep original source files intact.
 
 ## 1. Record the source, reader, and scope
 
@@ -31,7 +31,7 @@ Prepare and inspect the reading edition as required by SKILL.md. Run the existin
 Record the task, included block IDs, omitted blocks and individual reasons, reading path, and extraction limits. Each `omissions` entry is an object containing `block_id` and `reason`. Account for every indexed block as included or omitted. Titles and formatting blocks may be omitted with that reason. For a full review, include every substantive block within the user's requested scope. For a sample, identify it as a sample; do not exclude a difficult passage merely to make the run look complete. Record unavailable figures, uncertain equation extraction, and any effect on the conclusions.
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py start --index run/index.json --profile run/reader-profile.json --scope run/scope.json --out run/journal
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py start --index run/index.json --profile run/reader-profile.json --scope run/scope.json --out run/journal
 ```
 
 The journal binds this source edition, profile, and scope. It is editor-only material. Never send it, the index, or these notes to a prefix reader.
@@ -53,7 +53,7 @@ Reading notes produced by an editor who has seen the full document are full-docu
 Inspect coverage and whether the paraphrases preserve the source meaning. Save the completed notes, then run:
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reading --notes run/reading.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reading --notes run/reading.json
 ```
 
 Proceed only after included blocks are covered and the record command succeeds. An omitted or uninspectable passage must remain visible in the declared scope and final limitations.
@@ -75,7 +75,7 @@ Use [the checks template](../assets/notes/checks.json). Apply the existing revie
 Inspect the saved source anchors and the check of every included block, then run:
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage checks --notes run/checks.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py record --journal run/journal --index run/index.json --stage checks --notes run/checks.json
 ```
 
 ## 4. Reconcile reader observations
@@ -93,7 +93,7 @@ Use [the reconcile template](../assets/notes/reconcile.json). Record this stage 
 Then run:
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reconcile --notes run/reconcile.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reconcile --notes run/reconcile.json
 ```
 
 ## 5. Decide which candidates survive checking
@@ -114,7 +114,7 @@ The countercheck is substantive. “I considered alternatives” is insufficient
 Save a decision for every actual candidate, including rejected and merged items. When none arose, keep an empty list and a meaningful summary of the checks performed. Then run:
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage decisions --notes run/decisions.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py record --journal run/journal --index run/index.json --stage decisions --notes run/decisions.json
 ```
 
 ## 6. Prepare repairs and check their meaning
@@ -132,16 +132,16 @@ For each retained candidate, record:
 - `author_question`: the actual question when the text does not supply a scientific decision. A `needs_author` item must remain a question with no asserted replacement.
 - `audit_path`: for every repair with `proposed_wording`, the file written by an independent fidelity auditor; null otherwise.
 
-**Independent fidelity audit.** Do not accept your own fidelity statement for a proposed wording. Give a fresh, tool-less auditor only the exact original text (as anchors), the proposed wording, and the basis facts with their manuscript locations, using [the audit prompt](../assets/prompts/fidelity-audit.txt); it must not see the editor's reasons. Save its JSON unchanged in the shape of [the audit template](../assets/notes/fidelity-audit.json). The helper records a repair with wording only when the audit verdict is `preserved` and none of the nine properties (claim strength, quantifiers, assumptions, population, measured outcome, time horizon, numerical values, uncertainty, causal versus associative wording) is `changed`; otherwise revise the wording and audit again, or set `proposed_wording` to null and ask the author. Keep a rejected audit; do not edit it. On Claude Code, `python3 <skill-dir>/scripts/dispatch_reader.py audit --events run/events --input run/C04.input.json --out run/C04.audit.json` sends the prompt and the input to a tool-less `claude -p` call, checks the returned shape, and writes the audit with `auditor` filled in.
+**Independent fidelity audit.** Do not accept your own fidelity statement for a proposed wording. Give a fresh, tool-less auditor only the exact original text (as anchors), the proposed wording, and the basis facts with their manuscript locations, using [the audit prompt](../assets/prompts/fidelity-audit.txt); it must not see the editor's reasons. Save its JSON unchanged in the shape of [the audit template](../assets/notes/fidelity-audit.json). The helper records a repair with wording only when the audit verdict is `preserved` and none of the nine properties (claim strength, quantifiers, assumptions, population, measured outcome, time horizon, numerical values, uncertainty, causal versus associative wording) is `changed`; otherwise revise the wording and audit again, or set `proposed_wording` to null and ask the author. Keep a rejected audit; do not edit it. On Claude Code, `python3 ${CLAUDE_SKILL_DIR}/scripts/dispatch_reader.py audit --events run/events --input run/C04.input.json --out run/C04.audit.json` sends the prompt and the input to a tool-less `claude -p` call, checks the returned shape, and writes the audit with `auditor` filled in.
 
-**Advisory feature comparison.** When spaCy is installed, `<nlp-env>/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json` (or `--repairs run/repairs.json --checks run/checks.json` for every repair with wording) counts the eight parse-based difficulty features in the original anchors and the proposed wording and flags any feature the proposal has more of. A flag is a reason to look at the wording again (a new noun stack, an object relative, a noun used as a verb); it is not a gate, it is not recorded in the journal, and it does not change the audit requirement above.
+**Advisory feature comparison.** When spaCy is installed, `<nlp-env>/bin/python ${CLAUDE_SKILL_DIR}/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json` (or `--repairs run/repairs.json --checks run/checks.json` for every repair with wording) counts the eight parse-based difficulty features in the original anchors and the proposed wording and flags any feature the proposal has more of. A flag is a reason to look at the wording again (a new noun stack, an object relative, a noun used as a verb); it is not a gate, it is not recorded in the journal, and it does not change the audit requirement above.
 
 For a structure plan, record exact moves and resulting dependencies. For requested revision, preserve the source, re-index the proposed version, and perform the relevant rechecks described in workflow.md; keep those results with the repair evidence. Do not claim the revised document was independently reread if it was only compared by the original editor.
 
 Save and inspect the proposed changes and their meaning checks, then run:
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage repairs --notes run/repairs.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py record --journal run/journal --index run/index.json --stage repairs --notes run/repairs.json
 ```
 
 ## 7. Check readiness and produce the report
@@ -149,13 +149,13 @@ python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index
 Before drafting the final report, run:
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py ready --journal run/journal --index run/index.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py ready --journal run/journal --index run/index.json
 ```
 
 Resolve a failed readiness check before representing the review as complete. The check cannot approve the substantive quality of the notes; inspect that separately. Retain the receipt. Then compile the structured review from the recorded decisions and repairs, using the existing output contract and adding `candidate_id` and `decision_status` to every final issue. Carry the recorded category, diagnosis, severity, confidence, action, scientific-fidelity statement, and proposed wording into their corresponding fields. Preserve author questions as questions. Use only the candidate anchor or evidence already recorded for that candidate or its decision in final evidence. Accepted and author-question candidates must all be represented in the complete structured findings; prioritize the main report without silently losing the other retained items.
 
 ```bash
-python3 <skill-dir>/scripts/review_steps.py check-final --journal run/journal --index run/index.json --review run/review.json
+python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py check-final --journal run/journal --index run/index.json --review run/review.json
 ```
 
 Use the completed findings and notes to write the user-facing report. Explain the most consequential changes in ordinary language. Keep implementation fields and receipts in supporting records; provide an accessible account of passage coverage, candidate decisions, and meaning checks. Report useful retained text as well as corrections. A rejected candidate may explain why something should stay; it must not reappear as an accepted criticism.

@@ -9,7 +9,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -281,6 +283,34 @@ class ServerReadyTests(unittest.TestCase):
         self.assertEqual(ex.status_summary("plain text\n"), "plain text")
 
 
+FAKE_PDFTOTEXT = """#!/bin/sh
+# prints two pages separated by a form feed, like poppler's pdftotext
+printf 'Title Line\\n\\nFirst paragraph line one\\ncontinues on line two.\\n\\n\\n\\n\\f'
+printf 'Second page text with x2 and H2O flattened.\\n\\f'
+"""
+
+
+class FallbackMarkdownTests(unittest.TestCase):
+    def test_low_fidelity_marker_is_removed_from_the_edition_and_kept_in_the_notes(self):
+        markdown = ex.fallback_markdown(["Alpha para.\n\n\n\nBeta line one\nline two.", "Gamma."], "LOW-FIDELITY EXTRACTION with pdftotext; MinerU was not used (test).")
+        self.assertTrue(markdown.startswith("<!-- extraction: LOW-FIDELITY EXTRACTION with pdftotext; MinerU was not used (test). -->\n\n<!-- page 1 of 2 -->"))
+        self.assertNotIn("\n\n\n", markdown)
+        result = ex.postprocess(markdown, None, "paper.md")
+        self.assertEqual(result["fidelity"], "low")
+        self.assertNotIn("<!--", result["markdown"])
+        self.assertEqual(result["markdown"], "Alpha para.\n\nBeta line one line two.\n\nGamma.\n")
+        self.assertIn("text-only fallback extraction", result["notes"].splitlines()[0])
+        self.assertIn("LOW-FIDELITY EXTRACTION with pdftotext; MinerU was not used (test).", result["notes"])
+        self.assertEqual(result["sidecar"]["page_source"], "markers")
+        self.assertEqual([p["page"] for p in result["sidecar"]["paragraphs"]], [1, 1, 2])
+
+    def test_mineru_markdown_is_reported_as_standard_fidelity(self):
+        result = ex.postprocess(MINERU_MD, None, "fixture.md")
+        self.assertEqual(result["fidelity"], "standard")
+        self.assertIn("MinerU Markdown", result["notes"].splitlines()[0])
+        self.assertNotIn("LOW-FIDELITY", result["notes"])
+
+
 class ExtractCommandTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -303,13 +333,115 @@ class ExtractCommandTests(unittest.TestCase):
             code = ex.main(argv)
         return code, out.getvalue(), err.getvalue()
 
+    def fake_pdftotext(self):
+        script = self.root / "pdftotext"
+        script.write_text(FAKE_PDFTOTEXT)
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        return str(script)
+
     def test_not_ready_server_exits_2_with_start_commands(self):
         mineru = self.fake(json.dumps(STATUS_STARTING))
         code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", mineru])
         self.assertEqual(code, 2)
         for command in ex.MINERU_START_COMMANDS:
             self.assertIn(command, err)
+        self.assertIn("--fallback pdftotext", err)
         self.assertFalse((self.root / "out" / "extract.json").exists())
+        self.assertFalse((self.root / "out").exists())
+
+    def test_missing_executable_exits_2_without_fallback(self):
+        code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", "/nonexistent/mineru"])
+        self.assertEqual(code, 2)
+        self.assertIn("uv tool install", err)
+        self.assertIn("--fallback", err)
+        self.assertFalse((self.root / "out").exists())
+
+    def test_fallback_pdftotext_when_server_is_not_ready(self):
+        mineru = self.fake(json.dumps(STATUS_STARTING))
+        code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", mineru, "--fallback", "pdftotext", "--pdftotext", self.fake_pdftotext()])
+        self.assertEqual(code, 0, err)
+        response = json.loads(out)
+        self.assertEqual((response["extractor"], response["fidelity"]), ("pdftotext", "low"))
+        self.assertIn("LOW-FIDELITY", response["warning"])
+        record = json.loads((self.root / "out" / "extract.json").read_text())
+        self.assertEqual(record["fidelity"], "low")
+        self.assertEqual(record["extractor"], "pdftotext")
+        self.assertEqual(record["mineru_unavailable"], "MinerU parse server is not ready")
+        self.assertIn("formulas, tables", record["fidelity_note"])
+        self.assertEqual(record["pages"], 2)
+        self.assertIsNone(record["tier"])
+        self.assertEqual(record["command"][1:], ["-enc", "UTF-8", str(self.pdf), "-"])
+        markdown = (self.root / "out" / "paper.md").read_text()
+        self.assertTrue(markdown.startswith("<!-- extraction: LOW-FIDELITY EXTRACTION with pdftotext; MinerU was not used (MinerU parse server is not ready). Two-column"))
+        self.assertTrue(markdown.split("\n", 1)[0].endswith("-->"))
+        self.assertIn("<!-- page 1 of 2 -->", markdown)
+        self.assertIn("<!-- page 2 of 2 -->\n\nSecond page text", markdown)
+        clean = self.root / "clean.md"
+        code, out, err = self.run_main(["postprocess", "--input", str(self.root / "out" / "paper.md"), "--out", str(clean)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["fidelity"], "low")
+        self.assertEqual(clean.read_text(), "Title Line\n\nFirst paragraph line one continues on line two.\n\nSecond page text with x2 and H2O flattened.\n")
+        notes = (self.root / "clean.md.extraction-notes.txt").read_text()
+        self.assertIn("LOW-FIDELITY EXTRACTION with pdftotext", notes)
+        self.assertEqual(json.loads((self.root / "clean.md.pages.json").read_text())["page_source"], "markers")
+
+    def test_fallback_pdftotext_when_executable_is_missing(self):
+        code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", "/nonexistent/mineru", "--fallback", "pdftotext", "--pdftotext", self.fake_pdftotext()])
+        self.assertEqual(code, 0, err)
+        record = json.loads((self.root / "out" / "extract.json").read_text())
+        self.assertTrue(record["mineru_unavailable"].startswith("MinerU executable not found"))
+        self.assertEqual(record["fidelity"], "low")
+
+    def test_fallback_pdfplumber_uses_the_module_when_present(self):
+        class FakePage:
+            def __init__(self, text):
+                self.text = text
+
+            def extract_text(self):
+                return self.text
+
+        class FakeDocument:
+            pages = [FakePage("Page one text."), FakePage(None), FakePage("Page three text.")]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        fake = types.ModuleType("pdfplumber")
+        opened = []
+
+        def fake_open(path):
+            opened.append(path)
+            return FakeDocument()
+
+        fake.open = fake_open
+        with unittest.mock.patch.dict(sys.modules, {"pdfplumber": fake}):
+            code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", "/nonexistent/mineru", "--fallback", "pdfplumber"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(opened, [str(self.pdf)])
+        record = json.loads((self.root / "out" / "extract.json").read_text())
+        self.assertEqual((record["extractor"], record["fidelity"], record["pages"]), ("pdfplumber", "low", 3))
+        markdown = (self.root / "out" / "paper.md").read_text()
+        self.assertIn("<!-- page 2 of 3 -->\n\n<!-- page 3 of 3 -->\n\nPage three text.", markdown)
+
+    def test_fallback_is_ignored_when_mineru_is_ready(self):
+        mineru = self.fake(json.dumps(STATUS_READY))
+        code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", mineru, "--fallback", "pdftotext", "--pdftotext", "/nonexistent/pdftotext"])
+        self.assertEqual(code, 0, err)
+        record = json.loads((self.root / "out" / "extract.json").read_text())
+        self.assertEqual((record["extractor"], record["fidelity"], record["tier"]), ("mineru", "standard", "standard"))
+        self.assertEqual(json.loads(out)["fidelity"], "standard")
+
+    def test_fallback_with_no_text_refuses_to_write_an_edition(self):
+        script = self.root / "pdftotext"
+        script.write_text("#!/bin/sh\nprintf '\\n\\f\\n\\f'\n")
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", "/nonexistent/mineru", "--fallback", "pdftotext", "--pdftotext", str(script)])
+        self.assertEqual(code, 2)
+        self.assertIn("no OCR", err)
+        self.assertFalse((self.root / "out" / "paper.md").exists())
 
     def test_remote_is_refused_before_anything_runs(self):
         code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", "/nonexistent/mineru", "--remote"])

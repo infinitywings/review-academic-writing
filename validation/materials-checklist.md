@@ -67,7 +67,7 @@
 
 | 字段 | 来源 |
 | --- | --- |
-| 技能版本 | `review-academic-writing/VERSION`、`SHA256SUMS`、`CHANGELOG.md` |
+| 技能版本 | `skills/review-academic-writing/VERSION`、`SHA256SUMS`、`CHANGELOG.md` |
 | 运行格式版本 | `masked_reader.py` 的 run-format（当前 4）；`review_steps.py` 的 journal schema（当前 2） |
 | 控制脚本 | 验证运行自用的调用脚本（试跑的 `reader.py`、`extract.py` 原型）的文件哈希 |
 | 稿件 | 每个版本的 `index.json`、`snapshot_id`、原始 PDF 哈希、抽取脚本哈希 |
