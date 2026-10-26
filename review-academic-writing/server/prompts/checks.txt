@@ -38,6 +38,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - checkpoint_plan: at most max_prefix_checkpoints entries in total across all batches (the input says how many remain). Each entry's mode is "bounded-request": a stateless reader request that sees only the manuscript text up to and including the anchor quote. Put the anchor at the end of the sentence where a first critical use, dense transition, or central claim occurs, before any later explanation. Record in reason that the selection used the full text. An empty plan is valid.
 - branch_question: at most one across all batches, or null. It is one neutral question for a fresh reader who has read only the first windows of the manuscript (the input names them), asked after the display of after_block_id; it must not reveal later text or expected problems.
 - Candidate ids and concept ids need only be unique within this batch.
+- Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===

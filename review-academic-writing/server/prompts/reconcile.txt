@@ -26,6 +26,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - Branches: one entry for every branch id listed in the input (R01, ...).
 - observations: one entry per useful reader observation, source_id naming a checkpoint or branch id above, classification from the table, editor_check with exact evidence, candidate_id naming a checks candidate or a candidate added here, else null. Keep the reader's original question.
 - candidates: new candidates only, with ids that continue the checks numbering given in the input (next_candidate_id).
+- Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===

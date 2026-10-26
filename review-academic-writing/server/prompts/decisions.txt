@@ -24,6 +24,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - Exactly one decision per candidate id in the input, no more and no fewer.
 - status is accepted, rejected, merged, or needs_author. accepted and needs_author require category, diagnosis, severity, and confidence; merged requires merged_into naming an accepted or needs_author candidate directly.
 - category: late_prerequisite, unavailable_prerequisite, ambiguous_reference, scattered_information, retrieval_burden, missing_relation, paragraph_function, terminology_scope_drift, unsupported_claim, unnecessary_term, word_choice, sentence_structure, other. severity: critical, major, minor, optional. confidence: high, medium, low.
+- Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===

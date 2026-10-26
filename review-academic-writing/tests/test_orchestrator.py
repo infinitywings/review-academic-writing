@@ -518,6 +518,15 @@ class OrchestratorTests(unittest.TestCase):
         positions = [example.index(f'"{key}":') for key in ("summary", "checkpoint_plan", "candidates", "branch_question", "concepts", "passages")]
         self.assertEqual(positions, sorted(positions))
 
+    def test_every_template_that_asks_for_quotes_says_to_keep_typographic_quotation_marks(self):
+        # Writing a straight " for a curly one inside a JSON string ended the string early and broke the response apart
+        # (3 of 4 first checks answers flawed); with this rule 3 of 4 came back clean.
+        rule = "keeping typographic quotation marks such as \u201c \u201d \u2018 \u2019 exactly as they appear"
+        steps = sorted(p.stem for p in (PACKAGE / "server" / "prompts").glob("*.txt") if '"quote"' in p.read_text(encoding="utf-8"))
+        self.assertEqual(steps, ["checks", "decisions", "reading", "reconcile", "repairs"])
+        for step in steps:
+            self.assertIn(rule, (PACKAGE / "server" / "prompts" / f"{step}.txt").read_text(encoding="utf-8"), step)
+
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")
         section = orch.section_of(staged, "## 2. Save reading notes")

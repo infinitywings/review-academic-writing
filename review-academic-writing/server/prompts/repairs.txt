@@ -29,6 +29,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - affected_block_ids is a nonempty list of distinct block ids.
 - When the input contains audit_feedback, an earlier wording for each listed candidate failed the independent audit; the feedback quotes the audited wording, the verdict, the properties found changed, and the auditor's notes. Revise the wording so that those properties stay the same, or set proposed_wording to null and put the open question to the author.
 - Do not introduce a new label, acronym, or compound noun; say in new_terms_check what you checked.
+- Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===
