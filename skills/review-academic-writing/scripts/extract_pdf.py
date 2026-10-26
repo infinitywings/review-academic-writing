@@ -245,6 +245,30 @@ def drop_repeated_headers(segments: list[Segment]) -> list[tuple[Segment, str]]:
     return dropped
 
 
+GUTTER_MIN_NUMBERS = 5
+
+
+def drop_line_number_gutters(segments: list[Segment]) -> list[tuple[Segment, str]]:
+    """Remove lines that are only a run of consecutive line numbers.
+
+    Submission templates (ACL, NeurIPS) print a line-number gutter down the margin;
+    layout parsers capture it as a paragraph of 3- or 4-digit integers rising by one.
+    Such a line is dropped when it holds at least GUTTER_MIN_NUMBERS integers and every
+    integer is the previous one plus one. The caller removes the returned segments.
+    """
+    dropped: list[tuple[Segment, str]] = []
+    for segment in segments:
+        if segment.kind not in ("paragraph", "heading", "list"):
+            continue
+        tokens = segment.text().split()
+        if len(tokens) < GUTTER_MIN_NUMBERS or not all(re.fullmatch(r"\d{3,4}", t) for t in tokens):
+            continue
+        numbers = [int(t) for t in tokens]
+        if all(b == a + 1 for a, b in zip(numbers, numbers[1:])):
+            dropped.append((segment, f"line-number gutter {numbers[0]}-{numbers[-1]}"))
+    return dropped
+
+
 # ---------------------------------------------------------------- layout page lookup
 
 
@@ -354,6 +378,8 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
             unmatched = assign_pages_from_layout(segments, pages)
             page_source = "layout"
     dropped = drop_repeated_headers(segments)
+    gutters = drop_line_number_gutters(segments)
+    dropped = dropped + [g for g in gutters if id(g[0]) not in {id(d[0]) for d in dropped}]
     dropped_ids = {id(segment) for segment, _ in dropped}
     kept = [segment for segment in segments if id(segment) not in dropped_ids]
     joined = sum(1 for s in kept if s.kind == "paragraph" and len(s.lines) > 1)
@@ -385,6 +411,8 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
         notes.extend(f"  - page {s.page}: {s.text()[:80]!r} ({reason})" for s, reason in dropped)
     else:
         notes.append("No repeated page header or footer lines were found" + ("." if page_source != "none" else "; header removal needs page numbers and was skipped."))
+    if gutters:
+        notes.append(f"Dropped {len(gutters)} line-number gutter line(s) (submission line numbers captured as text): " + "; ".join(reason for _, reason in gutters[:12]) + ("; ..." if len(gutters) > 12 else "") + ".")
     notes.append(f"Joined {joined} multi-line paragraph(s) into single lines; words were not changed.")
     if bold_fixed:
         notes.append(f"Repaired bold markers in {len(bold_fixed)} paragraph(s) (ordinals {', '.join(str(s.ordinal) for s in bold_fixed)}); emphasis boundaries changed, words did not. Uncertain: whether every merged run was meant to be bold.")

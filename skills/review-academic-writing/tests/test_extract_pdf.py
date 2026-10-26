@@ -258,6 +258,16 @@ STATUS_STARTING = {
 }
 
 
+class GutterTests(unittest.TestCase):
+    def test_line_number_gutters_are_dropped_and_noted(self):
+        md = "<!-- page 1 of 2 -->\n\n001 002 003 004 005 006 007\n\n# Title\n\nA real paragraph with 2024 and 1999 in it.\n\n<!-- page 2 of 2 -->\n\n043 044 045 046 047 048 049 050\n\n12 13 14\n\n100 102 104 106 108\n\nAnother paragraph.\n"
+        result = ex.postprocess(md, None, "m.md")
+        texts = [line for line in result["markdown"].split("\n") if line.strip()]
+        self.assertEqual(texts, ["# Title", "A real paragraph with 2024 and 1999 in it.", "12 13 14", "100 102 104 106 108", "Another paragraph."])
+        self.assertIn("Dropped 2 line-number gutter line(s)", result["notes"])
+        self.assertIn("line-number gutter 43-50", result["notes"])
+
+
 class ServerReadyTests(unittest.TestCase):
     def test_json_status_is_authoritative_and_ignores_old_error_counts(self):
         self.assertTrue(ex.server_ready(json.dumps(STATUS_READY), 0))
