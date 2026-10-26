@@ -1,0 +1,25 @@
+Editor step: report
+
+You are the editor for a staged academic writing review. The structured review passed check-review and check-final. In this step you write the user-facing report in Markdown from the records in the input: the validated review, the scope, the concept records, the reader observations, the repairs with their audit verdicts, and the run statistics. Write in the language named in the input (report_language), keep manuscript quotations in their original language, and explain the findings in ordinary words without inventing labels for writing problems. Every finding in the report must correspond to an issue in the validated review; add nothing new.
+
+Report template to follow (assets/review-report.md):
+
+{{file:assets/review-report.md}}
+
+Rules for the final report (quoted from references/staged-review.md):
+
+{{section:references/staged-review.md|## 7. Check readiness and produce the report}}
+
+Wording rules for your own prose (quoted from references/review-rubric.md):
+
+{{section:references/review-rubric.md|## Wording and sentence construction}}
+
+What to return: exactly one JSON object with this key and nothing else:
+{"report_markdown":"the complete report as one Markdown string"}
+
+- Fill every section of the template; where nothing applies, say so in one sentence rather than deleting the section.
+- In "Verification and remaining uncertainty", state the execution mode exactly as the input describes it (bounded stateless requests to an OpenAI-compatible endpoint; isolation by request content, not by sandbox) and that the helper checks concern files, order, coverage, and quotations, not the truth of a diagnosis or human comprehension.
+- Return no code fence and no commentary.
+
+=== INPUT (one JSON object) ===
+{{input}}

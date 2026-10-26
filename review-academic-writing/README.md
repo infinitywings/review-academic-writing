@@ -145,6 +145,34 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 - 重定向一律拒绝（3xx 算这一次调用失败，请求不会带着密钥发到别处）。`base_url` 用 `http://` 且主机不是本机回环时，密钥会明文传输：脚本在 stderr 打一行警告并写进 `provenance.json` 的 `transport_warning`，不阻止；内网之外请用 `https://`。
 - 隔离说明是 `bare chat-completions request with no tools; isolation by request content, not by sandbox`：读者和编辑可以是同一个端点，隔离靠请求内容，不靠进程或沙箱。仓库根目录的 `docs/server-deployment.md` 说明这一运行时在服务器部署里的位置。
 
+## 服务器全自动运行
+
+`server/orchestrator.py` 在一台只有 OpenAI 兼容接口的服务器上跑完整个流程：编辑角色由同一类端点的模型按 `server/prompts/` 的八个模板一步步扮演，读者和审计仍由 `dispatch_reader.py --runtime http` 派发，五个阶段的笔记全部经 `review_steps.py` 记录和校验。三个核心脚本只作为库导入，行为不变。
+
+```bash
+export LLM_API_KEY=...
+python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --out runs/2026-10-27 --config run/llm.json \
+    [--reader-config run/llm-reader.json] [--masked-windows 4] [--masked-budget 250] [--prefix-checkpoints 3] [--batch-blocks 40] \
+    [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt] [--language English]
+```
+
+`--config` 的格式与上一节相同（编辑调用用它）；`--reader-config` 给读者和审计另一个端点或模型，不给时同 `--config`。`--out` 必须是不存在的目录。执行顺序：
+
+1. `index`，写 `index.json` 和读者画像；scope 模板让模型分配每个块（纳入或给出理由省略），经 `validate_scope` 后 `start` 建日志。
+2. reading、checks 按 `--batch-blocks` 个块分批调用模板，每批只看本批全文加其余块的一行摘要（checks 还看全部段落的 paraphrase 和前几批已记录的概念、候选、计划），控制器合并数组、重编号（K01、P01、C01）后交 `record`；每批先用 `review_steps` 的校验函数预检，覆盖和锚点错误按批回传。
+3. `02-checks.receipt.json` 存在后才派发读者：按 checks 的 `checkpoint_plan` 建前缀包并跑 `prefix`（模式 `bounded-request`），把纳入块按 `--masked-budget` 词分窗、取前 `--masked-windows` 窗跑一次 `masked`（`--masked-windows 0` 关闭），checks 阶段可以给出一个 `branch_question`，遮罩跑完后在对应显示事件上跑一次 `branch`。
+4. reconcile 模板看冻结的观察（前缀观察原文、遮罩每个事件的材料与回答、分支回答），模型只填 `result`、`limitation`、分类和新候选；路径、模式、plan_id、figure_policy 由控制器绑定。decisions、repairs 同样记录。
+5. 每条带 `proposed_wording` 的修改先经 `dispatch_reader.py audit`；verdict 不是 `preserved` 或任一属性 `changed` 时，把审计意见作为 `audit_feedback` 回传 repairs 模板重写一次，再审一次（文件名加 `-2`），仍不通过就转成向作者的提问（`kind: author_question`，`proposed_wording: null`）。
+6. `ready` 后 review 模板只给出总述和问题顺序，`review.json` 的每个字段由记录拷贝，过 `check-review` 和 `check-final`；report 模板按 `assets/review-report.md` 写 `report.md`；最后写 `summary.json`（各阶段状态、每次调用的秒数与用量、读者调用按类型计数、审计结果、重试次数）。
+
+助手拒绝某一步的回答时，同一步带着助手的原话重新提问（"Correction note from the controller: … The helper rejected it: …"），最多三次，仍失败就停下：日志保持原样，`summary.json` 的 `failure` 写明阶段、最后一条错误和该查看的文件，退出码 1。reconcile、decisions、repairs 三个模板只在 checks 回执存在后运行，代码在派发读者和这三步之前都断言这个文件。
+
+目录 `--out` 下：`editor/` 每次编辑调用的 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`（label 如 `01-reading-batch01`、重试加 `-b`、`-c`、`-d`）；`readers/<P01>/`、`masked/`、`audits/` 下是 `dispatch_reader.py` 的文件集；`journal/` 是回执链；`scope.json`、`reading.json` 等是记录时的笔记副本；`log.jsonl` 按时间记录每个事件（`checks_frozen` 一定在第一个 `reader_dispatch` 之前）。密钥只从 `api_key_env` 指定的环境变量读，任何文件不含密钥。
+
+`server/prompts/` 的模板用 `{{section:references/staged-review.md|## 2. Save reading notes}}` 和 `{{file:assets/notes/reading.json}}` 在渲染时把 references 的对应小节和笔记模板原文装进去，所以模板只写该步需要的规则，规则文件改了提示自动跟上；每次调用实际发出的全文在 `editor/<label>.prompt.txt`。
+
+假端点测试（`tests/test_orchestrator.py`）只能证明流程、顺序、合并、重试和审计门槛按设计运行；真实模型的 JSON 合规、长稿件的上下文长度、以及编辑判断的质量都要在服务器上用真实端点验证（`docs/server-deployment.md` 实施顺序第 3 步）。
+
 ## 运行测试
 
 从包目录运行：
@@ -153,7 +181,7 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 134 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替。
+预期输出以 `Ran 139 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
@@ -168,5 +196,6 @@ python3 -m unittest discover -s tests
 - `references/`：分阶段记录协议、遮罩阅读协议、执行流程、审稿规则、用词规则、输出契约、试验摘要、文献依据、插件化构想。
 - `assets/`：两种读者画像、阶段笔记模板、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
 - `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
-- `tests/`：六个 unittest 文件。
+- `server/`：服务器全自动运行的编排器 `orchestrator.py`、编辑端 HTTP 客户端 `llm.py`，`prompts/` 下八个编辑步骤模板。
+- `tests/`：七个 unittest 文件。
 - `VERSION`、`CHANGELOG.md`：版本与变更。

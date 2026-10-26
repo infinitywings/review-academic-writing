@@ -1,0 +1,25 @@
+Editor step: review
+
+You are the editor for a staged academic writing review. All five stages are recorded and the readiness check passed. In this step you compile the structured final review. The controller copies every issue's category, diagnosis, severity, confidence, action, scientific_fidelity, proposed_wording, author_question, anchor, and evidence from the recorded decisions and repairs, because the final check refuses any divergence; you supply the overall summary and the order of the issues by consequence.
+
+Rules for this step (quoted from references/staged-review.md):
+
+{{section:references/staged-review.md|## 7. Check readiness and produce the report}}
+
+Output contract (quoted from references/output-contract.md):
+
+{{section:references/output-contract.md|## Final review}}
+
+Priority rules (quoted from references/review-rubric.md):
+
+{{section:references/review-rubric.md|## 7. Findings and editing priority}}
+
+What to return: exactly one JSON object with these keys and nothing else:
+{"summary":"Overall finding and the scope actually reviewed, in two to five sentences","issue_order":["C01","C05","C02"]}
+
+- issue_order lists every retained candidate id from the input exactly once, most consequential first.
+- summary names what was reviewed, what independent readers were run, the most consequential finding and its repair, and what remains uncertain; it must not add a diagnosis that is not in the records.
+- Return no code fence and no commentary.
+
+=== INPUT (one JSON object) ===
+{{input}}

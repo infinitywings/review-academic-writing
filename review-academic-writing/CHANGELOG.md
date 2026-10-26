@@ -1,5 +1,30 @@
 # 变更说明
 
+## 0.14.0（2026-10-26）
+
+新增 `server/`：在只有 OpenAI 兼容接口的服务器上全自动跑完整个审稿流程，编辑角色由模型按模板逐步扮演（`docs/server-deployment.md` 实施顺序第 2 步）。三个核心脚本和 `dispatch_reader.py` 只作为库导入，行为、命令行和文件格式都不变。
+
+### 新增
+
+- `server/orchestrator.py run --manuscript --out --config [--reader-config] [--masked-windows N] [--masked-budget N] [--prefix-checkpoints N] [--batch-blocks N] [--task] [--profile] [--masked-profile] [--extraction-notes] [--language]`。顺序：index → scope → start → reading（分批）→ checks（分批）→ 派发读者（checks 计划里的前缀检查点、首几窗的一次遮罩运行、一个分支）→ reconcile → decisions → repairs（每条替换句经独立审计，不通过回传重写一次，再不通过转为作者提问）→ ready → review.json（check-review、check-final）→ report.md → summary.json。
+- reading 和 checks 按 `--batch-blocks` 个块分批调用，每批只看本批全文和其余块的一行摘要；控制器合并数组、重编号概念（K01）、计划（P01）、候选（C01），每批先用 `review_steps` 的校验函数预检再 `record`。
+- 助手拒绝时同一步带原话重新提问，最多三次；仍失败就停下，日志保持原样，`summary.json` 的 `failure` 写阶段、错误和该查看的文件，退出码 1。reconcile、decisions、repairs 三步和读者派发之前都断言 `02-checks.receipt.json` 存在；`log.jsonl` 按时间记录 `checks_frozen`、`reader_dispatch`、`stage_recorded` 等事件。
+- `server/llm.py`：编辑端客户端，复用 `dispatch_reader.py` 的 `HttpRuntime`（同一配置文件、同样的 429/5xx 重试和拒绝重定向），只换系统提示；每次调用写 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`，密钥只从环境变量读、不进任何文件。
+- `server/prompts/`：scope、reading、checks、reconcile、decisions、repairs、review、report 八个模板，用 `{{section:文件|## 标题}}` 和 `{{file:路径}}` 在渲染时原文装入 references 的对应小节和 `assets/notes/` 的空白模板，并写明要返回的 JSON。review 模板只给总述和问题顺序，`review.json` 的字段由记录拷贝。
+- `review.json` 多带 `initial_reader_question`、`affected_locations`、`concept_ledger`（checks 的概念记录）、`execution_mode`、`coverage`；`check-review` 和 `check-final` 对这些附加字段的态度不变。
+
+### 文档
+
+README 新增"服务器全自动运行"一节（命令、顺序、重试、目录、模板机制、假端点测试的边界）；`docs/server-deployment.md` 实施顺序第 2 步标为已完成（假端点全流程测试通过，真实端点待跑）。
+
+### 测试
+
+新增 `tests/test_orchestrator.py`（5 个）：线程里的标准库 `http.server` 假端点按提示内容扮演编辑、读者和审计，在四块小稿件上跑完整个流程（两批 reading/checks、一个前缀检查点、两窗遮罩、一个分支、三次审计），断言日志文件清单、checks 回执早于任何读者文件（mtime 和 `log.jsonl` 顺序）、reading 第一次回答不是 JSON 和第二次漏一块时下一条提示带控制器更正说明和助手原话、审计两次不通过的修改转成作者提问、`summary.json` 的字面计数（13 次编辑调用、7 次读者调用、2 次重试）；另外测一步四次都失败时停在 decisions 且日志完整、模板渲染原文引用小节、输出目录已存在或密钥变量缺失时不发任何请求。共 139 个。
+
+### 兼容性
+
+运行格式、日志 schema、六个已有脚本的命令行均不变。`server/` 需要 Python 3.10 以上（与脚本相同）和 `scripts/` 在同一包目录内。
+
 ## 0.13.1（2026-10-26）
 
 http 运行时的两处传输安全收紧，其余不变。

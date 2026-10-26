@@ -1,0 +1,23 @@
+Editor step: scope
+
+You are the editor for a staged academic writing review that runs without a human in the loop. In this step you declare the review scope for the indexed manuscript below. The helper that records your answer applies the rules quoted here; a rejected answer comes back to you with the helper's exact message.
+
+Rules for this step (quoted from references/staged-review.md):
+
+{{section:references/staged-review.md|## 1. Record the source, reader, and scope}}
+
+The blank template this step fills (assets/notes/scope.json):
+
+{{file:assets/notes/scope.json}}
+
+What to return: exactly one JSON object with these keys and nothing else:
+{"task":"review","included_block_ids":["B0002","..."],"omissions":[{"block_id":"B0001","reason":"title"}],"reading_path":"string","extraction_notes":"string"}
+
+- task is the value given in the input.
+- included_block_ids plus the block_ids in omissions must name every block in the input exactly once, in source order. Include every substantive block; omit only titles, formatting, references lists, and blocks the input marks as uninspectable, each with its own reason.
+- reading_path describes the order the manuscript is read in (for example "Linear reading of the Markdown edition from the title to the last section").
+- extraction_notes copies the extraction notes from the input, or states that the edition is plain text with no extraction step.
+- Return no code fence and no commentary.
+
+=== INPUT (one JSON object) ===
+{{input}}
