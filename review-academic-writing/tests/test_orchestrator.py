@@ -510,6 +510,14 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("Attempt 1: checkpoint_plan is missing; give it as an array, [] when there are none.", second)
         self.assertNotIn("checkpoint_plan must be an array", second)
 
+    def test_checks_asks_for_the_short_fields_before_the_long_passages(self):
+        # Flash-Next followed the example's order and closed the object after passages, dropping the three fields after
+        # it in 3 of 4 replays; with them first it kept all of them in 4 of 4.
+        rendered = orch.render("checks", {"batch": 1, "batches": 2, "block_range": "B0002 to B0005", "input": {}})
+        example = rendered[rendered.index('{"summary":'):]
+        positions = [example.index(f'"{key}":') for key in ("summary", "checkpoint_plan", "candidates", "branch_question", "concepts", "passages")]
+        self.assertEqual(positions, sorted(positions))
+
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")
         section = orch.section_of(staged, "## 2. Save reading notes")

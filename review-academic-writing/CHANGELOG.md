@@ -7,9 +7,10 @@
 - 锚点规范化：回答交给 `accept` 之前，控制器遍历 JSON 里所有带字符串 `block_id` 和 `quote` 的对象。`quote` 不是该块原文的子串时，块原文和 `quote` 用同一个函数折叠（弯引号和弯撇号折成 ASCII，各种连字符（U+2010–U+2012）、en dash、em dash、减号折成 `-`，逐字符 NFKC，去掉全部空白）；折叠后恰好出现一次，就换成块原文里对应的那一段，出现零次或多次则不动，仍由助手拒绝。本来就是原文子串的引文不碰。每次替换在 `log.jsonl` 记一条 `anchor_canonicalized`（label、block_id、模型原文、替换文），`summary.json` 的 `totals.anchors_canonicalized` 计数，`editor/<label>.response.json` 仍是模型原样输出。依据：Qwen3.8-Flash-Next（vLLM，温度 0，JSON 模式）真实运行里查过的引文不合格，全是块里的弯引号被写成直引号（`56-layer “plain” networks`）或 PDF 抽取的断词空格被模型修掉（`34- layer` 写成 `34-layer`），其余字节相同。
 - 重提时补齐字段：同一步的重提回答是对象时，它缺的顶层字段从上一次回答（补齐后的版本）带过来，同名字段以新回答为准；`log.jsonl` 记 `fields_carried` 和字段名。提示词不变。依据：checks 第一次回答因一处引文被拒，第二次只回了改动的 summary、concepts、no_concepts_reason、passages，又因 `checkpoint_plan must be an array.` 被拒，如此交替直到停下。
 - 数组字段缺失时，重提消息改为“`<字段> is missing; give it as an array, [] when there are none.`”（checks 和 reconcile），类型不对仍是“must be an array”。依据：Flash-Next 在 checks 第一批两次都没写 `checkpoint_plan`、`candidates`、`branch_question`，旧消息下重提照样不写；用新消息重放同一请求 4 次，3 次补齐且内容非空（3 个检查点、2 到 5 个候选），所以不能把缺失当作空数组放行。
+- checks 模板的 JSON 示例把 `checkpoint_plan`、`candidates`、`branch_question` 挪到 `summary` 之后、`concepts` 和 `passages` 之前。依据：Flash-Next 照示例顺序输出，写完很长的 `passages` 就收尾，后面三个字段整个漏掉；同一个真实请求重放 4 次，原顺序 1 次写全，新顺序 4 次写全且内容非空。控制器按字段名取值，顺序不影响合并。
 - 新增 `server/review-paper.sh`：从 PDF 一条命令跑完整篇（启动 MinerU 本地服务、extract、postprocess、run），后台运行，每次运行一个目录 `$REVIEW_RUNS/<日期-时间>-<文件名>/`（默认 `~/review-runs`）。
 - `--batch-blocks` 默认值 40 改为 20。依据：40 块一批时 Flash-Next 的 checks 输出陷入重复直到写满上下文（118K token，每次约 12 分钟，连续三次），20 块一批时没有出现。
-- 测试加 10 个，共 150 个：规范化的单元测试 7 个（弯引号、`34- layer`、en dash 加连字 ﬁ、Unicode 连字符、原文子串不动、折叠后出现两次或零次不动、不同深度的嵌套锚点）；假端点全流程 3 个（缺数组字段时重提消息点名该字段；直引号对弯引号稿件不再重提且日志有 `anchor_canonicalized`；重提漏掉 summary 等四个字段时在该次通过且日志有 `fields_carried`）。
+- 测试加 11 个，共 151 个：规范化的单元测试 7 个（弯引号、`34- layer`、en dash 加连字 ﬁ、Unicode 连字符、原文子串不动、折叠后出现两次或零次不动、不同深度的嵌套锚点）；模板 1 个（checks 示例里短字段排在 passages 之前）；假端点全流程 3 个（缺数组字段时重提消息点名该字段；直引号对弯引号稿件不再重提且日志有 `anchor_canonicalized`；重提漏掉 summary 等四个字段时在该次通过且日志有 `fields_carried`）。
 
 ## 0.14.1（2026-10-26）
 
