@@ -457,7 +457,7 @@ class ExtractCommandTests(unittest.TestCase):
         summary = json.loads(record["server_status"])
         self.assertEqual(summary["managed_tier"], "standard")
         self.assertTrue(summary["healthy"])
-        self.assertEqual(record["command"][1:], ["parse", str(self.pdf), "--pages", "all", "--tier", "standard", "-o", str(self.root / "out" / "paper.md")])
+        self.assertEqual(record["command"][1:], ["parse", str(self.pdf), "--pages", "all", "--tier", "standard", "--wait", "3600", "-o", str(self.root / "out" / "paper.md")])
         self.assertEqual((self.root / "out" / "paper.md").read_text(), "# Parsed\n\nBody.\n")
         self.assertFalse(record["remote"])
 

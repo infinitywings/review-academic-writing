@@ -605,7 +605,7 @@ def run_extract(pdf: Path, out_dir: Path, mineru: str | None, pages: str, timeou
     target = out_dir / (pdf.stem + ".md")
     if target.exists():
         raise ExtractError(f"Output already exists: {target}; choose a new --out-dir.")
-    command = [mineru, "parse", str(pdf), "--pages", pages, "--tier", MINERU_TIER, "-o", str(target)]
+    command = [mineru, "parse", str(pdf), "--pages", pages, "--tier", MINERU_TIER, "--wait", str(int(timeout)), "-o", str(target)]
     before = {p.name for p in out_dir.iterdir()}
     run = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     produced = sorted(p.name for p in out_dir.iterdir() if p.name not in before)
