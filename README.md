@@ -49,4 +49,4 @@ Apache License 2.0，见 [LICENSE](LICENSE)。skill 调用的外部工具（Mine
 
 ## 作者
 
-Chenglong Fu（University of North Carolina at Charlotte）。开发过程中使用了 Claude Code。
+Chenglong Fu。开发过程中使用了 Claude Code。
