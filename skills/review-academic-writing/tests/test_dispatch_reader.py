@@ -338,6 +338,25 @@ class DispatchReaderTests(unittest.TestCase):
 
     # ------------------------------------------------------------ CLI
 
+    def test_claude_runtime_defaults_to_opus_5_5(self):
+        self.responses(self.audit_verdict_json())
+        code, out, err = self.main(["audit", "--events", str(self.events), "--input", str(self.audit_request()), "--out", str(self.root / "a.json")])
+        self.assertEqual(code, 0, err)
+        argv = json.loads((self.fake / "prompts" / "1.argv.json").read_text())
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5")
+        self.assertEqual(dr.CLAUDE_DEFAULT_MODEL, "claude-opus-5-5")
+        provenance = json.loads((self.events / "C04.provenance.json").read_text())
+        self.assertIn("claude-opus-5-5", provenance["command"])
+
+    def audit_request(self):
+        request = {"candidate_id": "C04", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "proposed_wording": "Counts increased.", "basis": [{"fact": "Counts rose.", "location": "B0002"}]}
+        path = self.root / "C04.input.json"
+        path.write_text(json.dumps(request))
+        return path
+
+    def audit_verdict_json(self):
+        return json.dumps({"candidate_id": "C04", "proposed_wording": "Counts increased.", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "verdict": "preserved", "checks": {k: "same" for k in dr.AUDIT_CHECKS}, "notes": "No property changed.", "auditor": {"mode": "bounded-request", "agent_id": "x"}})
+
     def test_help_runs_isolated_from_another_directory(self):
         result = subprocess.run([sys.executable, "-B", "-I", str(SCRIPTS / "dispatch_reader.py"), "--help"], capture_output=True, text=True, cwd=self.root)
         self.assertEqual(result.returncode, 0, result.stderr)

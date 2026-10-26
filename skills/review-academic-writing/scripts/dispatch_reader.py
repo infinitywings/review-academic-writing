@@ -70,6 +70,7 @@ HTTP_ATTEMPTS = 3
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 RETRY_AFTER_CAP_SECONDS = 60.0
 CLAUDE_DEFAULT_TIMEOUT = 900.0
+CLAUDE_DEFAULT_MODEL = "claude-opus-5-5"
 BUDGET_TARGET_FRACTION = 0.85
 MAX_CORRECTIONS = 2
 ATTEMPT_SUFFIXES = ("", "b", "c")
@@ -140,7 +141,7 @@ class ClaudeRuntime:
         self.claude = claude or os.environ.get("CLAUDE_BIN") or shutil.which("claude")
         if not self.claude:
             raise DispatchError("claude executable not found; pass --claude or put claude on PATH.")
-        self.model = model
+        self.model = model or CLAUDE_DEFAULT_MODEL
         self.effort = effort
         self.timeout = timeout
 
@@ -897,7 +898,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config", help=f"JSON file for --runtime http with {', '.join(HTTP_CONFIG_KEYS)}; the API key is read from the environment variable named by api_key_env.")
         command.add_argument("--claude", help="claude executable (default $CLAUDE_BIN, then PATH).")
         command.add_argument("--codex", help="codex executable (default $CODEX_BIN, then PATH).")
-        command.add_argument("--model", help="claude and codex: passed through as --model. http: overrides the config's model.")
+        command.add_argument("--model", help=f"claude: passed through as --model (default {CLAUDE_DEFAULT_MODEL}). codex: passed through as --model (default: the codex default). http: overrides the config's model.")
         command.add_argument("--effort", help="claude: passed through as --effort. codex: sets model_reasoning_effort. Not for http.")
         command.add_argument("--timeout", type=float, help="Seconds allowed per call (default 900 for claude and codex; the config's timeout_seconds, default 300, for http).")
         command.add_argument("--prompts-dir", help=f"Generic prompt files (default {PROMPTS_DIR}).")

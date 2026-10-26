@@ -1,5 +1,10 @@
 # 变更说明
 
+## 0.16.1（2026-10-26）
+
+- `dispatch_reader.py` 的 claude 运行时不给 `--model` 时默认 `claude-opus-5-5`（常量 `CLAUDE_DEFAULT_MODEL`）；`--model` 仍可覆盖。codex 和 http 运行时不变。本机实测 `claude -p --model claude-opus-5-5` 在受限模式下可用。
+- 测试加 1 个（默认模型出现在命令行和出处记录），共 149 个。
+
 ## 0.16.0（2026-10-26）
 
 打包为插件：同一个 skill 目录可以从 Claude Code、Claude Desktop 的 Code 标签和 OpenAI Codex 直接安装；MinerU 不可用时可以显式降级为纯文本抽取。脚本的命令行只增不改，文件格式不变。
