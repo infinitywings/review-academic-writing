@@ -1,4 +1,6 @@
-# 服务器部署设计（草案，2026-10-26）
+# 服务器部署设计（2026-10-26）
+
+> 分支 `server-openai-endpoint` 维护这条服务器路线（只用 OpenAI 兼容接口，不依赖 Claude Code）；main 已转向 Claude Code / Codex 订阅插件。
 
 目标：在一台有 OpenAI 兼容 LLM 接口和本地 MinerU 的服务器上，不依赖 Claude Code，跑完整个审稿流程。当前包是 Claude Code skill：编辑角色由交互式模型按 SKILL.md 执行，读者由 `claude -p` 派发。服务器版要把这两处换掉，其余（索引、日志、遮罩控制器、审计门槛、测试）原样复用。
 
@@ -38,9 +40,38 @@
 2. 编辑提示模板与编排器，先在短稿件上跑通五阶段，每阶段的助手校验必须通过。 已完成（0.14.0，2026-10-26；`server/orchestrator.py` 在假端点上跑通五阶段、审计门槛和 check-final，见包 README 的“服务器全自动运行”一节；真实端点待服务器可用后跑）。
 3. 把 10 月 20 日那篇稿件在服务器上重跑一遍，与本地结果对照，写入可用性报告。
 
-## 待回答
+第 1、2 步的真实端点部分已在 2026-10-26 完成，见下一节；第 3 步待 PI 把稿件放到服务器上。
 
-- 模型名与上下文长度；是否支持 `response_format`。
-- 端点鉴权与限流。
-- 服务器上的 Python 版本和文件系统类型。
-- 运行目录放在哪里，由谁清理。
+## 首次真实端点运行（2026-10-26，cci-siscluster3）
+
+环境（原"待回答"各项）：
+
+| 项 | 实际 |
+| --- | --- |
+| 模型与上下文 | Qwen3.8-Flash-Next（vLLM 0.31.0，AWQ INT4），上下文 131,072 token；编辑、读者、审计同一端点 |
+| `response_format` | 支持 `json_object`；思考内容在单独字段，`content` 是可解析的 JSON |
+| 鉴权与限流 | 校园网内服务，无鉴权（配置不写 `api_key_env`）；vLLM `max-num-seqs` 32 |
+| 采样 | 温度 0、JSON 模式；不设 `max_tokens`，由 vLLM 给出"上下文减输入"；`timeout_seconds` 1800 |
+| Python 与文件系统 | Python 3.11.5，ext4；包内 140 个测试通过 |
+| MinerU | 4.0.12，`mineru` 命令行设 `parse_server.local.mode self_hosted`，连本机的 `mineru-kit api-server`（与文档解析服务共用）；遥测关闭 |
+| 运行目录 | `~/review-runs/`，不进任何备份，稿件不离开服务器；由 PI 清理 |
+
+稿件：ResNet（He et al.）前 4 页，约 3,100 词，scope 纳入 54 个块。
+
+| 运行 | 设置 | 结果 |
+| --- | --- | --- |
+| 1 | 0.14.1，`--batch-blocks 40` | 停在 checks：第 1 次 quote 不是原文子串，之后 3 次输出退化成重复（`" }"` 约 1.6 万次），每次写满 11.8 万 token、约 12 分钟 |
+| 2 | 0.14.1，`--batch-blocks 20` | 没再退化（每次约 9K token），但 quote 不符与缺 `checkpoint_plan` 交替，四次用尽，停在 checks |
+| 3 | 0.14.1，`--batch-blocks 20`，稿件里的弯引号换成直引号 | 跑通：34 次调用（编辑 19、prefix 3、masked 8、audit 4），796 s，6 次重提；`report.md` 3 条意见过 `check-review` 和 `check-final` |
+
+- 运行 3 的用量：编辑调用输入最多 32,955 token、输出最多 14,237 token（含思考），全部 `finish_reason: stop`；读者和审计都在 6K 以内。
+- 重放运行 1 失控的那个 checks 请求（各 2 次，上限 32K）：温度 0 加 JSON 模式 2/2 可解析；温度 0.6 加 JSON 模式 1/2，另一次同样写满上限；
+  不开 JSON 模式 0/4 可解析。所以保留温度 0 和 JSON 模式，缩小每批块数。
+- 不符的 quote 全部是两类：弯引号被写成直引号（`“plain”` 对 `"plain"`），以及模型顺手修正抽取痕迹（`34- layer` 对 `34-layer`）；其余字节一致。
+- 纠错重提时模型只返回改过的顶层字段（checks 里漏掉 `checkpoint_plan`、`candidates`、`branch_question`），尽管提示要求完整对象。
+- masked 运行有一次在第 4 个事件被拒（`Carried note n3 must keep since=1`）后提前结束，其余阶段不受影响；尚未处理。
+
+0.14.1+server.1 针对前两类在编排器入口处理（quote 规范化后唯一定位才改写成原文；重提缺的顶层字段从上一次回答补上），
+并把 `--batch-blocks` 默认改为 20；助手的精确子串规则不变。
+
+一条命令跑完整篇：`server/review-paper.sh --config llm.json 稿件.pdf [--pages 1-10]`，后台运行，结果在 `~/review-runs/<时间>-<文件名>/`。

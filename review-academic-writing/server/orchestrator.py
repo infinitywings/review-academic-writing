@@ -151,6 +151,14 @@ def require(condition: bool, message: str) -> None:
         raise Rejected(message)
 
 
+def require_array(response: dict[str, Any], key: str) -> None:
+    # Told only "must be an array", Flash-Next left the field out again on every re-prompt; naming the omission and
+    # the empty answer got it filled in three replays of four.
+    if key not in response:
+        raise Rejected(f"{key} is missing; give it as an array, [] when there are none.")
+    require(isinstance(response[key], list), f"{key} must be an array.")
+
+
 def helper_message(exc: BaseException) -> str:
     return f"The helper rejected it: {exc}"
 
@@ -472,7 +480,7 @@ class Run:
             def accept(parsed: Any, call: llm.Call, batch: list[str] = batch, remaining: int = remaining) -> dict[str, Any]:
                 require(isinstance(parsed, dict), "The response must be one JSON object.")
                 for key in ("concepts", "passages", "checkpoint_plan", "candidates"):
-                    require(isinstance(parsed.get(key), list), f"{key} must be an array.")
+                    require_array(parsed, key)
                 require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
                 require(len(parsed["checkpoint_plan"]) <= remaining, f"checkpoint_plan may hold at most {remaining} more entries in this batch.")
                 for row in parsed["checkpoint_plan"]:
@@ -650,7 +658,7 @@ class Run:
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
             require(isinstance(parsed, dict), "The response must be one JSON object.")
             for key in ("checkpoints", "branches", "observations", "candidates"):
-                require(isinstance(parsed.get(key), list), f"{key} must be an array.")
+                require_array(parsed, key)
             require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
             returned = {}
             for row in parsed["checkpoints"]:

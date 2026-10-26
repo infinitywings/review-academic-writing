@@ -494,6 +494,22 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual([c["status"] for c in summary["editor_calls"] if c["label"].startswith("02-checks-batch01")], ["rejected", "ok"])
         self.assertEqual(summary["totals"]["retries"], 3)
 
+    def test_a_left_out_array_is_named_as_missing_in_the_re_prompt(self):
+        original = self.server.step_checks
+
+        def step_checks(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if batch == 1 and attempt == 1:
+                del value["checkpoint_plan"]
+            return value
+
+        self.server.step_checks = step_checks
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        second = (self.out / "editor" / "02-checks-batch01-b.prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("Attempt 1: checkpoint_plan is missing; give it as an array, [] when there are none.", second)
+        self.assertNotIn("checkpoint_plan must be an array", second)
+
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")
         section = orch.section_of(staged, "## 2. Save reading notes")

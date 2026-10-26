@@ -156,6 +156,8 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
     [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt] [--language English]
 ```
 
+从 PDF 开始的整篇审稿用 `server/review-paper.sh --config run/llm.json paper.pdf [--pages 1-10] [-- 上面这些 run 参数]`：先启动 MinerU 的本地服务（已在运行时什么也不做），再依次跑 `extract_pdf.py extract`、`postprocess` 和 `orchestrator.py run`。它在后台运行，SSH 断开不影响；每次运行一个目录 `$REVIEW_RUNS/<日期-时间>-<文件名>/`（默认 `~/review-runs`），里面有 `pipeline.log`、`extract/`、`manuscript.md` 和 `review/`。MinerU 可执行文件取 `$MINERU`，没有时用 PATH 上的 `mineru`。
+
 `--config` 的格式与上一节相同（编辑调用用它）；`--reader-config` 给读者和审计另一个端点或模型，不给时同 `--config`。`--out` 必须是不存在的目录。执行顺序：
 
 1. `index`，写 `index.json` 和读者画像；scope 模板让模型分配每个块（纳入或给出理由省略），经 `validate_scope` 后 `start` 建日志。
@@ -183,7 +185,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 149 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 150 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
