@@ -1,0 +1,18 @@
+{
+  "snapshot_id": "",
+  "summary": "",
+  "decisions": [
+    {
+      "candidate_id": "",
+      "status": "",
+      "verification": "",
+      "countercheck": "",
+      "evidence": [{"block_id": "", "quote": ""}],
+      "category": "",
+      "diagnosis": "",
+      "severity": "",
+      "confidence": "",
+      "merged_into": null
+    }
+  ]
+}

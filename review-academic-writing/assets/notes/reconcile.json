@@ -1,0 +1,76 @@
+{
+  "snapshot_id": "",
+  "summary": "",
+  "checkpoints": [
+    {
+      "id": "",
+      "plan_id": "",
+      "anchor": {
+        "block_id": "",
+        "quote": ""
+      },
+      "mode": "fresh-prefix",
+      "result": "",
+      "limitation": "",
+      "packet_path": "",
+      "observation_path": "",
+      "figure_policy": "text-only"
+    },
+    {
+      "id": "",
+      "plan_id": null,
+      "anchor": {
+        "block_id": "",
+        "quote": ""
+      },
+      "mode": "masked-sequential",
+      "result": "",
+      "limitation": "",
+      "run_path": "",
+      "record_sequence": 0,
+      "figure_policy": ""
+    }
+  ],
+  "no_checkpoints_reason": "",
+  "branches": [
+    {
+      "id": "",
+      "run_path": "",
+      "branch_sequence": 0,
+      "result": "",
+      "limitation": ""
+    }
+  ],
+  "observations": [
+    {
+      "id": "",
+      "source_id": "",
+      "reader_question": "",
+      "classification": "",
+      "editor_check": "",
+      "evidence": [
+        {
+          "block_id": "",
+          "quote": ""
+        }
+      ],
+      "candidate_id": null
+    }
+  ],
+  "candidates": [
+    {
+      "id": "",
+      "anchor": {
+        "block_id": "",
+        "quote": ""
+      },
+      "question": "",
+      "evidence": [
+        {
+          "block_id": "",
+          "quote": ""
+        }
+      ]
+    }
+  ]
+}

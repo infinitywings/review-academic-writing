@@ -1,0 +1,17 @@
+{
+  "snapshot_id": "",
+  "summary": "",
+  "repairs": [
+    {
+      "candidate_id": "",
+      "kind": "",
+      "action": "",
+      "proposed_wording": null,
+      "scientific_fidelity": "",
+      "new_terms_check": "",
+      "affected_block_ids": [],
+      "author_question": null,
+      "audit_path": null
+    }
+  ]
+}

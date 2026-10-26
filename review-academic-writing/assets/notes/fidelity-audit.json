@@ -1,0 +1,27 @@
+{
+  "candidate_id": "",
+  "proposed_wording": "",
+  "original": [
+    {
+      "block_id": "",
+      "quote": ""
+    }
+  ],
+  "verdict": "",
+  "checks": {
+    "claim_strength": "",
+    "quantifiers": "",
+    "assumptions": "",
+    "population": "",
+    "measured_outcome": "",
+    "time_horizon": "",
+    "numerical_values": "",
+    "uncertainty": "",
+    "causal_vs_associative": ""
+  },
+  "notes": "",
+  "auditor": {
+    "mode": "",
+    "agent_id": ""
+  }
+}

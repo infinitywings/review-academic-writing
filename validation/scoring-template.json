@@ -1,0 +1,193 @@
+{
+  "_schema": {
+    "version": "2026-10-21-v1",
+    "purpose": "一行一条：每条专家意见一行，每条模型问题一行。两类行通过 match_group 互相引用。填写规则见 scoring-guide.md。",
+    "row_fields": {
+      "row_id": "本表内唯一；建议 <manuscript_id>-<version>-<condition>-<nnn>",
+      "manuscript_id": "稿件匿名 ID",
+      "snapshot_id": "该版本 index.json 的 snapshot_id",
+      "version": "natural | intervened_move_earlier | intervened_move_later | intervened_bridge | leak_v1 | leak_v2 | leak_vplus | leak_v0",
+      "condition": "expert | A | B | C | Dfull | Dcompressed；专家意见行填 expert",
+      "figure_policy": "strict-prefix | reference-jump | not_applicable",
+      "checkpoint_id": "评估点 ID；专家意见行填最接近的评估点或 null",
+      "source": "expert_item | model_finding",
+      "expert_item_id": "专家意见编号；模型问题行若命中则填对应编号，否则 null",
+      "model_finding_id": "读者响应里的 issue id（如 R1）或遮罩笔记 id 或 reconcile 候选 id；专家意见行填 null",
+      "model_file": "该模型问题所在的响应文件相对路径；专家意见行填 null",
+      "anchor": {"block_id": "块 ID", "quote": "精确原文"},
+      "category_model": "读者类别之一：unavailable_prerequisite | ambiguous_reference | missing_relation | retrieval_burden | scope_ambiguity | other；专家意见行填 null",
+      "category_expert": "专家障碍类型：依赖不足 | 解释过晚 | 指代或对象不明 | 暂定理解被推翻 | 证据与主张缺口 | 合理预告（非障碍） | 其他；模型问题行填裁定后的类型或 null",
+      "reconcile_label": "reconcile 阶段八类之一（absent_at_critical_use | resolved_later | needed_again | lost_in_notes | interpretation_changed | inferred_connection | asset_lookup | adequate）或 null",
+      "match": "hit | miss | false_positive | not_assessed | excluded",
+      "match_group": "同一障碍的专家行与模型行共用一个组号；无匹配填 null",
+      "applies_to_reader_stratum": "该条目对哪一层读者成立：expert | neighboring | trained_unfamiliar | all | unknown",
+      "applies_to_task": "该条目影响哪项真人任务：question_and_contribution | trace_inference | evidence_scope | term_distinction | none | unknown",
+      "severity_expert": "critical | major | minor | optional | null",
+      "severity_model": "critical | major | minor | optional | null",
+      "reader_confirmed": "true | false | not_tested；真人实验中是否有读者在同一位置标记了卡住并经裁定为障碍",
+      "fragment_confusing": "true | false | undetermined；这段原文对指定读者层是否确实构成障碍（文本属性）",
+      "model_question_reasonable": "true | false | not_applicable；就可见文本而言模型提的问题是否合理（问题属性）；专家意见行填 not_applicable",
+      "adjudication": {
+        "adjudicator_1": {"id": "匿名 ID", "match": "初判", "fragment_confusing": "初判", "model_question_reasonable": "初判", "notes": "理由"},
+        "adjudicator_2": {"id": "匿名 ID", "match": "初判", "fragment_confusing": "初判", "model_question_reasonable": "初判", "notes": "理由"},
+        "agreed_initially": "true | false",
+        "resolution": "agreed | discussed_then_agreed | third_adjudicator | unresolved",
+        "resolution_notes": "分歧点与最终理由；unresolved 写明分歧并从主分析排除"
+      },
+      "repair": {
+        "repair_candidate_id": "repairs 阶段对应的 candidate_id 或 null",
+        "repair_kind": "edit | move | author_question | none",
+        "effectiveness": "resolved | partial | not_resolved | not_applicable | not_tested",
+        "effectiveness_evidence": "真人实验里原稿/改稿在该位置的卡住标记与任务得分的引用，或 '模型复查' 并注明只是模型复查"
+      },
+      "fidelity": {
+        "judgment": "preserved | narrowed_intentionally | changed | unknown | not_applicable",
+        "changed_fields": ["claim_strength | quantifiers | population | outcome | time_horizon | numbers | uncertainty | causal_vs_associative | citation_meaning | omitted_limitation 中改变的项"],
+        "auditor_id": "保真审计人匿名 ID",
+        "notes": "原文 → 改文 → 是否改变，逐项"
+      },
+      "notes": "其他"
+    },
+    "counting_rules": "precision = hit 行数 / (hit + false_positive) 的模型行数；recall = 有 hit 的专家行数 / 专家行数（排除 category_expert 为合理预告的行）。not_assessed 与 excluded 不进分母。按 version、condition、figure_policy 分表计算。"
+  },
+  "rows": [
+    {
+      "row_id": "M01-natural-expert-001",
+      "manuscript_id": "M01",
+      "snapshot_id": "<snapshot>",
+      "version": "natural",
+      "condition": "expert",
+      "figure_policy": "not_applicable",
+      "checkpoint_id": "cp-02",
+      "source": "expert_item",
+      "expert_item_id": "E01",
+      "model_finding_id": null,
+      "model_file": null,
+      "anchor": {"block_id": "B0017", "quote": "状态可验证"},
+      "category_model": null,
+      "category_expert": "依赖不足",
+      "reconcile_label": null,
+      "match": "hit",
+      "match_group": "G1",
+      "applies_to_reader_stratum": "neighboring",
+      "applies_to_task": "term_distinction",
+      "severity_expert": "major",
+      "severity_model": null,
+      "reader_confirmed": "true",
+      "fragment_confusing": "true",
+      "model_question_reasonable": "not_applicable",
+      "adjudication": {
+        "adjudicator_1": {"id": "J1", "match": "hit", "fragment_confusing": "true", "model_question_reasonable": "not_applicable", "notes": "可见文本只定义了可观测，比较处要求可验证"},
+        "adjudicator_2": {"id": "J2", "match": "hit", "fragment_confusing": "true", "model_question_reasonable": "not_applicable", "notes": "同意"},
+        "agreed_initially": "true",
+        "resolution": "agreed",
+        "resolution_notes": ""
+      },
+      "repair": {
+        "repair_candidate_id": "C07",
+        "repair_kind": "edit",
+        "effectiveness": "resolved",
+        "effectiveness_evidence": "human/M01/改稿组在 B0017 无卡住标记；term_distinction 任务得分差见 human/analysis.md"
+      },
+      "fidelity": {
+        "judgment": "preserved",
+        "changed_fields": [],
+        "auditor_id": "F1",
+        "notes": "新增一句区分二者；原稿对验证能力的限定保留"
+      },
+      "notes": ""
+    },
+    {
+      "row_id": "M01-natural-C-001",
+      "manuscript_id": "M01",
+      "snapshot_id": "<snapshot>",
+      "version": "natural",
+      "condition": "C",
+      "figure_policy": "strict-prefix",
+      "checkpoint_id": "cp-02",
+      "source": "model_finding",
+      "expert_item_id": "E01",
+      "model_finding_id": "R2",
+      "model_file": "run/M01/natural/C/cp-02.observation.json",
+      "anchor": {"block_id": "B0017", "quote": "状态可验证"},
+      "category_model": "unavailable_prerequisite",
+      "category_expert": "依赖不足",
+      "reconcile_label": "absent_at_critical_use",
+      "match": "hit",
+      "match_group": "G1",
+      "applies_to_reader_stratum": "neighboring",
+      "applies_to_task": "term_distinction",
+      "severity_expert": "major",
+      "severity_model": "major",
+      "reader_confirmed": "true",
+      "fragment_confusing": "true",
+      "model_question_reasonable": "true",
+      "adjudication": {
+        "adjudicator_1": {"id": "J1", "match": "hit", "fragment_confusing": "true", "model_question_reasonable": "true", "notes": "锚点与 E01 同句，问的是同一依赖"},
+        "adjudicator_2": {"id": "J2", "match": "hit", "fragment_confusing": "true", "model_question_reasonable": "true", "notes": "同意"},
+        "agreed_initially": "true",
+        "resolution": "agreed",
+        "resolution_notes": ""
+      },
+      "repair": {
+        "repair_candidate_id": "C07",
+        "repair_kind": "edit",
+        "effectiveness": "resolved",
+        "effectiveness_evidence": "同 E01 行"
+      },
+      "fidelity": {
+        "judgment": "preserved",
+        "changed_fields": [],
+        "auditor_id": "F1",
+        "notes": "同 E01 行"
+      },
+      "notes": ""
+    },
+    {
+      "row_id": "M01-natural-A-003",
+      "manuscript_id": "M01",
+      "snapshot_id": "<snapshot>",
+      "version": "natural",
+      "condition": "A",
+      "figure_policy": "strict-prefix",
+      "checkpoint_id": "cp-02",
+      "source": "model_finding",
+      "expert_item_id": null,
+      "model_finding_id": "R4",
+      "model_file": "run/M01/natural/A/cp-02.observation.json",
+      "anchor": {"block_id": "B0012", "quote": "我们将在第 4 节给出证明"},
+      "category_model": "missing_relation",
+      "category_expert": "合理预告（非障碍）",
+      "reconcile_label": "adequate",
+      "match": "false_positive",
+      "match_group": null,
+      "applies_to_reader_stratum": "all",
+      "applies_to_task": "none",
+      "severity_expert": null,
+      "severity_model": "minor",
+      "reader_confirmed": "false",
+      "fragment_confusing": "false",
+      "model_question_reasonable": "true",
+      "adjudication": {
+        "adjudicator_1": {"id": "J1", "match": "false_positive", "fragment_confusing": "false", "model_question_reasonable": "true", "notes": "是诚实的贡献预告，读者不需要此处就看到证明；问题本身合理但不构成障碍"},
+        "adjudicator_2": {"id": "J2", "match": "miss", "fragment_confusing": "false", "model_question_reasonable": "false", "notes": "初判认为模型要求过早的证据"},
+        "agreed_initially": "false",
+        "resolution": "discussed_then_agreed",
+        "resolution_notes": "J2 的 miss 是填错列（无专家行可 miss）；讨论后同意 false_positive；model_question_reasonable 按指南第 5 节判 true，因为可见文本确实未给出证明，问题是合理的，只是不构成障碍"
+      },
+      "repair": {
+        "repair_candidate_id": null,
+        "repair_kind": "none",
+        "effectiveness": "not_applicable",
+        "effectiveness_evidence": ""
+      },
+      "fidelity": {
+        "judgment": "not_applicable",
+        "changed_fields": [],
+        "auditor_id": null,
+        "notes": ""
+      },
+      "notes": "decisions 阶段状态 rejected"
+    }
+  ]
+}

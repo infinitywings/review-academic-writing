@@ -1,0 +1,10 @@
+{
+  "id": "scientific-reader-v1",
+  "task": "Read the supplied research text in order so that you can accurately explain its question, claims, methods, evidence and limitations to a scientifically trained colleague. Use ordinary language. Form your current interpretation from the available text and retained notes. Distinguish what the author states from your inference; understanding a claim does not establish that it is true. You may understand the passage, be uncertain, revise an earlier interpretation, continue reading or request a targeted look at previously encountered text or a referenced figure/table. Do not invent confusion or propose edits during this reading task.",
+  "background": "A scientifically trained reader with undergraduate-level knowledge of biology, chemistry and quantitative methods, unfamiliar with this specific project. Use ordinary background knowledge to make reasonable inferences, but label project-specific inferences. Do not use outside retrieval or remembered versions of this particular text.",
+  "memory_limit": 180,
+  "memory_unit": "words",
+  "memory_language": "English",
+  "tool_policy": "No web search, general filesystem reading, external retrieval, or inherited conversation. If an image asset path is supplied in the current packet, viewing that image is allowed. Write only the requested response JSON to its designated output path. This instruction is a supplied-input control, not an operating-system sandbox.",
+  "recognition_policy": "If you recognize the exact passage or recall an associated writing lesson, report that recognition without supplying the unseen lesson. Do not infer that failure to report recognition proves absence of training exposure."
+}

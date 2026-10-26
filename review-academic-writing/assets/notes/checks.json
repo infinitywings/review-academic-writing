@@ -1,0 +1,64 @@
+{
+  "snapshot_id": "",
+  "summary": "",
+  "concepts": [
+    {
+      "concept_id": "",
+      "term": "",
+      "first_mention": {
+        "block_id": "",
+        "quote": ""
+      },
+      "earliest_usable_explanation": {
+        "block_id": "",
+        "quote": ""
+      },
+      "first_critical_use": {
+        "block_id": "",
+        "quote": ""
+      },
+      "assessment": ""
+    }
+  ],
+  "no_concepts_reason": "",
+  "passages": [
+    {
+      "block_id": "",
+      "structure_check": "",
+      "wording_check": "",
+      "evidence": [
+        {
+          "block_id": "",
+          "quote": ""
+        }
+      ]
+    }
+  ],
+  "checkpoint_plan": [
+    {
+      "id": "",
+      "anchor": {
+        "block_id": "",
+        "quote": ""
+      },
+      "mode": "",
+      "reason": ""
+    }
+  ],
+  "candidates": [
+    {
+      "id": "",
+      "anchor": {
+        "block_id": "",
+        "quote": ""
+      },
+      "question": "",
+      "evidence": [
+        {
+          "block_id": "",
+          "quote": ""
+        }
+      ]
+    }
+  ]
+}

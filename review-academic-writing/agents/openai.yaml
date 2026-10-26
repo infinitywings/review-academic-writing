@@ -1,0 +1,16 @@
+# This manifest is read by OpenAI Codex and ChatGPT skill hosts. Claude Code reads only SKILL.md and ignores this file.
+interface:
+  display_name: Academic Writing Review
+  short_description: Review argument flow, concept order, and plain academic prose
+  default_prompt: Use $review-academic-writing to review this manuscript for concept
+    order, argument flow, and clear wording, then suggest precise edits without unnecessary
+    new terminology.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

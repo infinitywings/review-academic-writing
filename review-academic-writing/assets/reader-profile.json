@@ -1,0 +1,14 @@
+{
+  "audience": "A researcher trained in the field but unfamiliar with this project",
+  "assumed_knowledge": [
+    "Common research methods and terminology in the manuscript's field",
+    "Ordinary academic argument conventions"
+  ],
+  "not_assumed": [
+    "Author-defined concepts not established in the visible text",
+    "Project-internal abbreviations, mechanisms, or equivalence relations"
+  ],
+  "reading_goal": "Understand the research question, central claims, necessary assumptions, and argument as introduced",
+  "profile_basis": "Provisional general reader assumption; replace with user-specified background when available",
+  "response_language": "Match the user's language; retain source-language quotations"
+}

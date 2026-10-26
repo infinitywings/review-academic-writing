@@ -1,0 +1,12 @@
+# Private: manuscripts, reader runs, and local artifacts never go to the public repository
+runs/
+tools/
+file.tar
+changes-*.diff
+package-check-*.md
+review-academic-writing.sha256
+*.pdf
+__pycache__/
+*.pyc
+.DS_Store
+.record.lock
