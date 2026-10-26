@@ -3,7 +3,7 @@
 ## 0.16.1（2026-10-26）
 
 - `dispatch_reader.py` 的 claude 运行时不给 `--model` 时默认 `claude-opus-5-5`（常量 `CLAUDE_DEFAULT_MODEL`）；`--model` 仍可覆盖。codex 和 http 运行时不变。本机实测 `claude -p --model claude-opus-5-5` 在受限模式下可用。
-- 测试加 1 个（默认模型出现在命令行和出处记录），共 149 个。
+- 测试加 1 个（默认模型出现在命令行和出处记录），共 157 个。
 
 ## 0.16.0（2026-10-26）
 

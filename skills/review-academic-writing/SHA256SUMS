@@ -1,5 +1,5 @@
 0.8 is preserved as ../../file.tar (a plain-text concatenation of the 0.8 files in path order); 0.16.0 is the previous entry in CHANGELOG.md.
-82003cb03c4142b7914a966a9cb6b75abb180d2d4fa5b67244e3b1f52450f806  CHANGELOG.md
+cbd4ecc6a1d21de1915905fcb61d3693e5c4fec0245d90fa37bd188f41b355d7  CHANGELOG.md
 063fa897777f636ea1706a07c141287bfba610124b19bcf8215918a78b3b150a  README.md
 7c7dfa984c57e66d7fe2c0cdfe55c7e33000ae8ed2dcf1f34190a49f9af25816  SKILL.md
 e5450fc0d13e2cf93045cd5bce133d536637a2e7f2bb202d30b39eca8036e313  VERSION
