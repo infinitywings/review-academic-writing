@@ -209,6 +209,21 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "invalid_budget"), ("E01b", "ok"), ("E02", "ok")])
         self.assertEqual(json.loads((self.events / "E01b.provenance.json").read_text())["corrects"], "E01")
 
+    def test_inexact_anchor_is_corrected_on_the_second_attempt(self):
+        bad = json.loads(masked_response([N1]))
+        bad["understood"][0]["anchor"]["quote"] = "First window text about count totals."
+        self.responses(json.dumps(bad), masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        reason = (self.events / "E01.invalid-reason.txt").read_text()
+        self.assertIn("(anchor)", reason)
+        self.assertIn("E01b", reason)
+        correction = self.prompt(2)
+        self.assertIn("Anchor note from the controller", correction)
+        self.assertIn("copied character for character", correction)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "invalid_anchor"), ("E01b", "ok"), ("E02", "ok")])
+
     def test_parse_failure_is_corrected(self):
         self.responses("```json\n{not json", masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
         code, out, err = self.masked()

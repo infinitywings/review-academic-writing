@@ -76,6 +76,7 @@ MAX_CORRECTIONS = 2
 ATTEMPT_SUFFIXES = ("", "b", "c")
 LOOKUP_STALL_LIMIT = 3
 BUDGET_MESSAGE = re.compile(r"carry_memory has (\d+) (words|characters); limit is (\d+)")
+ANCHOR_MESSAGE = re.compile(r"(?i)quote is not (?:exact text|an exact substring)")
 AUDIT_KEYS = {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}
 AUDIT_CHECKS = ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "time_horizon", "numerical_values", "uncertainty", "causal_vs_associative")
 AUDIT_VERDICTS = {"preserved", "changed", "undetermined"}
@@ -90,9 +91,9 @@ class DispatchError(ValueError):
 class Failure(Exception):
     """Why an attempt was not accepted.
 
-    kind is `budget` (the helper named the note budget; correctable), `format` (no single
-    JSON object or wrong shape; correctable), or `rejected` (any other helper rejection;
-    not re-dispatched).
+    kind is `budget` (the helper named the note budget; correctable), `anchor` (a quoted
+    anchor is not exact text of its block; correctable), `format` (no single JSON object or
+    wrong shape; correctable), or `rejected` (any other helper rejection; not re-dispatched).
     """
 
     def __init__(self, kind: str, message: str) -> None:
@@ -688,15 +689,29 @@ def format_note(errors: list[str]) -> str:
     )
 
 
+def anchor_note(errors: list[str]) -> str:
+    return (
+        "Anchor note from the controller: a previous attempt at this same input quoted text that is not an exact copy of the block it names "
+        f"({'; '.join(errors)}). Every anchor quote must be copied character for character from the named block as shown in the packet, without "
+        "paraphrase, ellipsis, or changed punctuation; quote a shorter fragment you can copy exactly, and keep every other part of the response as before."
+    )
+
+
 def classify_helper_error(exc: BaseException) -> Failure:
+    """budget and anchor failures are correctable with the same packet; anything else is rejected."""
     message = str(exc)
-    return Failure("budget" if BUDGET_MESSAGE.search(message) else "rejected", message)
+    if BUDGET_MESSAGE.search(message):
+        return Failure("budget", message)
+    if ANCHOR_MESSAGE.search(message):
+        return Failure("anchor", message)
+    return Failure("rejected", message)
 
 
 def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generic: str, payload: bytes, packet_file: Path, accept: Callable[[dict[str, Any]], Any]) -> tuple[dict[str, Any] | None, Any, Failure | None]:
     """Dispatch, validate, and correct up to MAX_CORRECTIONS times. Returns (call, accepted value, failure)."""
     budget_sizes: list[int] = []
     format_errors: list[str] = []
+    anchor_errors: list[str] = []
     note: str | None = None
     for number, suffix in enumerate(ATTEMPT_SUFFIXES):
         label = base + suffix
@@ -720,6 +735,9 @@ def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generi
             match = BUDGET_MESSAGE.search(str(failure))
             budget_sizes.append(int(match.group(1)))
             note = budget_note(budget_sizes, match.group(2), int(match.group(3)))
+        elif failure.kind == "anchor":
+            anchor_errors.append(str(failure))
+            note = anchor_note(anchor_errors)
         else:
             format_errors.append(str(failure))
             note = format_note(format_errors)
