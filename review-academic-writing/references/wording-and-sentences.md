@@ -37,6 +37,8 @@ When recommending removal of an existing term, give the natural-language replace
 - Keep a concept's established name consistent. Do not substitute synonyms merely to avoid repetition if readers could interpret them as different objects.
 - Remove empty introductions and repeated announcements when they add no context. Preserve a useful topic sentence, reminder, contrast, or qualification even if it repeats earlier information.
 
+**Parse-based nomination.** Clark, Martin and Mahowald (2026, arXiv:2610.29162, Section 3.1) measure eight features from dependency parses that are linked to human processing difficulty, most of which current models over-use relative to human text and round-trip paraphrases: object relative clauses with a relativizer, object relative clauses without one, denominal verbs, inanimate subjects of animate-only verbs, dependency length standardized by sentence length, stacked nouns (three or more in one modifier chain), bigrams unattested in a reference corpus, and n-gram perplexity. `scripts/difficulty_features.py` approximates these counts (spaCy required; the denominal-verb and animacy measures use word lists and are marked heuristic) and ranks blocks by a within-document z-score sum. Treat the ranking as a list of passages to inspect for `wording_check`, not as findings: a high count can be a necessary technical construction, and a low count does not show that a passage is clear. The same counts can be run on a proposed wording with `compare`; a flag there is advisory and does not replace the fidelity audit.
+
 ## Check the revision, including its new vocabulary
 
 Compare every proposed replacement with the source:

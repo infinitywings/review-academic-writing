@@ -30,6 +30,25 @@ tools/mineru-env/bin/mineru-kit models download --tier standard
 
 模型约 2 GB，下载到 `~/.mineru/models`。`server status` 显示解析服务就绪后（首次加载约一分钟）才能解析。未发表稿件不要用 `--remote`（官方云服务）；`extract_pdf.py` 拒绝这个选项。安装包名与附加依赖以 MinerU 官方安装说明为准，上面的版本号是本次实测的版本。
 
+## 可选的句法特征环境（spaCy）
+
+`scripts/difficulty_features.py` 用 spaCy 的依存分析数出 Clark、Martin 和 Mahowald（2026，arXiv:2610.29162，第 3.1 节）与人类加工困难相关的八个特征：带关系词的宾语关系从句、不带关系词的宾语关系从句、名词转动词、无生命主语配只接有生命主语的动词、按句长标准化的依存长度、名词堆叠（三个及以上）、参考语料中未见的词对、三元语法意外度。它只用于提名段落和核对替换句，输出里固定写明这是模型侧的候选提名启发式，不是发现。spaCy 不是标准库，和 MinerU 一样装在工作目录下的独立环境，不进 skill 目录：
+
+```bash
+uv venv tools/nlp-env
+uv pip install --python tools/nlp-env/bin/python spacy
+VIRTUAL_ENV="$PWD/tools/nlp-env" tools/nlp-env/bin/python -m spacy download en_core_web_sm
+```
+
+没有 spaCy 时脚本以退出码 2 结束并打印上面的命令。`--model` 默认 `auto`：装了 `en_core_web_trf` 就用它，否则用 `en_core_web_sm`。两个子命令：
+
+```bash
+tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py nominate --input run/index.json --reference run/reference.txt --top 10 --out run/features.json
+tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
+```
+
+`nominate` 对每个块给出各特征的计数和每千词率，在文档内按 z 分数之和排名，打印前 N 个块和驱动排名的特征，供 checks 阶段的 `wording_check` 决定先看哪里。`--reference` 给一份参考语料（纯文本或 Markdown，例如同领域已发表论文的正文），未见词对、三元语法意外度和依存长度标准化都依赖它，没有时这三项为 null，依存长度退回原始均值加句长。`compare` 把原句和替换句的各项计数并排列出，替换句任一特征更多就标记；`--repairs run/repairs.json --checks run/checks.json` 对每条带替换句的修改做同样比较，原句取候选的 anchor 引文。标记只是提醒，不是门槛，也不代替保真审计。名词转动词和主语有生性两项用内置词表，输出里标为 heuristic。
+
 ## 一次审稿的命令顺序
 
 下面的路径以 `run/` 为例。把 `<skill-dir>` 换成安装路径。每条命令的字段要求见 `references/staged-review.md` 和 `references/output-contract.md`。
@@ -53,7 +72,7 @@ tools/mineru-env/bin/mineru-kit models download --tier standard
 	python3 <skill-dir>/scripts/review_steps.py start --index run/index.json --profile run/reader-profile.json --scope run/scope.json --out run/journal
 	```
 
-3. 依次记录 reading 和 checks 两个阶段。checks 阶段只放编辑自己的检查和 checkpoint 计划：
+3. 依次记录 reading 和 checks 两个阶段。checks 阶段只放编辑自己的检查和 checkpoint 计划。装了 spaCy 时可以先运行 `difficulty_features.py nominate`（见上一节），把排名靠前的块作为 `wording_check` 的待查段落：
 
 	```bash
 	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reading --notes run/reading.json
@@ -71,10 +90,11 @@ tools/mineru-env/bin/mineru-kit models download --tier standard
 
 	`--model` 和 `--effort` 原样传给 `claude`。笔记超出预算或返回内容不是可解析 JSON 时，原文件保留，写 `<label>.invalid-reason.txt`，再用同一 packet 加一句说明（限额、计数方法、目标为限额的 85%）重发，标为 b、c；两次更正后仍不通过就停止。遮罩循环在连续三次查阅没有带来新来源时停止。不用脚本时，前缀读者用 `review_packets.py packet` 和 `check-observation`，遮罩读者用 `masked_reader.py start`、`packet`、`record`，追问用 `branch` 和 `branch-record`。
 
-5. 每条带替换句的修改先做独立保真审计，输入是 `candidate_id`、`original`、`proposed_wording`、`basis`：
+5. 每条带替换句的修改先做独立保真审计，输入是 `candidate_id`、`original`、`proposed_wording`、`basis`。装了 spaCy 时可以用同一个输入文件运行 `difficulty_features.py compare` 作为提醒性检查（见上一节）：
 
 	```bash
 	python3 <skill-dir>/scripts/dispatch_reader.py audit --events run/events --input run/C04.input.json --out run/C04.audit.json
+	tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
 	```
 
 	然后记录 reconcile、decisions、repairs 三个阶段，再检查就绪：
@@ -103,7 +123,7 @@ tools/mineru-env/bin/mineru-kit models download --tier standard
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 78 tests` 开头并以 `OK` 结束。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替。
+预期输出以 `Ran 114 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替。
 
 ## 兼容性
 
@@ -117,6 +137,6 @@ python3 -m unittest discover -s tests
 - `SKILL.md`：主流程。
 - `references/`：分阶段记录协议、遮罩阅读协议、执行流程、审稿规则、用词规则、输出契约、试验摘要、文献依据、插件化构想。
 - `assets/`：两种读者画像、阶段笔记模板、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
-- `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）和 `legacy/` 下的旧控制器。
-- `tests/`：五个 unittest 文件。
+- `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
+- `tests/`：六个 unittest 文件。
 - `VERSION`、`CHANGELOG.md`：版本与变更。

@@ -11,6 +11,7 @@
 - **先冻结再对账。** 编辑的独立检查在任何读者记录进入前先入链；读者观察在 reconcile 阶段按八类分类，再决定是否成为候选问题。
 - **保真门槛。** 每条带替换句的修改要附一份独立审计：九项属性（主张强度、量词、假设、对象、测量结果、时间范围、数值、不确定性、因果与相关）逐项比对，任何一项改变即拒绝记录。
 - **PDF 抽取与读者派发。** `scripts/extract_pdf.py` 封装本地 MinerU 并生成遮罩 case；`scripts/dispatch_reader.py` 用无工具、无状态的 `claude -p` 请求派发读者、审计者和分支，保存每次调用的原始字节与出处。
+- **句法特征提名（可选）。** `scripts/difficulty_features.py` 用 spaCy 数出八个与人类加工困难相关的句法特征，在文档内排名以提名待查段落，并把替换句与原句并排比较；输出固定标明这是候选提名启发式，不是发现。
 
 ## 它不做什么
 
@@ -31,7 +32,7 @@
 ## 快速开始
 
 1. 复制 `review-academic-writing/` 到 `~/.claude/skills/review-academic-writing/`。
-2. 从包目录运行 `python3 -m unittest discover -s tests`，应看到 78 个用例通过。
+2. 从包目录运行 `python3 -m unittest discover -s tests`，应看到 114 个用例通过（没有 spaCy 时跳过 1 个）。
 3. 按 `review-academic-writing/README.md` 建 MinerU 本地环境（可选；也可以自己提供 Markdown 稿件）。
 4. 在 Claude Code 里提供稿件并调用 skill；助手命令顺序见 `review-academic-writing/README.md`。
 

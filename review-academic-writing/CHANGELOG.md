@@ -1,5 +1,29 @@
 # 变更说明
 
+## 0.12.0（2026-10-26）
+
+新增一个可选的句法特征助手，用于提名待查段落和核对替换句。五个已有脚本的行为不变。
+
+### 新增
+
+- `scripts/difficulty_features.py`，两个子命令，依据 Clark、Martin 和 Mahowald（2026，arXiv:2610.29162）第 3.1 节列出的八个与人类加工困难相关的特征：带关系词的宾语关系从句、不带关系词的宾语关系从句、名词转动词、无生命主语配只接有生命主语的动词、按参考语料句长分箱标准化的依存长度、名词堆叠（三个及以上相邻名词）、参考语料中未见的词对、add-k 三元语法意外度（标准库实现，不用 KenLM）。
+  - `nominate`：输入 `review_packets.py index` 的 `index.json` 或 Markdown，逐块给出各特征的计数、每千词率、依存长度和意外度，在文档内按 z 分数之和排名，打印前 N 个块和驱动排名的特征，写出 JSON。只排名词数不少于 `--min-words`（默认 20）的正文块。
+  - `compare`：输入 `--original` 与 `--proposed`、审计输入文件 `--input`（`candidate_id`、`original` 锚点、`proposed_wording`），或 `--repairs` 加 `--checks`（原句取候选的 anchor 引文），并排列出原句和替换句的各项计数，替换句任一特征更多就标记。标记只是提醒，不是门槛，不代替保真审计。
+  - spaCy 延迟导入；没有时以退出码 2 结束并打印安装命令（`uv venv tools/nlp-env`、`uv pip install --python tools/nlp-env/bin/python spacy`、`VIRTUAL_ENV=... python -m spacy download en_core_web_sm`）。`--model auto` 优先 `en_core_web_trf`，否则 `en_core_web_sm`。
+  - 输出 JSON 固定带 `scope` 字段：这些是模型侧的候选提名启发式，不是发现，也不测量人类阅读困难。名词转动词（动词词元在同一文本中也作名词出现，或在内置词表中；轻动词除外）和主语有生性（内置动词表和名词表）两项标为 heuristic；依存长度标准化、未见词对和意外度依赖 `--reference`，没有时为 null。
+
+### 文档
+
+SKILL.md 第 5 步（nominate 提名待查段落，compare 作提醒性检查）、staged-review.md 第 6 节（compare 不是门槛，不入日志）、wording-and-sentences.md（八个特征作为提名启发式的一段）、evidence-and-tools.md（该文的借用与未验证之处：没有真人阅读数据，体裁是对话、代码和作文而非学术散文）、README（`tools/nlp-env` 的安装、两个命令、测试计数）。
+
+### 测试
+
+新增 `tests/test_difficulty_features.py`（36 个）：用手工构造的假 token 测试名词堆叠、关系从句、名词转动词、主语有生性、依存长度与标准化、词对表、三元语法模型、z 分数排名、比较标记、输入解析和缺少 spaCy 时的退出码；一个集成用例在 spaCy 和 `en_core_web_sm` 缺失时跳过。共 114 个。
+
+### 兼容性
+
+运行格式、日志 schema、五个已有脚本的命令行均不变。新脚本不写日志，不参与回执链。
+
 ## 0.11.0（2026-10-21）
 
 把 2026-10-20 试跑中只存在于临时目录的两段工具整理成脚本。三个已有脚本的行为不变。

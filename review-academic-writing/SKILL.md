@@ -128,6 +128,8 @@ For each unfamiliar or author-created term, check whether its name is necessary 
 
 Audit noun stacks, unnecessary nominalizations, delayed subjects or verbs, nested clauses, unclear actors, empty evaluative language, formulaic transitions, and needless synonym changes. Record the expression's actual meaning and whether its name is necessary in the checks stage, including why a questioned term should remain when appropriate. Draft sentence-level replacements in the repairs stage after the candidate has been assessed. Preserve legitimate qualifications and logical links when shortening or splitting. Avoid fixed word-count limits, blanket passive-voice bans, and vocabulary blacklists that ignore meaning.
 
+When spaCy is installed (see the package README), `scripts/difficulty_features.py nominate` ranks blocks by eight parse-based counts linked to processing difficulty (references/wording-and-sentences.md names them and their source); use the top blocks as passages to inspect for `wording_check`, never as findings. Before recording a proposed wording, `difficulty_features.py compare` reports the same counts for the original and the proposal side by side and flags any feature the proposal has more of; the flag is advisory and does not replace the fidelity audit.
+
 Before accepting a rewrite, compare its terms and abbreviations with the source. Remove newly introduced labels that merely rename an ordinary relation or process. Confirm that explaining one concept has not introduced several unexplained concepts. Keep a useful existing term consistent instead of rotating synonyms for stylistic variety.
 
 ## 6. Suggest and verify changes
