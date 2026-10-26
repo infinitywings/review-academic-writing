@@ -224,6 +224,22 @@ class DispatchReaderTests(unittest.TestCase):
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "invalid_anchor"), ("E01b", "ok"), ("E02", "ok")])
 
+    def test_resumed_run_after_a_rejection_uses_a_resume_label(self):
+        unseen = dict(N2, sources=["B2"])  # B2 is not yet seen at event 1: the helper rejects it outright
+        self.responses(masked_response([N1, unseen]), masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
+        code, out, err = self.masked()
+        self.assertNotEqual(code, 0)
+        self.assertTrue((self.events / "E01.packet.json").exists())
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        self.assertTrue((self.events / "E01r1.packet.json").exists())
+        self.assertEqual((self.events / "E01r1.packet.json").read_bytes(), (self.events / "E01.packet.json").read_bytes())
+        summaries = sorted(p.name for p in self.events.glob("summary*.json"))
+        self.assertEqual(len(summaries), 2)
+        later = [name for name in summaries if name != "summary.json"][0]
+        latest = json.loads((self.events / later).read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in latest["calls"]], [("E01r1", "ok"), ("E02", "ok")])
+
     def test_parse_failure_is_corrected(self):
         self.responses("```json\n{not json", masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
         code, out, err = self.masked()

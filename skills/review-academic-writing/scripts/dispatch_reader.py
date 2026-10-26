@@ -808,6 +808,12 @@ def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
             outcome = f"Stopped: --max-events {args.max_events} reached with {len(state['events'])} recorded event(s)."
             break
         label = f"E{seq:02d}"
+        if events.path(label, "packet.json").exists():
+            # Resuming after a stop at this sequence: the earlier attempt's files stay; this attempt gets a resume label.
+            resume = 1
+            while events.path(f"{label}r{resume}", "packet.json").exists():
+                resume += 1
+            label = f"{label}r{resume}"
         packet_file = events.path(label, "packet.json")
         issued = mr.packet(run, packet_file, state["pending_lookup"])
         packet = json.loads(packet_file.read_bytes())
