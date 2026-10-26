@@ -226,6 +226,57 @@ class FakeLLM:
                            "checks": checks, "notes": notes, "auditor": {"mode": "bounded-request", "agent_id": "filled in by the controller"}})
 
 
+class AnchorCanonicalizationTests(unittest.TestCase):
+    TEXT = ("# Residual networks\n\nWe compare 56-layer \u201cplain\u201d networks with the 34- layer\nbaseline.\n\n"
+            "Error fell from 7.1\u20137.5 percent in the \ufb01nal run.\n\nWe tested the \u201ca\u201d model and the \u201ca\u201d model again.\n")
+
+    def setUp(self):
+        self.blocks = {b["block_id"]: b for b in rp.build_index(self.TEXT)["blocks"]}
+
+    def test_straight_quotes_resolve_to_the_curly_block_text(self):
+        response = {"anchor": A("B0002", '56-layer "plain" networks')}
+        value, rewrites = orch.canonical_anchors(response, self.blocks)
+        self.assertEqual(value, {"anchor": A("B0002", "56-layer \u201cplain\u201d networks")})
+        self.assertEqual(rewrites, [{"block_id": "B0002", "quote": '56-layer "plain" networks', "replacement": "56-layer \u201cplain\u201d networks"}])
+        self.assertEqual(response, {"anchor": A("B0002", '56-layer "plain" networks')})
+
+    def test_repaired_extraction_spacing_resolves_to_the_block_text(self):
+        value, _ = orch.canonical_anchors(A("B0002", "the 34-layer baseline."), self.blocks)
+        self.assertEqual(value, A("B0002", "the 34- layer\nbaseline."))
+
+    def test_ascii_hyphen_and_letters_resolve_to_an_en_dash_and_a_ligature(self):
+        value, _ = orch.canonical_anchors(A("B0003", "7.1-7.5 percent in the final run"), self.blocks)
+        self.assertEqual(value, A("B0003", "7.1\u20137.5 percent in the \ufb01nal run"))
+
+    def test_ascii_hyphens_resolve_to_unicode_hyphens(self):
+        blocks = {b["block_id"]: b for b in rp.build_index("# T\n\nA state\u2011of\u2010the\u2012art model.\n")["blocks"]}
+        value, _ = orch.canonical_anchors(A("B0002", "state-of-the-art model"), blocks)
+        self.assertEqual(value, A("B0002", "state\u2011of\u2010the\u2012art model"))
+
+    def test_an_exact_quote_is_never_rewritten(self):
+        response = [A("B0002", " networks with"), A("B0002", '"plain" networks')]
+        value, rewrites = orch.canonical_anchors(response, self.blocks)
+        self.assertEqual(value, [A("B0002", " networks with"), A("B0002", "\u201cplain\u201d networks")])
+        self.assertIs(value[0]["quote"], response[0]["quote"])
+        self.assertEqual([r["quote"] for r in rewrites], ['"plain" networks'])
+
+    def test_a_quote_that_folds_to_two_spans_or_none_is_left_for_the_helper(self):
+        response = [A("B0004", 'the "a" model'), A("B0004", 'the "b" model'), A("B0099", 'the "a" model'), A("B0004", 'We tested the "a"')]
+        value, rewrites = orch.canonical_anchors(response, self.blocks)
+        self.assertEqual(value, [A("B0004", 'the "a" model'), A("B0004", 'the "b" model'), A("B0099", 'the "a" model'), A("B0004", "We tested the \u201ca\u201d")])
+        self.assertEqual([r["quote"] for r in rewrites], ['We tested the "a"'])
+
+    def test_anchors_at_every_depth_are_canonicalized(self):
+        response = {"summary": 'kept "as is"',
+                    "concepts": [{"term": "plain", "first_mention": A("B0002", '"plain"'), "earliest_usable_explanation": A("B0003", "7.1-7.5")}],
+                    "passages": [{"block_id": "B0002", "structure_check": "s", "evidence": [A("B0002", "34-layer baseline")]}]}
+        value, rewrites = orch.canonical_anchors(response, self.blocks)
+        self.assertEqual(value, {"summary": 'kept "as is"',
+                                 "concepts": [{"term": "plain", "first_mention": A("B0002", "\u201cplain\u201d"), "earliest_usable_explanation": A("B0003", "7.1\u20137.5")}],
+                                 "passages": [{"block_id": "B0002", "structure_check": "s", "evidence": [A("B0002", "34- layer\nbaseline")]}]})
+        self.assertEqual([r["block_id"] for r in rewrites], ["B0002", "B0003", "B0002"])
+
+
 class OrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -390,6 +441,58 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in json.loads((self.out / "journal" / "03-reconcile.notes.json").read_text())["candidates"]], ["C05"])
         self.assertEqual(sorted(p.name for p in (self.out / "audits").glob("*.audit.json")), ["C01.audit.json", "C05-2.audit.json", "C05.audit.json"])
         self.assertEqual(json.loads((self.out / "summary.json").read_text())["totals"]["retries"], 3)
+
+    def test_straight_quoted_anchor_against_curly_text_is_canonicalized_without_a_re_prompt(self):
+        self.manuscript.write_text(TEXT.replace("records agreed.", "records \u201cagreed\u201d."), encoding="utf-8")
+        original = self.server.step_checks
+
+        def step_checks(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if batch == 1:
+                value["passages"][0]["evidence"] = [A("B0002", 'two independent records "agreed"')]
+            return value
+
+        self.server.step_checks = step_checks
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        self.assertFalse((self.out / "editor" / "02-checks-batch01-b.prompt.txt").exists())
+        rewrites = [{k: v for k, v in e.items() if k != "at"} for e in self.log_events() if e["event"] == "anchor_canonicalized"]
+        self.assertEqual(rewrites, [{"event": "anchor_canonicalized", "step": "checks", "label": "02-checks-batch01", "block_id": "B0002",
+                                     "quote": 'two independent records "agreed"', "replacement": "two independent records \u201cagreed\u201d"}])
+        checks = json.loads((self.out / "journal" / "02-checks.notes.json").read_text(encoding="utf-8"))
+        self.assertEqual(checks["passages"][0]["evidence"], [A("B0002", "two independent records \u201cagreed\u201d")])
+        model = json.loads((self.out / "editor" / "02-checks-batch01.response.json").read_text(encoding="utf-8"))
+        self.assertEqual(model["passages"][0]["evidence"], [A("B0002", 'two independent records "agreed"')])
+        totals = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))["totals"]
+        self.assertEqual((totals["retries"], totals["anchors_canonicalized"]), (2, 1))
+
+    def test_a_re_prompt_that_omits_fields_is_accepted_with_the_fields_carried(self):
+        original = self.server.step_checks
+
+        def step_checks(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if batch == 1 and attempt == 1:
+                value["passages"][0]["evidence"] = [A("B0002", "records disagreed")]
+            if batch == 1 and attempt == 2:
+                value = {k: value[k] for k in ("concepts", "no_concepts_reason", "passages")}
+            return value
+
+        self.server.step_checks = step_checks
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        second = (self.out / "editor" / "02-checks-batch01-b.prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("passage.evidence[0].quote is not an exact substring of its supplied block.", second)
+        self.assertFalse((self.out / "editor" / "02-checks-batch01-c.prompt.txt").exists())
+        carried = [{k: v for k, v in e.items() if k != "at"} for e in self.log_events() if e["event"] == "fields_carried"]
+        self.assertEqual(carried, [{"event": "fields_carried", "step": "checks", "label": "02-checks-batch01-b", "fields": ["summary", "checkpoint_plan", "candidates", "branch_question"]}])
+        checks = json.loads((self.out / "journal" / "02-checks.notes.json").read_text(encoding="utf-8"))
+        self.assertEqual(checks["summary"], "first half second half")
+        self.assertEqual([c["id"] for c in checks["candidates"]], ["C01", "C02", "C03", "C04"])
+        self.assertEqual([p["id"] for p in checks["checkpoint_plan"]], ["P01"])
+        self.assertEqual(json.loads((self.out / "branch-question.json").read_text())["question"], "What does MSW stand for?")
+        summary = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual([c["status"] for c in summary["editor_calls"] if c["label"].startswith("02-checks-batch01")], ["rejected", "ok"])
+        self.assertEqual(summary["totals"]["retries"], 3)
 
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")

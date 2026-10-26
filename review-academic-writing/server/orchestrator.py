@@ -16,7 +16,10 @@ The reconcile, decisions, and repairs prompts can only run after 02-checks.recei
 exists; the code asserts the file before dispatching any reader and before each of those
 prompts. When a helper rejects a response, the same step is re-prompted with the helper's
 exact message, at most three times; then the run stops with the journal intact and
-prints what to fix. Every editor call keeps its prompt, raw response, parsed JSON, and
+prints what to fix. Before a response reaches the helper, top-level fields that a re-prompt
+left out are carried from the previous attempt, and an anchor quote that differs from its
+block only in typography or whitespace is replaced by the block's exact text; both are
+logged. Every editor call keeps its prompt, raw response, parsed JSON, and
 provenance under <out>/editor; reader and audit calls keep dispatch_reader's file sets
 under <out>/readers and <out>/audits. The API key is read from the environment variable
 the config names and is never written to any file.
@@ -34,6 +37,7 @@ import shutil
 import sys
 import time
 from typing import Any, Callable
+import unicodedata
 
 sys.dont_write_bytecode = True
 PACKAGE = Path(__file__).resolve().parent.parent
@@ -57,6 +61,8 @@ HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 READER_PREFIX_MODE = "bounded-request"
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")  # ids that may become file names
 PREVIEW_CHARS = 200
+TYPOGRAPHY = str.maketrans({"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+                            "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
 EXECUTION_MODE = "bounded stateless chat-completions requests to an OpenAI-compatible endpoint; isolation by request content, not by sandbox"
 
 
@@ -167,6 +173,54 @@ def dedupe_anchors(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def fold(text: str) -> tuple[str, list[int]]:
+    """`text` with typographic quotes and dashes folded to ASCII, NFKC per character, and whitespace dropped; origin[i] is the offset in `text` of folded character i."""
+    folded: list[str] = []
+    origin: list[int] = []
+    for offset, char in enumerate(text):
+        for piece in unicodedata.normalize("NFKC", char).translate(TYPOGRAPHY):
+            if not piece.isspace():
+                folded.append(piece)
+                origin.append(offset)
+    return "".join(folded), origin
+
+
+def block_span(text: str, quote: str) -> str | None:
+    """The text of the one span of `text` that equals `quote` after folding both; None when there is no such span or more than one."""
+    target, _ = fold(quote)
+    folded, origin = fold(text)
+    start = folded.find(target)
+    if not target or start < 0 or folded.find(target, start + 1) >= 0:
+        return None
+    return text[origin[start]:origin[start + len(target) - 1] + 1].strip()
+
+
+def canonical_anchors(value: Any, blocks: dict[str, dict[str, Any]]) -> tuple[Any, list[dict[str, str]]]:
+    """A copy of a parsed response in which every inexact anchor quote that names one span of its block is that span's exact text, and the rewrites made.
+
+    An anchor is any object with string block_id and quote. Models write straight quotes for curly ones and repair
+    extraction spacing ("34- layer"), while the helpers demand exact substrings. A quote that is already exact, or that
+    folds to no span or to several, is left for the helper to judge.
+    """
+    rewrites: list[dict[str, str]] = []
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        copy = {key: walk(item) for key, item in node.items()}
+        block_id, quote = node.get("block_id"), node.get("quote")
+        if isinstance(block_id, str) and isinstance(quote, str) and block_id in blocks and quote not in blocks[block_id]["text"]:
+            exact = block_span(blocks[block_id]["text"], quote)
+            if exact is not None:
+                copy["quote"] = exact
+                rewrites.append({"block_id": block_id, "quote": quote, "replacement": exact})
+        return copy
+
+    return walk(value), rewrites
+
+
 class Run:
     """One orchestrated review: directories, options, log, and the editor client."""
 
@@ -191,6 +245,7 @@ class Run:
         self.reader_calls: list[dict[str, Any]] = []
         self.audit_rows: list[dict[str, Any]] = []
         self.retries = 0
+        self.anchors_canonicalized = 0
         self.index: dict[str, Any] = {}
         self.blocks: dict[str, dict[str, Any]] = {}
         self.profile: dict[str, Any] = {}
@@ -228,8 +283,28 @@ class Run:
 
     # ------------------------------------------------------------ editor calls with corrections
 
+    def effective_response(self, step: str, call: llm.Call, previous: dict[str, Any] | None) -> Any:
+        """The response the helpers judge, which also becomes call.parsed; <label>.response.json keeps the model's own.
+
+        A re-prompted model may return only the top-level fields it changed, so the others are carried from the
+        previous attempt's effective response (the newest value of each field wins). Then anchors are canonicalized.
+        """
+        response = call.parsed
+        if isinstance(response, dict) and previous is not None:
+            carried = [key for key in previous if key not in response]
+            if carried:
+                response = {**previous, **response}
+                self.log("fields_carried", step=step, label=call.label, fields=carried)
+        response, rewrites = canonical_anchors(response, self.blocks)
+        for rewrite in rewrites:
+            self.log("anchor_canonicalized", step=step, label=call.label, **rewrite)
+        self.anchors_canonicalized += len(rewrites)
+        call.parsed = response
+        return response
+
     def ask(self, step: str, label: str, values: dict[str, Any], accept: Callable[[Any, llm.Call], Any]) -> Any:
         history: list[str] = []
+        previous: dict[str, Any] | None = None
         for number, suffix in enumerate(ATTEMPT_SUFFIXES):
             prompt = render(step, values)
             if history:
@@ -238,8 +313,11 @@ class Run:
             if call.parsed is None:
                 message = f"The response was not one JSON object ({call.parse_error})."
             else:
+                response = self.effective_response(step, call, previous)
+                if isinstance(response, dict):
+                    previous = response
                 try:
-                    value = accept(call.parsed, call)
+                    value = accept(response, call)
                     call.status = "ok"
                     self.log("editor_call", step=step, label=call.label, status="ok", attempt=number + 1)
                     return value
@@ -819,7 +897,8 @@ class Run:
         editor = self.client.totals()
         readers = {"calls": len(self.reader_calls), "seconds": round(sum(r["seconds"] or 0 for r in self.reader_calls), 1), "cost_usd": round(sum(r["cost_usd"] or 0 for r in self.reader_calls), 5),
                    "by_kind": {kind: sum(1 for r in self.reader_calls if r["kind"] == kind) for kind in ("prefix", "masked", "branch", "audit")}}
-        return {"editor": editor, "readers": readers, "calls": editor["calls"] + readers["calls"], "seconds": round(time.monotonic() - self.started, 1), "retries": self.retries}
+        return {"editor": editor, "readers": readers, "calls": editor["calls"] + readers["calls"], "seconds": round(time.monotonic() - self.started, 1), "retries": self.retries,
+                "anchors_canonicalized": self.anchors_canonicalized}
 
     def write_summary(self, ok: bool, outcome: str, failure: dict[str, Any] | None = None) -> dict[str, Any]:
         editor_config, reader_config = llm.load_config(self.config), llm.load_config(self.reader_config)
@@ -877,7 +956,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--masked-budget", type=int, default=250, help="Approximate words per masked window (default 250).")
     run.add_argument("--max-events", type=int, default=40, help="Maximum masked reader calls, corrections included (default 40).")
     run.add_argument("--prefix-checkpoints", type=int, default=3, help="Maximum prefix checkpoints the checks plan may request (default 3).")
-    run.add_argument("--batch-blocks", type=int, default=40, help="Blocks per reading and checks prompt (default 40).")
+    run.add_argument("--batch-blocks", type=int, default=20, help="Blocks per reading and checks prompt (default 20).")
     return parser
 
 

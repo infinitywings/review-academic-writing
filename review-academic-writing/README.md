@@ -152,7 +152,7 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 ```bash
 export LLM_API_KEY=...
 python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --out runs/2026-10-27 --config run/llm.json \
-    [--reader-config run/llm-reader.json] [--masked-windows 4] [--masked-budget 250] [--prefix-checkpoints 3] [--batch-blocks 40] \
+    [--reader-config run/llm-reader.json] [--masked-windows 4] [--masked-budget 250] [--prefix-checkpoints 3] [--batch-blocks 20] \
     [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt] [--language English]
 ```
 
@@ -163,9 +163,11 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 3. `02-checks.receipt.json` 存在后才派发读者：按 checks 的 `checkpoint_plan` 建前缀包并跑 `prefix`（模式 `bounded-request`），把纳入块按 `--masked-budget` 词分窗、取前 `--masked-windows` 窗跑一次 `masked`（`--masked-windows 0` 关闭），checks 阶段可以给出一个 `branch_question`，遮罩跑完后在对应显示事件上跑一次 `branch`。
 4. reconcile 模板看冻结的观察（前缀观察原文、遮罩每个事件的材料与回答、分支回答），模型只填 `result`、`limitation`、分类和新候选；路径、模式、plan_id、figure_policy 由控制器绑定。decisions、repairs 同样记录。
 5. 每条带 `proposed_wording` 的修改先经 `dispatch_reader.py audit`；verdict 不是 `preserved` 或任一属性 `changed` 时，把审计意见作为 `audit_feedback` 回传 repairs 模板重写一次，再审一次（文件名加 `-2`），仍不通过就转成向作者的提问（`kind: author_question`，`proposed_wording: null`）。
-6. `ready` 后 review 模板只给出总述和问题顺序，`review.json` 的每个字段由记录拷贝，过 `check-review` 和 `check-final`；report 模板按 `assets/review-report.md` 写 `report.md`；最后写 `summary.json`（各阶段状态、每次调用的秒数与用量、读者调用按类型计数、审计结果、重试次数）。
+6. `ready` 后 review 模板只给出总述和问题顺序，`review.json` 的每个字段由记录拷贝，过 `check-review` 和 `check-final`；report 模板按 `assets/review-report.md` 写 `report.md`；最后写 `summary.json`（各阶段状态、每次调用的秒数与用量、读者调用按类型计数、审计结果、重试次数、锚点规范化次数）。
 
 助手拒绝某一步的回答时，同一步带着助手的原话重新提问（"Correction note from the controller: … The helper rejected it: …"），最多三次，仍失败就停下：日志保持原样，`summary.json` 的 `failure` 写明阶段、最后一条错误和该查看的文件，退出码 1。reconcile、decisions、repairs 三个模板只在 checks 回执存在后运行，代码在派发读者和这三步之前都断言这个文件。
+
+回答交给助手之前，控制器做两处修整，校验规则不变。重提的回答缺了顶层字段时，从上一次回答带过来，同名字段以新回答为准，`log.jsonl` 记 `fields_carried`。带 `block_id` 和 `quote` 的对象里，`quote` 不是块原文子串时，两边都把弯引号、弯撇号、各种连字符（U+2010–U+2012）、en dash、em dash、减号折成 ASCII，逐字符做 NFKC 并去掉空白后再找：恰好一处就换成块原文的那一段，零处或多处就原样交给助手拒绝。每次替换记一条 `anchor_canonicalized`，`summary.json` 的 `totals.anchors_canonicalized` 计数，`editor/<label>.response.json` 仍是模型原话。`--batch-blocks` 默认 20：40 块一批时 Qwen3.8-Flash-Next 的 checks 输出曾陷入重复，直到写满上下文。
 
 目录 `--out` 下：`editor/` 每次编辑调用的 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`（label 如 `01-reading-batch01`、重试加 `-b`、`-c`、`-d`）；`readers/<P01>/`、`masked/`、`audits/` 下是 `dispatch_reader.py` 的文件集；`journal/` 是回执链；`scope.json`、`reading.json` 等是记录时的笔记副本；`log.jsonl` 按时间记录每个事件（`checks_frozen` 一定在第一个 `reader_dispatch` 之前）。密钥只从 `api_key_env` 指定的环境变量读，任何文件不含密钥。
 
@@ -181,7 +183,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 140 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 149 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
