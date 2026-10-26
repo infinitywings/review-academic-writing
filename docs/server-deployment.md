@@ -71,7 +71,24 @@
 - 纠错重提时模型只返回改过的顶层字段（checks 里漏掉 `checkpoint_plan`、`candidates`、`branch_question`），尽管提示要求完整对象。
 - masked 运行有一次在第 4 个事件被拒（`Carried note n3 must keep since=1`）后提前结束，其余阶段不受影响；尚未处理。
 
-0.14.1+server.1 针对前两类在编排器入口处理（quote 规范化后唯一定位才改写成原文；重提缺的顶层字段从上一次回答补上），
-并把 `--batch-blocks` 默认改为 20；助手的精确子串规则不变。
+0.14.1+server.1 的改动（助手的精确子串规则不变）：
+
+1. 编排器入口做 quote 规范化：不是原文子串的 quote，与块原文一起折叠（引号、连字符、破折号折成 ASCII，NFKC，去空白），
+   折叠后在块里恰好出现一次才改写成那段原文，并记 `anchor_canonicalized`；否则照旧交给助手拒绝。
+2. 重提回答缺的顶层字段从上一次回答补上，记 `fields_carried`。
+3. 数组字段缺失时的重提消息点名缺失并说明可以给 `[]`（旧消息"must be an array"下模型重提照样不写）。
+4. checks 模板的 JSON 示例把 `checkpoint_plan`、`candidates`、`branch_question` 放到长的 `passages` 前面
+   （重放 4 次：原顺序 1 次写全，新顺序 4 次写全）。
+5. 要引文的五个模板加规则：弯引号原样照抄（重放 4 次：原模板 1 次完全合格，加规则后 3 次；
+   直引号不转义会让 JSON 字符串提前结束，`passages` 碎成片段）。
+6. `--batch-blocks` 默认 20。
+
+| 运行 | 设置 | 结果 |
+| --- | --- | --- |
+| 4 | 0.14.1+server.1（`ded93b3`），原稿件（含弯引号），`server/review-paper.sh` 从 PDF 开始，全部默认 | **跑通**：25 次调用（编辑 16、prefix 3、masked 2、branch 1、audit 3），564 s，4 次重提，8 处 quote 规范化，1 次字段补齐；reading 三批全部一次通过；`report.md` 3 条意见过 `check-review` 和 `check-final` |
+
+checks 仍是最容易出错的一步：四次重提里有三次在 checks（漏 `concepts`、某个 passage 缺 `evidence`、quote 引错段），
+都在第三次尝试时通过。若以后仍频繁用到第四次，下一步是让 vLLM 按每一步的 JSON Schema 做约束解码（`response_format: json_schema`），
+从生成端排除缺字段和结构错位；这需要为各步写 schema，尚未做。
 
 一条命令跑完整篇：`server/review-paper.sh --config llm.json 稿件.pdf [--pages 1-10]`，后台运行，结果在 `~/review-runs/<时间>-<文件名>/`。
