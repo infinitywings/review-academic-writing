@@ -32,7 +32,7 @@
 ## 快速开始
 
 1. 复制 `review-academic-writing/` 到 `~/.claude/skills/review-academic-writing/`。
-2. 从包目录运行 `python3 -m unittest discover -s tests`，应看到 114 个用例通过（没有 spaCy 时跳过 1 个）。
+2. 从包目录运行 `python3 -m unittest discover -s tests`，应看到 132 个用例通过（没有 spaCy 时跳过 1 个）。
 3. 按 `review-academic-writing/README.md` 建 MinerU 本地环境（可选；也可以自己提供 Markdown 稿件）。
 4. 在 Claude Code 里提供稿件并调用 skill；助手命令顺序见 `review-academic-writing/README.md`。
 

@@ -1,4 +1,5 @@
 import contextlib
+import http.server
 import importlib.util
 import io
 import json
@@ -8,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.dont_write_bytecode = True
@@ -319,6 +321,351 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for name in ("prefix", "masked", "branch", "audit"):
             self.assertIn(name, result.stdout)
+
+    def test_config_is_rejected_for_the_claude_runtime(self):
+        config = self.root / "llm.json"
+        config.write_text("{}")
+        code, out, err = self.main(["prefix", "--events", str(self.events), "--packet", "x.json", "--config", str(config)])
+        self.assertEqual(code, 2)
+        self.assertIn("--config applies to --runtime http only.", err)
+
+
+# ---------------------------------------------------------------- http runtime
+
+
+API_KEY = "sk-test-secret-0000"
+SYSTEM_READER = "You are the reader described in the user's message. Return only the JSON the message asks for, with no code fence and no commentary."
+
+
+def completion(text, number=1, prompt_tokens=200, completion_tokens=50):
+    body = {"id": f"chatcmpl-{number:04d}", "object": "chat.completion", "created": 1700000000, "model": "fake-llm",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": prompt_tokens + completion_tokens}}
+    return 200, {}, json.dumps(body).encode("utf-8")
+
+
+class FakeChatServer:
+    """A chat-completions endpoint in a thread; answers come from a script, one entry per request."""
+
+    def __init__(self):
+        self.script = []
+        self.requests = []
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                number = len(server.requests)
+                server.requests.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": json.loads(body)})
+                status, headers, payload = server.script[number] if number < len(server.script) else completion("{}", number + 1)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        self.thread.start()
+
+    @property
+    def base_url(self):
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def prefix_fixture(root):
+    index = rp.build_index(TEXT)
+    packet = rp.build_packet(index, PROFILE, through_block="B0002")
+    packet_path = root / "P1.packet.json"
+    rp.write_json_atomic(packet_path, packet)
+    observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+    observation.update({"understanding": "Counts of agreement rose.", "issues": [{"id": "R1", "category": "unavailable_prerequisite", "anchor": {"block_id": "B0002", "quote": "counts of agreement"}, "reader_question": "What is agreement?", "consequence": "The claim is unclear.", "severity": "major", "confidence": "high"}]})
+    return packet_path, observation
+
+
+class HttpRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.server = FakeChatServer()
+        self.old_key = os.environ.get("LLM_API_KEY")
+        os.environ["LLM_API_KEY"] = API_KEY
+        self.config = self.root / "llm.json"
+        self.write_config()
+        self.events = self.root / "events"
+        self.run = self.root / "run"
+        self.case_path = self.root / "case.json"
+        self.case_path.write_text(json.dumps(CASE))
+        self.profile_path = self.root / "profile.json"
+        self.profile_path.write_text(json.dumps(MASKED_PROFILE))
+        self.packet_path, self.observation = prefix_fixture(self.root)
+
+    def tearDown(self):
+        self.server.close()
+        if self.old_key is None:
+            os.environ.pop("LLM_API_KEY", None)
+        else:
+            os.environ["LLM_API_KEY"] = self.old_key
+        self.tmp.cleanup()
+
+    def write_config(self, **changes):
+        config = {"base_url": self.server.base_url, "model": "fake-llm", "api_key_env": "LLM_API_KEY", "temperature": 0, "max_tokens": 4096, "json_mode": True, "timeout_seconds": 300, "extra_headers": {}, "retry_backoff_seconds": 0.01}
+        config.update(changes)
+        self.config.write_text(json.dumps({k: v for k, v in config.items() if v is not ...}))
+
+    def main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = dr.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def prefix(self, *extra):
+        return self.main(["prefix", "--runtime", "http", "--config", str(self.config), "--events", str(self.events), "--packet", str(self.packet_path), "--label", "P1", *extra])
+
+    def masked(self, *extra):
+        return self.main(["masked", "--runtime", "http", "--config", str(self.config), "--events", str(self.events), "--run", str(self.run), "--case", str(self.case_path), "--profile", str(self.profile_path), *extra])
+
+    def user_prompt(self, number):
+        return self.server.requests[number - 1]["body"]["messages"][1]["content"]
+
+    def provenance(self, label):
+        return json.loads((self.events / f"{label}.provenance.json").read_text())
+
+    def test_prefix_dispatch_over_http_passes_check_observation(self):
+        self.server.script = [completion(json.dumps(self.observation))]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads((self.events / "P1.check.json").read_text())["issue_count"], 1)
+        self.assertEqual(json.loads((self.events / "P1.observation.json").read_text()), self.observation)
+        request = self.server.requests[0]
+        self.assertEqual(request["path"], "/v1/chat/completions")
+        self.assertEqual(request["headers"]["authorization"], "Bearer sk-test-secret-0000")
+        self.assertEqual(request["headers"]["content-type"], "application/json")
+        body = request["body"]
+        self.assertEqual(sorted(body), ["max_tokens", "messages", "model", "response_format", "temperature"])
+        self.assertEqual((body["model"], body["temperature"], body["max_tokens"], body["response_format"]), ("fake-llm", 0, 4096, {"type": "json_object"}))
+        self.assertEqual(body["messages"][0], {"role": "system", "content": SYSTEM_READER})
+        self.assertEqual(body["messages"][1]["role"], "user")
+        self.assertTrue(body["messages"][1]["content"].startswith("Act as the target academic reader"))
+        self.assertTrue(body["messages"][1]["content"].rstrip().endswith("}"))
+        self.assertEqual(body["messages"][1]["content"], (self.events / "P1.prompt.txt").read_text())
+        for suffix in ("prompt.txt", "cli.json", "response.raw", "response.json", "provenance.json"):
+            self.assertTrue((self.events / f"P1.{suffix}").exists(), suffix)
+        cli = json.loads((self.events / "P1.cli.json").read_text())
+        self.assertEqual((cli["id"], cli["model"], cli["choices"][0]["finish_reason"]), ("chatcmpl-0001", "fake-llm", "stop"))
+        self.assertEqual((self.events / "P1.response.raw").read_text(), json.dumps(self.observation))
+        provenance = self.provenance("P1")
+        self.assertEqual(provenance["runtime"], "http")
+        self.assertEqual(provenance["base_url"], self.server.base_url)
+        self.assertEqual(provenance["url"], self.server.base_url + "/chat/completions")
+        self.assertEqual(provenance["model"], "fake-llm")
+        self.assertEqual(provenance["api_key_env"], "LLM_API_KEY")
+        self.assertEqual(provenance["request"], {"temperature": 0, "max_tokens": 4096, "response_format": {"type": "json_object"}, "timeout_seconds": 300.0})
+        self.assertEqual((provenance["http_status"], provenance["attempt_count"]), (200, 1))
+        self.assertEqual((provenance["attempts"][0]["attempt"], provenance["attempts"][0]["status"], provenance["attempts"][0]["error"]), (1, 200, None))
+        self.assertEqual((provenance["response_id"], provenance["session_id"], provenance["response_model"], provenance["finish_reason"]), ("chatcmpl-0001", "chatcmpl-0001", "fake-llm", "stop"))
+        self.assertEqual(provenance["usage"], {"prompt_tokens": 200, "completion_tokens": 50, "total_tokens": 250})
+        self.assertEqual((provenance["input_tokens"], provenance["output_tokens"], provenance["cost_usd"]), (200, 50, None))
+        self.assertEqual(provenance["isolation"], "bare chat-completions request with no tools; isolation by request content, not by sandbox")
+        self.assertIsNone(provenance["parse_error"])
+        self.assertIsNone(provenance["error"])
+        self.assertFalse(provenance["fence_stripped"])
+        self.assertEqual(provenance["packet_sha256"], mr.digest(self.packet_path.read_bytes()))
+        self.assertNotIn("command", provenance)
+        self.assertNotIn("exit_code", provenance)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"], r["session_id"], r["exit_code"]) for r in summary["calls"]], [("P1", "ok", "chatcmpl-0001", None)])
+        self.assertEqual(summary["totals"]["cost_usd"], 0)
+        self.assertIn("P1 passed check-observation with 1 issue(s).", out)
+
+    def test_masked_loop_over_http_runs_two_windows(self):
+        self.server.script = [completion(masked_response([N1]), 1), completion(masked_response([N1, N2], claim_source="B2"), 2)]
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(p.name for p in (self.run / "records").iterdir()), ["000001", "000002"])
+        self.assertEqual(json.loads((self.run / "records" / "000001" / "receipt.json").read_text())["agent_id"], "chatcmpl-0001")
+        self.assertEqual(json.loads((self.run / "records" / "000002" / "receipt.json").read_text())["agent_id"], "chatcmpl-0002")
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "ok"), ("E02", "ok")])
+        self.assertEqual(summary["totals"]["calls"], 2)
+        self.assertTrue(summary["outcome"].startswith("Run complete after 2 recorded event(s)."))
+        self.assertTrue(self.user_prompt(2).startswith("You are a fresh reader"))
+        for suffix in ("packet.json", "prompt.txt", "cli.json", "response.raw", "response.json", "provenance.json"):
+            self.assertTrue((self.events / f"E02.{suffix}").exists(), suffix)
+
+    def test_budget_violation_is_corrected_over_http(self):
+        long_gist = " ".join(["word"] * 30)
+        self.server.script = [completion(masked_response([N1], gist=long_gist), 1), completion(masked_response([N1]), 2), completion(masked_response([N1, N2], claim_source="B2"), 3)]
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        self.assertIn("carry_memory has 33 words; limit is 20", (self.events / "E01.invalid-reason.txt").read_text())
+        self.assertIn("Budget note from the controller: a previous attempt at this same packet returned a carry_memory of 33 words, above the 20-word limit", self.user_prompt(2))
+        self.assertEqual(self.server.requests[1]["body"]["messages"][0]["content"], SYSTEM_READER)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "invalid_budget"), ("E01b", "ok"), ("E02", "ok")])
+        self.assertEqual(self.provenance("E01b")["corrects"], "E01")
+
+    def test_server_error_is_retried_inside_one_call(self):
+        self.server.script = [(500, {}, b"upstream exploded"), completion(json.dumps(self.observation))]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.server.requests), 2)
+        self.assertEqual(self.server.requests[0]["body"], self.server.requests[1]["body"])
+        provenance = self.provenance("P1")
+        self.assertEqual((provenance["http_status"], provenance["attempt_count"]), (200, 2))
+        self.assertEqual([(a["attempt"], a["status"], a["error"], a["retry_after"], a["waited_seconds"]) for a in provenance["attempts"]], [(1, 500, None, None, 0.01), (2, 200, None, None, None)])
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "ok")])
+        self.assertFalse((self.events / "P1b.prompt.txt").exists())
+
+    def test_rate_limit_honors_retry_after(self):
+        self.server.script = [(429, {"Retry-After": "0"}, b'{"error": {"message": "slow down"}}'), completion(json.dumps(self.observation))]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        provenance = self.provenance("P1")
+        self.assertEqual([(a["status"], a["retry_after"], a["waited_seconds"]) for a in provenance["attempts"]], [(429, 0.0, 0.0), (200, None, None)])
+        self.assertEqual(provenance["http_status"], 200)
+
+    def test_three_failures_exhaust_retries_and_enter_the_correction_protocol(self):
+        self.server.script = [(503, {}, b"busy"), (503, {}, b"busy"), (503, {}, b"busy"), completion(json.dumps(self.observation))]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.server.requests), 4)
+        first = self.provenance("P1")
+        self.assertEqual((first["http_status"], first["attempt_count"], first["parse_error"], first["error"]), (503, 3, "HTTP 503 after 3 attempts", "HTTP 503 after 3 attempts"))
+        self.assertEqual([a["status"] for a in first["attempts"]], [503, 503, 503])
+        self.assertEqual((self.events / "P1.response.raw").read_bytes(), b"busy")
+        self.assertFalse((self.events / "P1.response.json").exists())
+        cli = json.loads((self.events / "P1.cli.json").read_text())
+        self.assertEqual((cli["error"], cli["status"], cli["body"]), ("HTTP 503 after 3 attempts", 503, "busy"))
+        self.assertIn("P1 not accepted (format): HTTP 503 after 3 attempts.", (self.events / "P1.invalid-reason.txt").read_text())
+        self.assertIn("Format note from the controller", self.user_prompt(4))
+        self.assertIn("HTTP 503 after 3 attempts", self.user_prompt(4))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_format"), ("P1b", "ok")])
+
+    def test_client_error_is_not_retried(self):
+        self.server.script = [(400, {}, b'{"error": {"message": "bad request"}}'), completion(json.dumps(self.observation))]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        first = self.provenance("P1")
+        self.assertEqual((first["http_status"], first["attempt_count"], first["parse_error"]), (400, 1, "HTTP 400"))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_format"), ("P1b", "ok")])
+
+    def test_non_json_content_is_corrected_on_the_second_attempt(self):
+        self.server.script = [completion("Sure! Here is the JSON: {", 1), completion("```json\n" + json.dumps(self.observation) + "\n```", 2)]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.events / "P1.response.raw").read_text(), "Sure! Here is the JSON: {")
+        self.assertFalse((self.events / "P1.response.json").exists())
+        self.assertTrue(self.provenance("P1")["parse_error"].startswith("JSONDecodeError"))
+        self.assertEqual(self.provenance("P1")["http_status"], 200)
+        self.assertIn("Format note from the controller", self.user_prompt(2))
+        self.assertIn("no code fence", self.user_prompt(2))
+        self.assertTrue(self.provenance("P1b")["fence_stripped"])
+        self.assertEqual(json.loads((self.events / "P1b.response.json").read_text()), self.observation)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_format"), ("P1b", "ok")])
+
+    def test_missing_api_key_env_exits_2_with_a_clear_message(self):
+        del os.environ["LLM_API_KEY"]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 2)
+        error = json.loads(err)
+        self.assertEqual(error["error"]["code"], "dispatch_error")
+        self.assertEqual(error["error"]["message"], f"Environment variable LLM_API_KEY (named by api_key_env in {self.config}) is not set; export the API key there. The key is never read from the config file or the command line.")
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(sorted(p.name for p in self.events.iterdir()), [])
+
+    def test_api_key_in_the_config_file_is_refused(self):
+        self.config.write_text(json.dumps({"base_url": self.server.base_url, "model": "fake-llm", "api_key": API_KEY}))
+        code, out, err = self.prefix()
+        self.assertEqual(code, 2)
+        self.assertIn("The config file must not hold an API key; name an environment variable in api_key_env and export the key there.", err)
+        self.assertEqual(self.server.requests, [])
+
+    def test_no_output_file_contains_the_api_key(self):
+        self.server.script = [completion(masked_response([N1]), 1), completion(masked_response([N1, N2], claim_source="B2"), 2)]
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        files = [p for p in list(self.events.rglob("*")) + list(self.run.rglob("*")) if p.is_file()]
+        self.assertEqual(len([p for p in files if p.name.endswith(".provenance.json")]), 2)
+        for path in files:
+            data = path.read_bytes()
+            self.assertNotIn(API_KEY.encode(), data, path.name)
+            self.assertNotIn(b"Authorization", data, path.name)
+        self.assertNotIn(API_KEY, out + err)
+        self.assertEqual(self.provenance("E01")["api_key_env"], "LLM_API_KEY")
+
+    def test_without_api_key_env_no_authorization_header_is_sent(self):
+        self.write_config(api_key_env=..., max_tokens=..., json_mode=False)
+        self.server.script = [completion(json.dumps(self.observation))]
+        code, out, err = self.prefix("--timeout", "5")
+        self.assertEqual(code, 0, err)
+        request = self.server.requests[0]
+        self.assertNotIn("authorization", request["headers"])
+        self.assertEqual(sorted(request["body"]), ["messages", "model", "temperature"])
+        provenance = self.provenance("P1")
+        self.assertIsNone(provenance["api_key_env"])
+        self.assertEqual(provenance["request"], {"temperature": 0, "max_tokens": None, "response_format": None, "timeout_seconds": 5.0})
+
+    def test_price_table_fills_cost_usd(self):
+        self.write_config(price_per_token={"input": 0.00001, "output": 0.00002})
+        self.server.script = [completion(json.dumps(self.observation))]
+        code, out, err = self.prefix("--model", "other-llm")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.server.requests[0]["body"]["model"], "other-llm")
+        provenance = self.provenance("P1")
+        self.assertEqual((provenance["model"], provenance["cost_usd"]), ("other-llm", 0.003))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual(summary["totals"]["cost_usd"], 0.003)
+        self.assertIn("0.00300 USD", out)
+
+    def test_audit_over_http_fills_the_auditor_from_the_response_id(self):
+        request = {"candidate_id": "C04", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "proposed_wording": "Counts increased.", "basis": [{"fact": "Counts rose.", "location": "B0002"}]}
+        request_path = self.root / "C04.input.json"
+        request_path.write_text(json.dumps(request))
+        verdict = {"candidate_id": "C04", "proposed_wording": "Counts increased.", "original": request["original"], "verdict": "preserved", "checks": {k: "same" for k in dr.AUDIT_CHECKS}, "notes": "No property changed.", "auditor": {"mode": "", "agent_id": ""}}
+        self.server.script = [completion(json.dumps(verdict), 7)]
+        out_path = self.root / "C04.audit.json"
+        code, out, err = self.main(["audit", "--runtime", "http", "--config", str(self.config), "--events", str(self.events), "--input", str(request_path), "--out", str(out_path)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out_path.read_text())["auditor"], {"mode": "bounded-request", "agent_id": "http-0007"})
+        self.assertEqual(self.server.requests[0]["body"]["messages"][0]["content"], "You are the auditor described in the user's message. Return only the JSON the message asks for, with no code fence and no commentary.")
+        self.assertTrue(self.user_prompt(1).startswith("You are an independent auditor of scientific meaning."))
+
+    def test_http_runtime_needs_config_and_rejects_effort(self):
+        code, out, err = self.main(["prefix", "--runtime", "http", "--events", str(self.events), "--packet", str(self.packet_path)])
+        self.assertEqual(code, 2)
+        self.assertIn("--runtime http needs --config PATH", err)
+        code, out, err = self.prefix("--effort", "high")
+        self.assertEqual(code, 2)
+        self.assertIn("--effort applies to the claude runtime only.", err)
+        self.assertEqual(self.server.requests, [])
+
+    def test_unknown_config_key_is_refused(self):
+        self.write_config(api_base=self.server.base_url)
+        code, out, err = self.prefix()
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown key(s) in --config: api_base.", err)
+
+    def test_retry_after_parses_seconds_and_dates(self):
+        self.assertIsNone(dr.parse_retry_after(None))
+        self.assertEqual(dr.parse_retry_after("2"), 2.0)
+        self.assertEqual(dr.parse_retry_after(" 1.5 "), 1.5)
+        self.assertEqual(dr.parse_retry_after("-3"), 0.0)
+        self.assertEqual(dr.parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), 0.0)
+        self.assertIsNone(dr.parse_retry_after("soon"))
 
 
 if __name__ == "__main__":

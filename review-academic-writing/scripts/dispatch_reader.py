@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Dispatch reader and auditor packets to a stateless `claude -p` call and keep every byte.
+"""Dispatch reader and auditor packets to a stateless model call and keep every byte.
 
-Python standard library only. One runtime adapter (the `claude -p` command with tools,
-MCP, and settings disabled), four subcommands:
+Python standard library only. Two runtime adapters, selected with --runtime: `claude`
+(the `claude -p` command with tools, MCP, and settings disabled; the default) and `http`
+(one OpenAI-compatible POST /v1/chat/completions request per call, described by a JSON
+file given as --config; the API key comes from the environment variable the file names).
+Four subcommands:
 
   prefix   build or take a prefix packet, dispatch it, run review_packets check-observation.
   masked   drive a masked_reader run to completion: packet, dispatch, record, repeat.
@@ -25,17 +28,22 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import email.utils
 import hashlib
+import http.client
 import json
 import math
 import os
 from pathlib import Path
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import time
 from typing import Any, Callable
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import masked_reader as mr  # noqa: E402
@@ -50,6 +58,11 @@ SYSTEM_PROMPTS = {
 }
 RUNTIME_FLAGS = ["-p", "--restricted", "--strict-mcp-config", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--permission-prompts", "none"]
 ISOLATION_NOTE = "claude -p --restricted --strict-mcp-config --tools '' --setting-sources '' : tools disabled by the runtime, MCP and settings skipped; not an OS sandbox"
+HTTP_ISOLATION_NOTE = "bare chat-completions request with no tools; isolation by request content, not by sandbox"
+HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
+HTTP_ATTEMPTS = 3
+RETRY_AFTER_CAP_SECONDS = 60.0
+CLAUDE_DEFAULT_TIMEOUT = 900.0
 BUDGET_TARGET_FRACTION = 0.85
 MAX_CORRECTIONS = 2
 ATTEMPT_SUFFIXES = ("", "b", "c")
@@ -103,8 +116,18 @@ def encoded(value: Any) -> bytes:
 # ---------------------------------------------------------------- runtime adapter
 
 
-class Runtime:
-    """The one way this program talks to a model: `claude -p` with everything disabled."""
+class ClaudeRuntime:
+    """The local `claude -p` command with everything disabled.
+
+    Both runtimes return the same shape from call(): started_at, seconds, record (written
+    as <label>.cli.json), raw (the result bytes, written as <label>.response.raw), error
+    (a transport or exit failure that makes the attempt unusable, or None), and provenance
+    (runtime-specific fields merged into <label>.provenance.json; always holds session_id
+    and cost_usd).
+    """
+
+    name = "claude"
+    isolation = ISOLATION_NOTE
 
     def __init__(self, claude: str | None, model: str | None, effort: str | None, timeout: float) -> None:
         self.claude = claude or os.environ.get("CLAUDE_BIN") or shutil.which("claude")
@@ -122,6 +145,9 @@ class Runtime:
             command += ["--effort", self.effort]
         return command
 
+    def agent_id(self, session_id: str | None) -> str:
+        return "claude-p-" + (session_id or "unknown")[:8]
+
     def call(self, role: str, prompt: str) -> dict[str, Any]:
         command = self.command(role)
         started_at = utc_now()
@@ -131,15 +157,264 @@ class Runtime:
             stdout, stderr, exit_code, timed_out = run.stdout, run.stderr, run.returncode, False
         except subprocess.TimeoutExpired as exc:
             stdout, stderr, exit_code, timed_out = exc.stdout or b"", exc.stderr or b"", None, True
-        return {
-            "command": command,
-            "started_at": started_at,
-            "seconds": round(time.monotonic() - clock, 1),
+        seconds = round(time.monotonic() - clock, 1)
+        envelope: dict[str, Any] | None
+        try:
+            envelope = json.loads(stdout.decode("utf-8"))
+            if not isinstance(envelope, dict):
+                envelope = None
+        except ValueError:
+            envelope = None
+        if envelope is not None:
+            record: dict[str, Any] = envelope
+            result = envelope.get("result")
+            raw = result.encode("utf-8") if isinstance(result, str) else encoded(result)
+        else:
+            record = {"error": "stdout was not a JSON envelope", "stdout": stdout.decode("utf-8", "replace")[-4000:]}
+            raw = stdout
+        usage = (envelope or {}).get("usage") or {}
+        provenance = {
             "exit_code": exit_code,
-            "timed_out": timed_out,
-            "stdout": stdout,
-            "stderr": stderr.decode("utf-8", "replace"),
+            "command": command,
+            "model_usage": sorted((envelope or {}).get("modelUsage") or {}),
+            "session_id": (envelope or {}).get("session_id"),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "cost_usd": (envelope or {}).get("total_cost_usd"),
+            "permission_denials": (envelope or {}).get("permission_denials", []),
+            "stderr": stderr.decode("utf-8", "replace")[-4000:],
         }
+        error = None if exit_code == 0 else f"claude exited with {exit_code}" + (" (timeout)" if timed_out else "")
+        return {"started_at": started_at, "seconds": seconds, "record": record, "raw": raw, "error": error, "provenance": provenance}
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Seconds named by a Retry-After header (delay-seconds or an HTTP date), or None."""
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value.strip()))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, (when - dt.datetime.now(dt.timezone.utc)).total_seconds())
+
+
+def message_content(envelope: dict[str, Any]) -> tuple[str | None, Any]:
+    """choices[0].message.content as text (string or text parts), plus finish_reason."""
+    choices = envelope.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None, None
+    finish_reason = choices[0].get("finish_reason")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return None, finish_reason
+    content = message.get("content")
+    if isinstance(content, str):
+        return content, finish_reason
+    if isinstance(content, list):
+        parts = [p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)]
+        if parts:
+            return "".join(parts), finish_reason
+    return None, finish_reason
+
+
+class HttpRuntime:
+    """One OpenAI-compatible chat-completions request per call, with no tools.
+
+    The config file names the endpoint, the model, the request parameters, and the
+    environment variable that holds the API key. The key itself never comes from the file
+    or the command line and is never written to any output file.
+    """
+
+    name = "http"
+    isolation = HTTP_ISOLATION_NOTE
+
+    def __init__(self, config_path: Path, model: str | None, timeout: float | None) -> None:
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise DispatchError(f"Cannot read --config {config_path}: {exc}") from exc
+        except ValueError as exc:
+            raise DispatchError(f"--config {config_path} is not valid JSON: {exc}") from exc
+        if not isinstance(config, dict):
+            raise DispatchError(f"--config {config_path} must hold one JSON object.")
+        if "api_key" in config:
+            raise DispatchError("The config file must not hold an API key; name an environment variable in api_key_env and export the key there.")
+        unknown = sorted(set(config) - set(HTTP_CONFIG_KEYS))
+        if unknown:
+            raise DispatchError(f"Unknown key(s) in --config: {', '.join(unknown)}. Allowed: {', '.join(HTTP_CONFIG_KEYS)}.")
+        base_url = config.get("base_url")
+        if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
+            raise DispatchError("--config needs base_url, an http:// or https:// URL such as http://host:8000/v1.")
+        self.base_url = base_url.rstrip("/")
+        self.url = self.base_url if self.base_url.endswith("/chat/completions") else self.base_url + "/chat/completions"
+        self.model = model or config.get("model")
+        if not isinstance(self.model, str) or not self.model:
+            raise DispatchError("--config needs model (a non-empty string), or pass --model.")
+        self.api_key_env = config.get("api_key_env")
+        self.api_key: str | None = None
+        if self.api_key_env is not None:
+            if not isinstance(self.api_key_env, str) or not self.api_key_env:
+                raise DispatchError("api_key_env must be the name of an environment variable.")
+            self.api_key = os.environ.get(self.api_key_env)
+            if not self.api_key:
+                raise DispatchError(f"Environment variable {self.api_key_env} (named by api_key_env in {config_path}) is not set; export the API key there. The key is never read from the config file or the command line.")
+        self.temperature = config.get("temperature", 0)
+        if isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float)):
+            raise DispatchError("temperature must be a number.")
+        self.max_tokens = config.get("max_tokens")
+        if self.max_tokens is not None and (isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens <= 0):
+            raise DispatchError("max_tokens must be a positive integer or absent.")
+        self.json_mode = config.get("json_mode", False)
+        if not isinstance(self.json_mode, bool):
+            raise DispatchError("json_mode must be true or false.")
+        configured_timeout = config.get("timeout_seconds", 300)
+        if isinstance(configured_timeout, bool) or not isinstance(configured_timeout, (int, float)) or configured_timeout <= 0:
+            raise DispatchError("timeout_seconds must be a positive number.")
+        self.timeout = float(timeout if timeout is not None else configured_timeout)
+        self.extra_headers = config.get("extra_headers") or {}
+        if not isinstance(self.extra_headers, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in self.extra_headers.items()):
+            raise DispatchError("extra_headers must map header names to strings.")
+        if any(k.lower() == "authorization" for k in self.extra_headers):
+            raise DispatchError("extra_headers must not set Authorization; name an environment variable in api_key_env instead.")
+        self.backoff = config.get("retry_backoff_seconds", 1.0)
+        if isinstance(self.backoff, bool) or not isinstance(self.backoff, (int, float)) or self.backoff < 0:
+            raise DispatchError("retry_backoff_seconds must be a non-negative number.")
+        self.prices = config.get("price_per_token")
+        if self.prices is not None and (not isinstance(self.prices, dict) or set(self.prices) != {"input", "output"} or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in self.prices.values())):
+            raise DispatchError('price_per_token must be {"input": USD per input token, "output": USD per output token} or absent.')
+        ca_file = config.get("ca_file")
+        if ca_file is not None and not isinstance(ca_file, str):
+            raise DispatchError("ca_file must be a path string or absent.")
+        try:
+            self.ssl_context = ssl.create_default_context(cafile=ca_file)
+        except (OSError, ssl.SSLError) as exc:
+            raise DispatchError(f"Cannot load ca_file {ca_file}: {exc}") from exc
+
+    def agent_id(self, session_id: str | None) -> str:
+        short = session_id or "unknown"
+        if short.startswith("chatcmpl-"):
+            short = short[len("chatcmpl-"):]
+        return "http-" + short[:12]
+
+    def request_body(self, role: str, prompt: str) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": SYSTEM_PROMPTS[role]}, {"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+        }
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
+        if self.json_mode:
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    def headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json", **self.extra_headers}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        return headers
+
+    def post(self, data: bytes) -> tuple[int, dict[str, str], bytes]:
+        request = urllib.request.Request(self.url, data=data, headers=self.headers(), method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout, context=self.ssl_context) as response:
+                return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
+
+    def call(self, role: str, prompt: str) -> dict[str, Any]:
+        body = self.request_body(role, prompt)
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        started_at = utc_now()
+        clock = time.monotonic()
+        attempts: list[dict[str, Any]] = []
+        status: int | None = None
+        headers: dict[str, str] = {}
+        payload = b""
+        for number in range(1, HTTP_ATTEMPTS + 1):
+            attempt: dict[str, Any] = {"attempt": number, "started_at": utc_now(), "seconds": None, "status": None, "error": None, "retry_after": None, "waited_seconds": None}
+            tick = time.monotonic()
+            try:
+                status, headers, payload = self.post(data)
+            except (OSError, http.client.HTTPException) as exc:
+                status, headers, payload = None, {}, b""
+                attempt["error"] = f"{type(exc).__name__}: {exc}"
+            attempt["seconds"] = round(time.monotonic() - tick, 1)
+            attempt["status"] = status
+            attempts.append(attempt)
+            retryable = status is None or status == 429 or status >= 500
+            if not retryable or number == HTTP_ATTEMPTS:
+                break
+            retry_after = parse_retry_after(headers.get("retry-after"))
+            wait = self.backoff * 2 ** (number - 1) if retry_after is None else min(retry_after, RETRY_AFTER_CAP_SECONDS)
+            attempt["retry_after"] = retry_after
+            attempt["waited_seconds"] = wait
+            time.sleep(wait)
+        seconds = round(time.monotonic() - clock, 1)
+        succeeded = status is not None and 200 <= status < 300
+        error: str | None = None
+        if not succeeded:
+            error = (f"HTTP {status}" if status is not None else attempts[-1]["error"]) + (f" after {len(attempts)} attempts" if len(attempts) > 1 else "")
+        envelope: dict[str, Any] | None = None
+        if succeeded:
+            try:
+                envelope = json.loads(payload.decode("utf-8"))
+                if not isinstance(envelope, dict):
+                    envelope = None
+            except ValueError:
+                envelope = None
+            if envelope is None:
+                error = "response body was not a chat-completions JSON object"
+        content, finish_reason = message_content(envelope) if envelope is not None else (None, None)
+        if envelope is not None:
+            record: dict[str, Any] = envelope
+            if content is None:
+                error = "response has no choices[0].message.content"
+                raw = encoded(envelope)
+            else:
+                raw = content.encode("utf-8")
+        else:
+            record = {"error": error, "status": status, "body": payload.decode("utf-8", "replace")[-4000:], "attempts": attempts}
+            raw = payload
+        usage = (envelope or {}).get("usage")
+        usage = usage if isinstance(usage, dict) else None
+        input_tokens = (usage or {}).get("prompt_tokens")
+        output_tokens = (usage or {}).get("completion_tokens")
+        cost_usd = None
+        if self.prices is not None and isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            cost_usd = round(input_tokens * self.prices["input"] + output_tokens * self.prices["output"], 6)
+        response_id = (envelope or {}).get("id")
+        provenance = {
+            "base_url": self.base_url,
+            "url": self.url,
+            "model": self.model,
+            "api_key_env": self.api_key_env,
+            "request": {"temperature": self.temperature, "max_tokens": self.max_tokens, "response_format": body.get("response_format"), "timeout_seconds": self.timeout},
+            "http_status": status,
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+            "response_id": response_id if isinstance(response_id, str) else None,
+            "response_model": (envelope or {}).get("model"),
+            "finish_reason": finish_reason,
+            "session_id": response_id if isinstance(response_id, str) else None,
+            "usage": usage,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": cost_usd,
+            "error": error,
+        }
+        return {"started_at": started_at, "seconds": seconds, "record": record, "raw": raw, "error": error, "provenance": provenance}
+
+
+Runtime = ClaudeRuntime | HttpRuntime
 
 
 def parse_result(text: str) -> tuple[Any | None, str | None, bool]:
@@ -183,54 +458,33 @@ class Events:
         if note:
             write_new(self.path(label, "prompt-source.txt"), (source + "\n").encode("utf-8"))
         run = runtime.call(role, prompt)
-        envelope: dict[str, Any] | None
-        try:
-            envelope = json.loads(run["stdout"].decode("utf-8"))
-            if not isinstance(envelope, dict):
-                envelope = None
-        except ValueError:
-            envelope = None
-        if envelope is not None:
-            write_new(self.path(label, "cli.json"), encoded(envelope))
-            result = envelope.get("result")
-            raw = result.encode("utf-8") if isinstance(result, str) else encoded(result)
-        else:
-            write_new(self.path(label, "cli.json"), encoded({"error": "stdout was not a JSON envelope", "stdout": run["stdout"].decode("utf-8", "replace")[-4000:]}))
-            raw = run["stdout"]
+        write_new(self.path(label, "cli.json"), encoded(run["record"]))
+        raw: bytes = run["raw"]
         write_new(self.path(label, "response.raw"), raw)
         parsed, parse_error, fence_stripped = parse_result(raw.decode("utf-8", "replace"))
-        if run["exit_code"] != 0:
-            parsed, parse_error = None, parse_error or f"claude exited with {run['exit_code']}" + (" (timeout)" if run["timed_out"] else "")
+        if run["error"]:
+            parsed, parse_error = None, run["error"]
         response_path = self.path(label, "response.raw")
         if parsed is not None:
             write_new(self.path(label, "response.json"), encoded(parsed))
             if fence_stripped:
                 response_path = self.path(label, "response.json")
-        usage = (envelope or {}).get("usage") or {}
         provenance = {
             "label": label,
             "corrects": corrects,
+            "runtime": runtime.name,
             "started_at": run["started_at"],
             "seconds": run["seconds"],
-            "exit_code": run["exit_code"],
-            "command": run["command"],
+            **run["provenance"],
             "packet_file": str(packet_file),
             "packet_sha256": sha256_bytes(packet_file.read_bytes()) if packet_file.is_file() else None,
             "prompt_sha256": sha256_bytes(prompt.encode("utf-8")),
-            "model_usage": sorted((envelope or {}).get("modelUsage") or {}),
-            "session_id": (envelope or {}).get("session_id"),
-            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
-            "input_tokens": usage.get("input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
-            "cost_usd": (envelope or {}).get("total_cost_usd"),
-            "permission_denials": (envelope or {}).get("permission_denials", []),
             "parse_error": parse_error,
             "fence_stripped": fence_stripped,
-            "stderr": run["stderr"][-4000:],
-            "isolation": ISOLATION_NOTE,
+            "isolation": runtime.isolation,
         }
         write_new(self.path(label, "provenance.json"), encoded(provenance))
-        call = {"label": label, "status": "pending", "seconds": run["seconds"], "cost_usd": provenance["cost_usd"], "session_id": provenance["session_id"], "exit_code": run["exit_code"], "parsed": parsed, "parse_error": parse_error, "response_path": response_path, "provenance": provenance}
+        call = {"label": label, "status": "pending", "seconds": run["seconds"], "cost_usd": provenance["cost_usd"], "session_id": provenance["session_id"], "exit_code": provenance.get("exit_code"), "parsed": parsed, "parse_error": parse_error, "response_path": response_path, "provenance": provenance}
         self.calls.append(call)
         return call
 
@@ -474,9 +728,8 @@ def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dic
     def accept(call: dict[str, Any]) -> dict[str, Any]:
         audit = call["parsed"]
         check_audit_shape(audit, request)
-        session = call["session_id"] or "unknown"
         audit = {k: audit[k] for k in ("candidate_id", "proposed_wording", "original", "verdict", "checks", "notes")}
-        audit["auditor"] = {"mode": "bounded-request", "agent_id": "claude-p-" + session[:8]}
+        audit["auditor"] = {"mode": "bounded-request", "agent_id": runtime.agent_id(call["session_id"])}
         write_new(out, encoded(audit))
         return audit
 
@@ -496,10 +749,12 @@ def _parser() -> argparse.ArgumentParser:
 
     def common(command: argparse.ArgumentParser) -> None:
         command.add_argument("--events", required=True, help="Directory for the labeled call files and summary.json.")
+        command.add_argument("--runtime", choices=("claude", "http"), default="claude", help="claude: the local claude -p command (default). http: an OpenAI-compatible chat-completions endpoint described by --config.")
+        command.add_argument("--config", help=f"JSON file for --runtime http with {', '.join(HTTP_CONFIG_KEYS)}; the API key is read from the environment variable named by api_key_env.")
         command.add_argument("--claude", help="claude executable (default $CLAUDE_BIN, then PATH).")
-        command.add_argument("--model", help="Passed through as --model.")
-        command.add_argument("--effort", help="Passed through as --effort.")
-        command.add_argument("--timeout", type=float, default=900.0, help="Seconds allowed per call (default 900).")
+        command.add_argument("--model", help="claude: passed through as --model. http: overrides the config's model.")
+        command.add_argument("--effort", help="claude only: passed through as --effort.")
+        command.add_argument("--timeout", type=float, help="Seconds allowed per call (default 900 for claude; the config's timeout_seconds, default 300, for http).")
         command.add_argument("--prompts-dir", help=f"Generic prompt files (default {PROMPTS_DIR}).")
         command.add_argument("--label", help="Label for this call (default: next free P01/BR01, or the candidate id).")
 
@@ -543,11 +798,23 @@ def print_summary(summary: dict[str, Any]) -> None:
     print(json.dumps({k: v for k, v in summary.items() if k not in ("calls", "loop")}, ensure_ascii=False))
 
 
+def build_runtime(args: argparse.Namespace) -> Runtime:
+    if args.runtime == "http":
+        if not args.config:
+            raise DispatchError("--runtime http needs --config PATH (a JSON file with base_url, model, and api_key_env).")
+        if args.effort:
+            raise DispatchError("--effort applies to the claude runtime only.")
+        return HttpRuntime(Path(args.config), args.model, args.timeout)
+    if args.config:
+        raise DispatchError("--config applies to --runtime http only.")
+    return ClaudeRuntime(args.claude, args.model, args.effort, CLAUDE_DEFAULT_TIMEOUT if args.timeout is None else args.timeout)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
         events = Events(Path(args.events), Path(args.prompts_dir) if args.prompts_dir else PROMPTS_DIR)
-        runtime = Runtime(args.claude, args.model, args.effort, args.timeout)
+        runtime = build_runtime(args)
         handler = {"prefix": run_prefix, "masked": run_masked, "branch": run_branch, "audit": run_audit}[args.command]
         summary = handler(args, events, runtime)
         print_summary(summary)

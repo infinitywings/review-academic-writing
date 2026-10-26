@@ -1,5 +1,34 @@
 # 变更说明
 
+## 0.13.0（2026-10-26）
+
+`dispatch_reader.py` 新增 `http` 运行时：把同一份通用提示和 packet 发到 OpenAI 兼容的 `POST /v1/chat/completions` 端点，供没有 Claude Code 的服务器使用（`docs/server-deployment.md` 实施顺序第 1 步）。默认运行时仍是 `claude -p`，其他脚本不变。
+
+### 新增
+
+- `--runtime claude|http`（默认 claude）和 `--config PATH`。配置是一个 JSON 文件：`base_url`、`model`、`api_key_env`、`temperature`（默认 0）、`max_tokens`、`json_mode`、`timeout_seconds`（默认 300）、`extra_headers`，可选 `retry_backoff_seconds`、`price_per_token`、`ca_file`。未知键、文件里的 `api_key`、`extra_headers` 里的 `Authorization` 都拒绝。
+- 密钥只从 `api_key_env` 指定的环境变量读取；变量未设置时以退出码 2 结束并说明变量名。密钥不进任何输出文件，`provenance.json` 只记录变量名。
+- 请求：system 消息与 claude 运行时相同，user 消息是通用提示加 packet，`temperature`、`max_tokens` 来自配置，`json_mode` 为 true 时带 `response_format: {"type": "json_object"}`。结果取 `choices[0].message.content`，代码围栏照旧剥掉。`--model` 覆盖配置的 model，`--timeout` 覆盖 `timeout_seconds`，`--effort` 对 http 运行时报错。
+- 重试：HTTP 429、5xx 和连接失败在同一次调用内按 1 秒、2 秒退避重试，最多三次，`Retry-After`（秒数或日期）优先，上限 60 秒；每次尝试的时间、秒数、状态码、错误、等待记录在 `provenance.json` 的 `attempts`。三次失败或 4xx 时这一次调用算解析失败，进入原有的更正协议。
+- 出处记录：`runtime: "http"`、`base_url`、`url`、`model`、`api_key_env`、`request`、`http_status`、`attempt_count`、`attempts`、`response_id`、`response_model`、`finish_reason`、`usage`、`input_tokens`、`output_tokens`、`cost_usd`（null，除非配置给出 `price_per_token`）、`error`，隔离说明为 `bare chat-completions request with no tools; isolation by request content, not by sandbox`。`session_id` 是响应的 id，写进遮罩回执的 `agent_id`；审计文件的 `auditor.agent_id` 为 `http-` 加 id 去掉 `chatcmpl-` 前缀后的前 12 个字符。
+
+### 调整
+
+- 两个运行时的 `provenance.json` 都多一个 `runtime` 字段（`claude` 或 `http`）。claude 运行时的其他字段、文件集、命令行参数和更正协议不变；`--timeout` 不给时仍为 900 秒。
+- 运行时失败（claude 非零退出，或 http 传输失败）时，`parse_error` 写运行时的失败原因（如 `HTTP 503 after 3 attempts`），不再先写对失败输出的 JSON 解析错误；更正说明里的原因随之更清楚。
+
+### 文档
+
+README 新增"服务器运行时（OpenAI 兼容接口）"一节（配置示例、环境变量、重试、出处字段），第 4 步一句指引；SKILL.md 第 3 步一句指引；仓库根目录 `docs/server-deployment.md` 实施顺序第 1 步标为已完成（假端点测试通过，真实端点待在服务器上跑）。
+
+### 测试
+
+`tests/test_dispatch_reader.py` 新增 18 个用例：线程里的标准库 `http.server` 假端点按请求计数返回预设的 chat-completions 响应，覆盖前缀派发通过 check-observation、两窗遮罩循环、预算更正、500 后 200 的重试、带 `Retry-After` 的 429、三次失败后进入更正协议、4xx 不重试、非 JSON 内容在第二次更正、环境变量缺失时退出码 2、任何输出文件不含密钥、无 `api_key_env` 时不发 Authorization 头、价格表填 `cost_usd`、审计的 `auditor`、缺 `--config` 或带 `--effort` 时报错、未知配置键、`Retry-After` 解析，以及 claude 运行时带 `--config` 时报错。共 132 个。
+
+### 兼容性
+
+运行格式、日志 schema、五个已有脚本的命令行均不变。`dispatch_reader.py` 旧命令行（不带 `--runtime`）行为不变。
+
 ## 0.12.0（2026-10-26）
 
 新增一个可选的句法特征助手，用于提名待查段落和核对替换句。五个已有脚本的行为不变。
