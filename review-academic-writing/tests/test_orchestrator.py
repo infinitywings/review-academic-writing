@@ -373,6 +373,24 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("STOPPED at decisions", out)
         self.assertEqual(self.log_events()[-1]["event"], "stopped")
 
+    def test_reconcile_candidate_id_that_is_not_a_safe_file_name_is_rejected(self):
+        original = self.server.step_reconcile
+
+        def step_reconcile(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if attempt == 1:
+                value["candidates"][0]["id"] = "../C05"
+            return value
+
+        self.server.step_reconcile = step_reconcile
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        second = (self.out / "editor" / "03-reconcile-b.prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("Each new candidate id must be letters, digits, '_' or '-' only", second)
+        self.assertEqual([c["id"] for c in json.loads((self.out / "journal" / "03-reconcile.notes.json").read_text())["candidates"]], ["C05"])
+        self.assertEqual(sorted(p.name for p in (self.out / "audits").glob("*.audit.json")), ["C01.audit.json", "C05-2.audit.json", "C05.audit.json"])
+        self.assertEqual(json.loads((self.out / "summary.json").read_text())["totals"]["retries"], 3)
+
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")
         section = orch.section_of(staged, "## 2. Save reading notes")

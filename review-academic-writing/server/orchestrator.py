@@ -55,6 +55,7 @@ FILE_INCLUDE = re.compile(r"\{\{file:([^}]+)\}\}")
 PLACEHOLDER = re.compile(r"\{\{([a-z_]+)\}\}")
 HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 READER_PREFIX_MODE = "bounded-request"
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")  # ids that may become file names
 PREVIEW_CHARS = 200
 EXECUTION_MODE = "bounded stateless chat-completions requests to an OpenAI-compatible endpoint; isolation by request content, not by sandbox"
 
@@ -591,6 +592,9 @@ class Run:
             for row in parsed["branches"]:
                 require(isinstance(row, dict) and branch is not None and row.get("id") == branch["id"], "branches may only name the listed branch id.")
                 branches.append({"id": branch["id"], "run_path": branch["run_path"], "branch_sequence": branch["branch_sequence"], "result": row.get("result"), "limitation": row.get("limitation")})
+            for row in parsed["candidates"]:
+                require(isinstance(row, dict) and isinstance(row.get("id"), str) and SAFE_ID.fullmatch(row["id"]) is not None,
+                        "Each new candidate id must be letters, digits, '_' or '-' only (for example C07); it becomes a file name later.")
             reconcile = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "checkpoints": checkpoints}
             if not checkpoints:
                 reason = parsed.get("no_checkpoints_reason")
@@ -678,6 +682,8 @@ class Run:
     def audit(self, key: str, row: dict[str, Any], suffix: str) -> dict[str, Any]:
         """Run the independent fidelity audit for one wording; returns verdict, changed properties, notes, path."""
         label = key + suffix
+        if SAFE_ID.fullmatch(label) is None or not (self.audits / label).resolve().is_relative_to(self.out):
+            raise StopRun("repairs", f"Candidate id {key!r} cannot be used as an audit file name.", "Inspect the recorded candidate ids; they must be letters, digits, '_' or '-' only.")
         request = {"candidate_id": key, "original": row["original"], "proposed_wording": row["proposed_wording"], "basis": row["basis"]}
         input_path = self.write_json(self.audits / f"{label}.input.json", request)
         out_path = self.audits / f"{label}.audit.json"
