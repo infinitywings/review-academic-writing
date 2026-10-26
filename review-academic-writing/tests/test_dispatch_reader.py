@@ -45,6 +45,28 @@ envelope = {{"type": "result", "subtype": "success", "is_error": False, "result"
 print(json.dumps(envelope))
 """
 
+FAKE_CODEX = """#!{python}
+import json, pathlib, sys
+home = pathlib.Path(__file__).resolve().parent
+prompt = sys.stdin.read()
+counter = home / "codex-counter.txt"
+n = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(n + 1))
+(home / "codex-prompts").mkdir(exist_ok=True)
+(home / "codex-prompts" / f"{{n + 1}}.txt").write_text(prompt)
+(home / "codex-prompts" / f"{{n + 1}}.argv.json").write_text(json.dumps(sys.argv))
+responses = json.loads((home / "codex-responses.json").read_text())
+entry = responses[n] if n < len(responses) else {{"text": "{{}}"}}
+sys.stderr.write("ERROR codex_core: failed to load skill something\\n")
+print(json.dumps({{"type": "thread.started", "thread_id": f"thread{{n + 1:04d}}-aaaa"}}))
+print(json.dumps({{"type": "turn.started"}}))
+if entry.get("command"):
+    print(json.dumps({{"type": "item.completed", "item": {{"id": "item_0", "type": "command_execution", "command": entry["command"], "exit_code": 0, "status": "completed"}}}}))
+print("not json at all")
+print(json.dumps({{"type": "item.completed", "item": {{"id": "item_1", "type": "agent_message", "text": entry["text"]}}}}))
+print(json.dumps({{"type": "turn.completed", "usage": {{"input_tokens": 18390, "cached_input_tokens": 12288, "output_tokens": 9, "reasoning_output_tokens": 0}}}}))
+"""
+
 TEXT = "# Counting study\n\nWe report counts of agreement. Counts rose.\n\nWe define agreement later.\n"
 PROFILE = {"audience": "A trained researcher new to this project"}
 CASE = {
@@ -328,6 +350,99 @@ class DispatchReaderTests(unittest.TestCase):
         code, out, err = self.main(["prefix", "--events", str(self.events), "--packet", "x.json", "--config", str(config)])
         self.assertEqual(code, 2)
         self.assertIn("--config applies to --runtime http only.", err)
+
+
+# ---------------------------------------------------------------- codex runtime
+
+
+class CodexRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.fake = self.root / "fake-bin"
+        self.fake.mkdir()
+        script = self.fake / "codex"
+        script.write_text(FAKE_CODEX.format(python=sys.executable))
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        self.old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(self.fake) + os.pathsep + self.old_path
+        self.events = self.root / "events"
+
+    def tearDown(self):
+        os.environ["PATH"] = self.old_path
+        self.tmp.cleanup()
+
+    def responses(self, *entries):
+        (self.fake / "codex-responses.json").write_text(json.dumps(list(entries)))
+
+    def main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = dr.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def audit_input(self):
+        path = self.root / "audit-input.json"
+        path.write_text(json.dumps({"candidate_id": "C01", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "proposed_wording": "Counts increased.", "basis": [{"fact": "Counts rose.", "location": "B0002"}]}))
+        return path
+
+    def audit_response(self):
+        return json.dumps({
+            "candidate_id": "C01", "proposed_wording": "Counts increased.", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "verdict": "preserved",
+            "checks": {k: "same" for k in dr.AUDIT_CHECKS}, "notes": "No property changed.", "auditor": {"mode": "bounded-request", "agent_id": "filled in by the controller"},
+        })
+
+    def test_audit_over_codex_prepends_the_role_and_records_the_thread(self):
+        self.responses({"text": self.audit_response()})
+        out_path = self.root / "audit.json"
+        code, out, err = self.main(["audit", "--runtime", "codex", "--effort", "low", "--model", "gpt-fake", "--events", str(self.events), "--input", str(self.audit_input()), "--out", str(out_path)])
+        self.assertEqual(code, 0, err)
+        argv = json.loads((self.fake / "codex-prompts" / "1.argv.json").read_text())
+        self.assertEqual(argv[1:8], dr.CODEX_FLAGS)
+        self.assertIn("--model", argv)
+        self.assertIn("model_reasoning_effort=\"low\"", argv)
+        self.assertEqual(argv[-1], "-")
+        sent = (self.fake / "codex-prompts" / "1.txt").read_text()
+        self.assertTrue(sent.startswith(dr.SYSTEM_PROMPTS["auditor"] + "\n\n"))
+        provenance = json.loads((self.events / "C01.provenance.json").read_text())
+        self.assertEqual(provenance["runtime"], "codex")
+        self.assertEqual(provenance["session_id"], "thread0001-aaaa")
+        self.assertEqual(provenance["input_tokens"], 18390)
+        self.assertEqual(provenance["cached_input_tokens"], 12288)
+        self.assertIsNone(provenance["cost_usd"])
+        self.assertEqual(provenance["command_executions"], [])
+        self.assertEqual(provenance["isolation"], dr.CODEX_ISOLATION_NOTE)
+        self.assertEqual(provenance["system_prompt_delivery"], "prepended to the stdin prompt, separated by a blank line")
+        record = json.loads((self.events / "C01.cli.json").read_text())
+        self.assertEqual(record["unparsed"], ["not json at all"])
+        self.assertIn("failed to load skill", record["stderr_tail"])
+        audit = json.loads(out_path.read_text())
+        self.assertEqual(audit["auditor"]["agent_id"], "codex-exec-thread00")
+        self.assertEqual((self.events / "C01.response.raw").read_text(), self.audit_response())
+
+    def test_a_command_execution_makes_the_call_unusable(self):
+        self.responses({"text": self.audit_response(), "command": "cat manuscript.md"})
+        code, out, err = self.main(["audit", "--runtime", "codex", "--events", str(self.events), "--input", str(self.audit_input()), "--out", str(self.root / "audit.json")])
+        self.assertNotEqual(code, 0)
+        self.assertIn("codex ran 1 command(s)", out + err)
+        self.assertFalse((self.events / "C01b.prompt.txt").exists(), "a runtime rejection is not re-dispatched")
+        provenance = json.loads((self.events / "C01.provenance.json").read_text())
+        self.assertEqual(provenance["command_executions"][0]["command"], "cat manuscript.md")
+        self.assertFalse((self.root / "audit.json").exists())
+
+    def test_codex_runtime_rejects_config_and_needs_the_executable(self):
+        config = self.root / "llm.json"
+        config.write_text("{}")
+        code, out, err = self.main(["audit", "--runtime", "codex", "--config", str(config), "--events", str(self.events), "--input", str(self.audit_input()), "--out", str(self.root / "a.json")])
+        self.assertEqual(code, 2)
+        self.assertIn("--config applies to --runtime http only.", err)
+        code, out, err = self.main(["audit", "--runtime", "codex", "--codex", "/nonexistent/codex", "--events", str(self.events), "--input", str(self.audit_input()), "--out", str(self.root / "a.json")])
+        self.assertNotEqual(code, 0)
+
+    def test_events_parser_keeps_unparsed_lines(self):
+        events, unparsed = dr.CodexRuntime.events(b'{"type":"turn.started"}\n\nhalf a line\n[1,2]\n')
+        self.assertEqual(events, [{"type": "turn.started"}])
+        self.assertEqual(unparsed, ["half a line", "[1,2]"])
 
 
 # ---------------------------------------------------------------- http runtime
@@ -650,7 +765,7 @@ class HttpRuntimeTests(unittest.TestCase):
         self.assertIn("--runtime http needs --config PATH", err)
         code, out, err = self.prefix("--effort", "high")
         self.assertEqual(code, 2)
-        self.assertIn("--effort applies to the claude runtime only.", err)
+        self.assertIn("--effort applies to the claude and codex runtimes only.", err)
         self.assertEqual(self.server.requests, [])
 
     def test_unknown_config_key_is_refused(self):

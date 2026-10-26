@@ -227,7 +227,7 @@ class CaseBuilderTests(unittest.TestCase):
 
 FAKE_MINERU = """#!/bin/sh
 if [ "$1" = "server" ]; then
-  printf '%s\\n' "{status}"
+  printf '%s\\n' '{status}'
   exit 0
 fi
 if [ "$1" = "parse" ]; then
@@ -239,6 +239,46 @@ if [ "$1" = "parse" ]; then
 fi
 exit 1
 """
+
+
+STATUS_READY = {
+    "running": True,
+    "version": "4.0.12",
+    "parse_server": {
+        "local": {"mode": "managed", "healthy": True, "starting": False, "managed_tier": "standard", "managed_running": True, "url": "http://127.0.0.1:16580", "error_code": None, "error_msg": None},
+        "remote": {"healthy": True},
+    },
+    "error_summary": {"parse_errors": [{"code": "engine_unavailable", "count": 1}]},
+}
+STATUS_STARTING = {
+    "running": True,
+    "parse_server": {"local": {"mode": "managed", "healthy": False, "starting": True, "managed_tier": "standard", "managed_running": True}},
+}
+
+
+class ServerReadyTests(unittest.TestCase):
+    def test_json_status_is_authoritative_and_ignores_old_error_counts(self):
+        self.assertTrue(ex.server_ready(json.dumps(STATUS_READY), 0))
+        self.assertFalse(ex.server_ready(json.dumps(STATUS_STARTING), 0))
+        self.assertFalse(ex.server_ready(json.dumps(STATUS_READY), 1))
+
+    def test_json_status_requires_a_local_parse_server(self):
+        off = {"running": True, "parse_server": {"local": {"mode": "off", "healthy": False}, "remote": {"healthy": True}}}
+        self.assertFalse(ex.server_ready(json.dumps(off), 0))
+        down = {"running": False, "parse_server": {"local": {"mode": "managed", "healthy": True}}}
+        self.assertFalse(ex.server_ready(json.dumps(down), 0))
+        unmanaged = dict(STATUS_READY, parse_server={"local": {"mode": "managed", "healthy": True, "starting": False, "managed_running": False}})
+        self.assertFalse(ex.server_ready(json.dumps(unmanaged), 0))
+
+    def test_text_status_is_only_a_fallback(self):
+        self.assertTrue(ex.server_ready("doclib: running\nparse server (standard): ready", 0))
+        self.assertFalse(ex.server_ready("doclib: running\nparse server (standard): not ready, preparing startup", 0))
+
+    def test_status_summary_keeps_the_local_block(self):
+        summary = json.loads(ex.status_summary(json.dumps(STATUS_READY)))
+        self.assertEqual(summary["mode"], "managed")
+        self.assertEqual(summary["server_running"], True)
+        self.assertEqual(ex.status_summary("plain text\n"), "plain text")
 
 
 class ExtractCommandTests(unittest.TestCase):
@@ -264,7 +304,7 @@ class ExtractCommandTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_not_ready_server_exits_2_with_start_commands(self):
-        mineru = self.fake("doclib: running\nparse server (standard): not ready, preparing startup")
+        mineru = self.fake(json.dumps(STATUS_STARTING))
         code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", mineru])
         self.assertEqual(code, 2)
         for command in ex.MINERU_START_COMMANDS:
@@ -277,10 +317,14 @@ class ExtractCommandTests(unittest.TestCase):
         self.assertIn("--remote is refused", err)
 
     def test_ready_server_runs_the_local_standard_parse(self):
-        mineru = self.fake("doclib: running\nparse server (standard): ready")
+        mineru = self.fake(json.dumps(STATUS_READY))
         code, out, err = self.run_main(["extract", "--pdf", str(self.pdf), "--out-dir", str(self.root / "out"), "--mineru", mineru])
         self.assertEqual(code, 0, err)
         record = json.loads((self.root / "out" / "extract.json").read_text())
+        self.assertEqual(record["command"][1:4], ["parse", str(self.pdf), "--pages"])
+        summary = json.loads(record["server_status"])
+        self.assertEqual(summary["managed_tier"], "standard")
+        self.assertTrue(summary["healthy"])
         self.assertEqual(record["command"][1:], ["parse", str(self.pdf), "--pages", "all", "--tier", "standard", "-o", str(self.root / "out" / "paper.md")])
         self.assertEqual((self.root / "out" / "paper.md").read_text(), "# Parsed\n\nBody.\n")
         self.assertFalse(record["remote"])

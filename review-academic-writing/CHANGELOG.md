@@ -1,5 +1,14 @@
 # 变更说明
 
+## 0.15.0（2026-10-26）
+
+本地部署整理：读者派发可走 Codex 订阅，MinerU 就绪判断改读结构化状态。命令行、文件格式和已有运行时的行为不变。
+
+- `dispatch_reader.py` 新增 `--runtime codex`：调用 `codex exec --ignore-user-config --ephemeral --sandbox read-only --skip-git-repo-check --json -`，提示从 stdin 读入，角色句前置在提示开头并写进出处记录（Codex 没有 system prompt 开关）。解析 `--json` 事件流取线程 id、最后一条 agent_message、用量和命令执行记录；出现任何 `command_execution` 事件，这一次调用按"被拒绝"处理，不进入更正协议。`--model` 透传，`--effort` 设为 `model_reasoning_effort`，`--codex` 指定可执行文件，默认超时 900 秒。`--effort` 的拒绝信息改为"claude 和 codex 运行时"。实测：`--ignore-user-config` 把 Codex 的固定上下文从 24k 降到 18k token；一次审计调用 7.4 秒，verdict preserved，事件流无命令执行。
+- `extract_pdf.py` 改用 `mineru server status --json` 判断就绪：`running`、`parse_server.local.healthy`、`starting`、`mode`、`managed_running` 五个字段，错误汇总里的历史计数不再影响判断。之前的文本正则在子进程里被表格截断（`runni…`）、又被 `engine_unavailable` 里的 `unavailable` 误判为未就绪。无 `--json` 的旧版 MinerU 退回文本判断。`extract.json` 的 `server_status` 改为本地解析服务的精简字段，不再存整张状态表。
+- README：MinerU 改为 `uv tool install` 安装（可执行文件进 `~/.local/bin`，不再放在项目目录 `tools/mineru-env`，那个目录在清理时丢过一次）；说明 MinerU 不是语言模型，编辑和读者仍由订阅的 Claude Code 或 Codex 担任；新增"读者运行时（Codex 订阅）"一节。SKILL.md 和根 README 的派发说明补上 codex 运行时。
+- 测试加 8 个（codex 运行时 4 个：审计经 codex、命令执行被拒且不重发、config 与可执行文件校验、事件流解析；MinerU 就绪判断 4 个：JSON 优先、本地服务缺失、文本回退、状态摘要），共 148 个。
+
 ## 0.14.1（2026-10-26）
 
 编排器的一处文件名收紧，其余不变。

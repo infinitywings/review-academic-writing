@@ -10,7 +10,7 @@
 - **独立读者。** 前缀 checkpoint 只给读者到某句为止的文本（`scripts/review_packets.py`）；遮罩阅读逐窗展示，每窗新上下文，只携带有限的结构化笔记，每条笔记带来源和出生事件，丢弃必须显式说明（`scripts/masked_reader.py`）；可以从任一已记录的事件分出一个一次性追问，答案不回流主路径。
 - **先冻结再对账。** 编辑的独立检查在任何读者记录进入前先入链；读者观察在 reconcile 阶段按八类分类，再决定是否成为候选问题。
 - **保真门槛。** 每条带替换句的修改要附一份独立审计：九项属性（主张强度、量词、假设、对象、测量结果、时间范围、数值、不确定性、因果与相关）逐项比对，任何一项改变即拒绝记录。
-- **PDF 抽取与读者派发。** `scripts/extract_pdf.py` 封装本地 MinerU 并生成遮罩 case；`scripts/dispatch_reader.py` 用无工具、无状态的 `claude -p` 请求派发读者、审计者和分支，保存每次调用的原始字节与出处。
+- **PDF 抽取与读者派发。** `scripts/extract_pdf.py` 封装本地 MinerU 并生成遮罩 case；`scripts/dispatch_reader.py` 用无工具、无状态的 `claude -p` 请求（或 Codex 订阅的 `codex exec`，或服务器上的 OpenAI 兼容接口）派发读者、审计者和分支，保存每次调用的原始字节与出处。
 - **句法特征提名（可选）。** `scripts/difficulty_features.py` 用 spaCy 数出八个与人类加工困难相关的句法特征，在文档内排名以提名待查段落，并把替换句与原句并排比较；输出固定标明这是候选提名启发式，不是发现。
 
 ## 它不做什么

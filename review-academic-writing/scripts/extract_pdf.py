@@ -36,7 +36,7 @@ MINERU_START_COMMANDS = [
     "mineru server start",
     "mineru config set parse_server.local.mode managed",
     "mineru server restart",
-    "mineru server status",
+    "mineru server status --json",
 ]
 PAGE_MARKER = re.compile(r"^\s*<!--\s*page\s+(\d+)(?:\s+of\s+(\d+))?\s*-->\s*$", re.I)
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+\S")
@@ -490,22 +490,61 @@ def mineru_executable(explicit: str | None) -> str:
 
 
 def server_ready(status_output: str, exit_code: int) -> bool:
-    text = status_output.lower()
+    """True when `mineru server status --json` reports a healthy local parse server.
+
+    The JSON form is authoritative. The text form is a fallback for MinerU builds
+    without --json; it is width-sensitive, so it is only trusted when JSON is absent.
+    """
     if exit_code != 0:
         return False
-    if re.search(r"not ready|preparing|stopped|unavailable|not running|starting", text):
+    try:
+        status = json.loads(status_output)
+    except ValueError:
+        status = None
+    if isinstance(status, dict):
+        return local_parse_server_ready(status)
+    text = status_output.lower()
+    if re.search(r"not ready|preparing|stopped|not running|starting", text):
         return False
     return re.search(r"parse[^\n]*\bready\b|\bready\b[^\n]*parse|\brunning\b", text) is not None
+
+
+def local_parse_server_ready(status: dict[str, Any]) -> bool:
+    if not status.get("running"):
+        return False
+    local = (status.get("parse_server") or {}).get("local") or {}
+    if local.get("mode") in (None, "off", "disabled"):
+        return False
+    if local.get("starting") or not local.get("healthy"):
+        return False
+    if local.get("mode") == "managed" and local.get("managed_running") is False:
+        return False
+    return True
+
+
+def status_summary(status_output: str) -> str:
+    """Keep the record readable: the local parse-server block when JSON, else the raw text."""
+    try:
+        status = json.loads(status_output)
+    except ValueError:
+        return status_output.strip()
+    if not isinstance(status, dict):
+        return status_output.strip()
+    local = (status.get("parse_server") or {}).get("local") or {}
+    keep = {k: local.get(k) for k in ("mode", "healthy", "starting", "managed_tier", "managed_running", "url", "error_code", "error_msg")}
+    keep["server_running"] = status.get("running")
+    keep["version"] = status.get("version")
+    return json.dumps(keep, ensure_ascii=False)
 
 
 def run_extract(pdf: Path, out_dir: Path, mineru: str, pages: str, timeout: float) -> dict[str, Any]:
     if pdf.suffix.lower() != ".pdf" or not pdf.is_file():
         raise ExtractError("--pdf must be an existing .pdf file.")
-    status = subprocess.run([mineru, "server", "status"], capture_output=True, text=True, timeout=timeout)
-    status_text = status.stdout + status.stderr
+    status = subprocess.run([mineru, "server", "status", "--json"], capture_output=True, text=True, timeout=timeout)
+    status_text = status.stdout
     if not server_ready(status_text, status.returncode):
         raise ExtractError(
-            "MinerU parse server is not ready. Status output:\n" + status_text.strip() + "\n\n"
+            "MinerU parse server is not ready. Status output:\n" + (status.stdout + status.stderr).strip() + "\n\n"
             "Start it with:\n  " + "\n  ".join(MINERU_START_COMMANDS)
             + "\nWait until `mineru server status` reports the parse server ready, then retry. Never use --remote for an unpublished manuscript."
         )
@@ -523,7 +562,7 @@ def run_extract(pdf: Path, out_dir: Path, mineru: str, pages: str, timeout: floa
         "exit_code": run.returncode,
         "stdout": run.stdout[-4000:],
         "stderr": run.stderr[-4000:],
-        "server_status": status_text.strip(),
+        "server_status": status_summary(status_text),
         "pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
         "produced": produced,
         "markdown": str(target) if target.exists() else None,

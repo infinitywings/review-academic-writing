@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Dispatch reader and auditor packets to a stateless model call and keep every byte.
 
-Python standard library only. Two runtime adapters, selected with --runtime: `claude`
-(the `claude -p` command with tools, MCP, and settings disabled; the default) and `http`
-(one OpenAI-compatible POST /v1/chat/completions request per call, described by a JSON
-file given as --config; the API key comes from the environment variable the file names).
+Python standard library only. Three runtime adapters, selected with --runtime: `claude`
+(the `claude -p` command with tools, MCP, and settings disabled; the default), `codex`
+(the `codex exec` command with the user's config ignored, no saved thread, and a read-only
+sandbox; a call in which the model ran any command is rejected), and `http` (one
+OpenAI-compatible POST /v1/chat/completions request per call, described by a JSON file
+given as --config; the API key comes from the environment variable the file names).
 Four subcommands:
 
   prefix   build or take a prefix packet, dispatch it, run review_packets check-observation.
@@ -60,6 +62,9 @@ SYSTEM_PROMPTS = {
 RUNTIME_FLAGS = ["-p", "--restricted", "--strict-mcp-config", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--permission-prompts", "none"]
 ISOLATION_NOTE = "claude -p --restricted --strict-mcp-config --tools '' --setting-sources '' : tools disabled by the runtime, MCP and settings skipped; not an OS sandbox"
 HTTP_ISOLATION_NOTE = "bare chat-completions request with no tools; isolation by request content, not by sandbox"
+CODEX_FLAGS = ["exec", "--ignore-user-config", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--json"]
+CODEX_ISOLATION_NOTE = "codex exec --ignore-user-config --ephemeral --sandbox read-only : user config (MCP servers, plugins, skills) ignored, no thread saved, model-run commands sandboxed read-only; the shell tool stays available, so a call whose event stream shows any command execution is rejected; not an OS sandbox for the model's context"
+CODEX_DEFAULT_TIMEOUT = 900.0
 HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
 HTTP_ATTEMPTS = 3
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -189,6 +194,120 @@ class ClaudeRuntime:
         }
         error = None if exit_code == 0 else f"claude exited with {exit_code}" + (" (timeout)" if timed_out else "")
         return {"started_at": started_at, "seconds": seconds, "record": record, "raw": raw, "error": error, "provenance": provenance}
+
+
+class CodexRuntime:
+    """The local `codex exec` command with the user's configuration ignored.
+
+    Codex has no system-prompt flag, so the role sentence is prepended to the prompt on
+    stdin and recorded in provenance. The JSONL event stream gives the thread id, the
+    last agent message (the result), token usage, and any command executions; a call
+    with a command execution is returned as an error because the reader must not look
+    anything up.
+    """
+
+    name = "codex"
+    isolation = CODEX_ISOLATION_NOTE
+
+    def __init__(self, codex: str | None, model: str | None, effort: str | None, timeout: float) -> None:
+        self.codex = codex or os.environ.get("CODEX_BIN") or shutil.which("codex")
+        if not self.codex:
+            raise DispatchError("codex executable not found; pass --codex or put codex on PATH.")
+        self.model = model
+        self.effort = effort
+        self.timeout = timeout
+
+    def command(self) -> list[str]:
+        command = [self.codex, *CODEX_FLAGS]
+        if self.model:
+            command += ["--model", self.model]
+        if self.effort:
+            command += ["-c", "model_reasoning_effort=" + json.dumps(self.effort)]
+        return command + ["-"]
+
+    def agent_id(self, session_id: str | None) -> str:
+        return "codex-exec-" + (session_id or "unknown")[:8]
+
+    @staticmethod
+    def events(stdout: bytes) -> tuple[list[dict[str, Any]], list[str]]:
+        events: list[dict[str, Any]] = []
+        unparsed: list[str] = []
+        for line in stdout.decode("utf-8", "replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                unparsed.append(line[-400:])
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+            else:
+                unparsed.append(line[-400:])
+        return events, unparsed
+
+    def call(self, role: str, prompt: str) -> dict[str, Any]:
+        command = self.command()
+        full_prompt = SYSTEM_PROMPTS[role] + "\n\n" + prompt
+        started_at = utc_now()
+        clock = time.monotonic()
+        try:
+            run = subprocess.run(command, input=full_prompt.encode("utf-8"), capture_output=True, timeout=self.timeout)
+            stdout, stderr, exit_code, timed_out = run.stdout, run.stderr, run.returncode, False
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr, exit_code, timed_out = exc.stdout or b"", exc.stderr or b"", None, True
+        seconds = round(time.monotonic() - clock, 1)
+        events, unparsed = self.events(stdout)
+        thread_id = None
+        messages: list[str] = []
+        commands: list[dict[str, Any]] = []
+        errors: list[str] = []
+        usage: dict[str, Any] = {}
+        for event in events:
+            kind = event.get("type")
+            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            if kind == "thread.started" and isinstance(event.get("thread_id"), str):
+                thread_id = event["thread_id"]
+            elif kind == "item.completed" and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                messages.append(item["text"])
+            elif kind == "item.completed" and item.get("type") == "command_execution":
+                commands.append({k: item.get(k) for k in ("command", "exit_code", "status")})
+            elif kind == "item.completed" and item.get("type") == "error":
+                errors.append(str(item.get("message")))
+            elif kind == "turn.completed" and isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+            elif kind == "turn.failed" or kind == "error":
+                errors.append(json.dumps(event, ensure_ascii=False)[-400:])
+        record: dict[str, Any] = {"events": events, "unparsed": unparsed, "stderr_tail": stderr.decode("utf-8", "replace")[-4000:]}
+        raw = messages[-1].encode("utf-8") if messages else stdout
+        error = None
+        if exit_code != 0:
+            error = f"codex exited with {exit_code}" + (" (timeout)" if timed_out else "")
+        elif commands:
+            error = f"codex ran {len(commands)} command(s); the call is rejected because the reader must not look anything up"
+        elif not messages:
+            error = "codex produced no agent_message event"
+        provenance = {
+            "exit_code": exit_code,
+            "command": command,
+            "system_prompt": SYSTEM_PROMPTS[role],
+            "system_prompt_delivery": "prepended to the stdin prompt, separated by a blank line",
+            "thread_id": thread_id,
+            "session_id": thread_id,
+            "model": self.model,
+            "effort": self.effort,
+            "agent_messages": len(messages),
+            "command_executions": commands,
+            "event_errors": errors,
+            "usage": usage or None,
+            "input_tokens": usage.get("input_tokens"),
+            "cached_input_tokens": usage.get("cached_input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
+            "cost_usd": None,
+            "stderr": stderr.decode("utf-8", "replace")[-4000:],
+        }
+        return {"started_at": started_at, "seconds": seconds, "record": record, "raw": raw, "error": error, "provenance": provenance, "rejected": bool(commands) and exit_code == 0}
 
 
 def parse_retry_after(value: str | None) -> float | None:
@@ -439,7 +558,7 @@ class HttpRuntime:
         return {"started_at": started_at, "seconds": seconds, "record": record, "raw": raw, "error": error, "provenance": provenance}
 
 
-Runtime = ClaudeRuntime | HttpRuntime
+Runtime = ClaudeRuntime | CodexRuntime | HttpRuntime
 
 
 def parse_result(text: str) -> tuple[Any | None, str | None, bool]:
@@ -509,7 +628,7 @@ class Events:
             "isolation": runtime.isolation,
         }
         write_new(self.path(label, "provenance.json"), encoded(provenance))
-        call = {"label": label, "status": "pending", "seconds": run["seconds"], "cost_usd": provenance["cost_usd"], "session_id": provenance["session_id"], "exit_code": provenance.get("exit_code"), "parsed": parsed, "parse_error": parse_error, "response_path": response_path, "provenance": provenance}
+        call = {"label": label, "status": "pending", "seconds": run["seconds"], "cost_usd": provenance["cost_usd"], "session_id": provenance["session_id"], "exit_code": provenance.get("exit_code"), "parsed": parsed, "parse_error": parse_error, "response_path": response_path, "provenance": provenance, "rejected_by_runtime": bool(run.get("rejected"))}
         self.calls.append(call)
         return call
 
@@ -582,7 +701,7 @@ def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generi
         label = base + suffix
         call = events.dispatch(runtime, role, label, generic, payload, packet_file, note, base if suffix else None)
         if call["parsed"] is None:
-            failure = Failure("format", call["parse_error"] or "no response")
+            failure = Failure("rejected" if call.get("rejected_by_runtime") else "format", call["parse_error"] or "no response")
         else:
             try:
                 accepted = accept(call)
@@ -774,12 +893,13 @@ def _parser() -> argparse.ArgumentParser:
 
     def common(command: argparse.ArgumentParser) -> None:
         command.add_argument("--events", required=True, help="Directory for the labeled call files and summary.json.")
-        command.add_argument("--runtime", choices=("claude", "http"), default="claude", help="claude: the local claude -p command (default). http: an OpenAI-compatible chat-completions endpoint described by --config.")
+        command.add_argument("--runtime", choices=("claude", "codex", "http"), default="claude", help="claude: the local claude -p command (default). codex: the local codex exec command. http: an OpenAI-compatible chat-completions endpoint described by --config.")
         command.add_argument("--config", help=f"JSON file for --runtime http with {', '.join(HTTP_CONFIG_KEYS)}; the API key is read from the environment variable named by api_key_env.")
         command.add_argument("--claude", help="claude executable (default $CLAUDE_BIN, then PATH).")
-        command.add_argument("--model", help="claude: passed through as --model. http: overrides the config's model.")
-        command.add_argument("--effort", help="claude only: passed through as --effort.")
-        command.add_argument("--timeout", type=float, help="Seconds allowed per call (default 900 for claude; the config's timeout_seconds, default 300, for http).")
+        command.add_argument("--codex", help="codex executable (default $CODEX_BIN, then PATH).")
+        command.add_argument("--model", help="claude and codex: passed through as --model. http: overrides the config's model.")
+        command.add_argument("--effort", help="claude: passed through as --effort. codex: sets model_reasoning_effort. Not for http.")
+        command.add_argument("--timeout", type=float, help="Seconds allowed per call (default 900 for claude and codex; the config's timeout_seconds, default 300, for http).")
         command.add_argument("--prompts-dir", help=f"Generic prompt files (default {PROMPTS_DIR}).")
         command.add_argument("--label", help="Label for this call (default: next free P01/BR01, or the candidate id).")
 
@@ -828,10 +948,12 @@ def build_runtime(args: argparse.Namespace) -> Runtime:
         if not args.config:
             raise DispatchError("--runtime http needs --config PATH (a JSON file with base_url, model, and api_key_env).")
         if args.effort:
-            raise DispatchError("--effort applies to the claude runtime only.")
+            raise DispatchError("--effort applies to the claude and codex runtimes only.")
         return HttpRuntime(Path(args.config), args.model, args.timeout)
     if args.config:
         raise DispatchError("--config applies to --runtime http only.")
+    if args.runtime == "codex":
+        return CodexRuntime(args.codex, args.model, args.effort, CODEX_DEFAULT_TIMEOUT if args.timeout is None else args.timeout)
     return ClaudeRuntime(args.claude, args.model, args.effort, CLAUDE_DEFAULT_TIMEOUT if args.timeout is None else args.timeout)
 
 

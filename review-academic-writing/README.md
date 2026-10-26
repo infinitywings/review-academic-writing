@@ -14,21 +14,21 @@ Claude Code 读取 `SKILL.md` 并按需读取 `references/`。`agents/openai.yam
 
 ## PDF 抽取环境（MinerU 4 本地模式）
 
-稿件是 PDF 时，第 1 步用 `scripts/extract_pdf.py`，它调用本地 MinerU。2026-10-20 的对比里 MinerU 4.0.12 standard 层级在双栏、公式、表格上最好（见项目目录 `runs/2026-10-20/pdf2md-comparison.md`）。MinerU 装在工作目录下的独立环境 `tools/mineru-env`，不进 skill 目录：
+稿件是 PDF 时，第 1 步用 `scripts/extract_pdf.py`，它调用本地 MinerU。2026-10-20 的对比里 MinerU 4.0.12 standard 层级在双栏、公式、表格上最好（见项目目录 `runs/2026-10-20/pdf2md-comparison.md`）。MinerU 不是语言模型：standard 层级是一组约 850 MB 的版面、公式、表格和 OCR 模型，在 M4 MacBook Air（32 GB）上用 CPU 解析一篇 12 页双栏论文约两分钟。编辑和读者角色仍由订阅的 Claude Code 或 Codex 担任（见"读者运行时"）。
+
+MinerU 用 `uv tool` 装成独立环境，可执行文件进 `~/.local/bin`，不进 skill 目录，也不放在项目目录里（项目目录清理时容易一起删掉）：
 
 ```bash
-uv venv tools/mineru-env
-uv pip install --python tools/mineru-env/bin/python "mineru==4.0.12"
-export MINERU="$PWD/tools/mineru-env/bin/mineru"
-tools/mineru-env/bin/mineru-kit models download --tier standard
-"$MINERU" telemetry disable
-"$MINERU" server start
-"$MINERU" config set parse_server.local.mode managed
-"$MINERU" server restart
-"$MINERU" server status
+uv tool install "mineru==4.0.12" --python 3.12
+mineru-kit models download --tier standard
+mineru telemetry disable
+mineru server start
+mineru config set parse_server.local.mode managed
+mineru server restart
+mineru server status --json
 ```
 
-模型约 2 GB，下载到 `~/.mineru/models`。`server status` 显示解析服务就绪后（首次加载约一分钟）才能解析。未发表稿件不要用 `--remote`（官方云服务）；`extract_pdf.py` 拒绝这个选项。安装包名与附加依赖以 MinerU 官方安装说明为准，上面的版本号是本次实测的版本。
+模型约 850 MB（standard 层级），下载到 `~/.mineru/models`；已有模型时跳过下载。`extract_pdf.py` 用 `mineru server status --json` 判断就绪：`running` 为 true，`parse_server.local.healthy` 为 true、`starting` 为 false、`mode` 不是 off。首次加载约一分钟；managed 模式下解析服务常驻，之后每篇只付解析时间。已解析过的同一文件（按内容哈希）会直接返回缓存结果。未发表稿件不要用 `--remote`（官方云服务）；`extract_pdf.py` 拒绝这个选项。注意 MinerU 服务会定期探测官方远程端点是否可达，这只是连通性探测，不发送文件。安装包名与附加依赖以 MinerU 官方安装说明为准，上面的版本号是本次实测的版本。
 
 ## 可选的句法特征环境（spaCy）
 
@@ -79,7 +79,7 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage checks --notes run/checks.json
 	```
 
-4. 记录 checks 之后再派发读者。读者只收到 `assets/prompts/` 里的通用提示和 packet。在 Claude Code 上用 `scripts/dispatch_reader.py`，它调用禁用工具、MCP 和设置的 `claude -p`（在服务器上加 `--runtime http --config`，见下一节），每次调用在 `--events` 目录下保存 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`，最后写 `summary.json`：
+4. 记录 checks 之后再派发读者。读者只收到 `assets/prompts/` 里的通用提示和 packet。在 Claude Code 上用 `scripts/dispatch_reader.py`，它调用禁用工具、MCP 和设置的 `claude -p`（用 Codex 订阅时加 `--runtime codex`，在服务器上加 `--runtime http --config`，见后面两节），每次调用在 `--events` 目录下保存 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`，最后写 `summary.json`：
 
 	```bash
 	python3 <skill-dir>/scripts/dispatch_reader.py prefix --events run/events --packet run/checkpoint-01.json --label P01
@@ -144,6 +144,21 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 - `provenance.json` 写 `runtime: "http"`、`base_url`、`url`、`model`、`api_key_env`、`request`（温度、max_tokens、response_format、超时）、`http_status`、`attempt_count`、`attempts`、`response_id`、`response_model`、`finish_reason`、`usage`（响应的 usage 对象）、`input_tokens`、`output_tokens`；`session_id` 是响应的 id，也写进遮罩回执的 `agent_id`，审计文件的 `auditor.agent_id` 为 `http-` 加 id 的后半段。`cost_usd` 为 null，除非配置给出 `price_per_token: {"input": 每输入 token 美元, "output": 每输出 token 美元}`。
 - 重定向一律拒绝（3xx 算这一次调用失败，请求不会带着密钥发到别处）。`base_url` 用 `http://` 且主机不是本机回环时，密钥会明文传输：脚本在 stderr 打一行警告并写进 `provenance.json` 的 `transport_warning`，不阻止；内网之外请用 `https://`。
 - 隔离说明是 `bare chat-completions request with no tools; isolation by request content, not by sandbox`：读者和编辑可以是同一个端点，隔离靠请求内容，不靠进程或沙箱。仓库根目录的 `docs/server-deployment.md` 说明这一运行时在服务器部署里的位置。
+
+## 读者运行时（Codex 订阅）
+
+`dispatch_reader.py` 的四个子命令都接受 `--runtime codex`，用本机的 `codex exec` 派发同一份通用提示和 packet，走 ChatGPT 账号登录的 Codex 订阅，不需要 API 密钥。文件集和更正协议与 claude 运行时相同。
+
+```bash
+python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime codex --effort low --events run/events --input run/C04.input.json --out run/C04.audit.json
+python3 <skill-dir>/scripts/dispatch_reader.py masked --runtime codex --run run/masked --case run/case.json --profile <skill-dir>/assets/masked-reader-profile.json
+```
+
+- 命令是 `codex exec --ignore-user-config --ephemeral --sandbox read-only --skip-git-repo-check --json -`：忽略 `~/.codex/config.toml`（MCP 服务器、插件、技能都不加载，2026-10-26 实测上下文从 24k 降到 18k token），不保存线程，提示从 stdin 读入。`--model` 透传为 `--model`，`--effort` 设为 `model_reasoning_effort`；`--codex` 指定可执行文件（默认 `$CODEX_BIN`，再查 PATH）；`--timeout` 默认 900 秒。
+- Codex 没有 system prompt 开关，角色句（与 claude 运行时的 `--system-prompt` 相同）前置在 stdin 提示的开头，隔一个空行；`provenance.json` 的 `system_prompt` 和 `system_prompt_delivery` 记录这一点。`<label>.prompt.txt` 仍只含通用提示加 packet。
+- `codex exec` 的 shell 工具无法关闭，只能限制为只读沙箱。脚本解析 `--json` 事件流：出现任何 `command_execution` 事件，这一次调用按"被拒绝"处理，不进入更正协议，退出码非零，事件记录在 `provenance.json` 的 `command_executions`。隔离说明写明这一点：读者不得查阅任何东西，这里靠事后核对事件流，不靠沙箱禁止。
+- `provenance.json` 写 `runtime: "codex"`、`command`、`thread_id`（也作 `session_id`，遮罩回执的 `agent_id` 为 `codex-exec-` 加前八位）、`usage`、`input_tokens`、`cached_input_tokens`、`output_tokens`、`reasoning_output_tokens`、`event_errors`；`cost_usd` 为 null（订阅计费）。`.cli.json` 保存完整事件流、无法解析的行和 stderr 尾部。
+- 订阅有速率上限：一篇稿件的遮罩阅读会发几十次调用，额度紧时分批跑，`masked` 的 `--max-events` 控制每次最多调用数。
 
 ## 服务器全自动运行
 
