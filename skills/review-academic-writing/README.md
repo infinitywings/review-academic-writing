@@ -35,7 +35,14 @@ Claude Code 读取 `SKILL.md` 并按需读取 `references/`，`${CLAUDE_SKILL_DI
 
 稿件是 PDF 时，第 1 步用 `scripts/extract_pdf.py`，它调用本地 MinerU。2026-10-20 的对比里 MinerU 4.0.12 standard 层级在双栏、公式、表格上最好（见项目目录 `runs/2026-10-20/pdf2md-comparison.md`）。MinerU 不是语言模型：standard 层级是一组约 850 MB 的版面、公式、表格和 OCR 模型，在 M4 MacBook Air（32 GB）上用 CPU 解析一篇 12 页双栏论文约两分钟。编辑和读者角色仍由订阅的 Claude Code 或 Codex 担任（见"读者运行时"）。
 
-MinerU 用 `uv tool` 装成独立环境，可执行文件进 `~/.local/bin`，不进 skill 目录，也不放在项目目录里（项目目录清理时容易一起删掉）：
+MinerU 用 `uv tool` 装成独立环境，可执行文件进 `~/.local/bin`，不进 skill 目录，也不放在项目目录里（项目目录清理时容易一起删掉）。最简单的做法是运行包内的安装脚本，它幂等地完成下面的全部步骤（没装就装、模型缺了就下、服务没起就起，已就绪时什么都不改），需要 `uv` 已存在：
+
+```bash
+bash <skill-dir>/scripts/setup_mineru.sh          # 安装、下载模型、启动并等到就绪
+bash <skill-dir>/scripts/setup_mineru.sh --check  # 只报告每一步的状态，不改任何东西
+```
+
+退出码 0 表示本地解析服务已就绪，1 表示等待后仍未就绪，2 表示缺 `uv`。`--version`、`--tier`、`--python`、`--wait` 可改默认值（4.0.12、standard、3.12、180 秒）。脚本从不使用 `--remote`。手动执行时等价于：
 
 ```bash
 uv tool install "mineru==4.0.12" --python 3.12
@@ -219,7 +226,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 156 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 167 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
@@ -233,7 +240,7 @@ python3 -m unittest discover -s tests
 - `SKILL.md`：主流程。
 - `references/`：分阶段记录协议、遮罩阅读协议、执行流程、审稿规则、用词规则、输出契约、试验摘要、文献依据、插件化构想。
 - `assets/`：两种读者画像、阶段笔记模板、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
-- `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
+- `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）、MinerU 安装脚本 `setup_mineru.sh`、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
 - `server/`：服务器全自动运行的编排器 `orchestrator.py`、编辑端 HTTP 客户端 `llm.py`，`prompts/` 下八个编辑步骤模板。
-- `tests/`：七个 unittest 文件。
+- `tests/`：八个 unittest 文件。
 - `VERSION`、`CHANGELOG.md`：版本与变更。

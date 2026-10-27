@@ -546,7 +546,7 @@ def build_case(index: dict[str, Any], sidecar: dict[str, Any], budget: int, asse
 # ---------------------------------------------------------------- MinerU extract
 
 
-MINERU_INSTALL_HINT = 'pass --mineru, set MINERU, or install it with `uv tool install "mineru==4.0.12" --python 3.12` (see README)'
+MINERU_INSTALL_HINT = 'pass --mineru, set MINERU, or run scripts/setup_mineru.sh next to this script (it installs MinerU with `uv tool install "mineru==4.0.12" --python 3.12`, downloads the models and starts the managed parse server; see README)'
 MINERU_NOT_FOUND = "MinerU executable not found: " + MINERU_INSTALL_HINT
 
 
@@ -624,7 +624,7 @@ def run_extract(pdf: Path, out_dir: Path, mineru: str | None, pages: str, timeou
         if fallback is None:
             raise ExtractError(
                 reason + (". Status output:\n" + status_text if status_text else "") + "\n\n"
-                "Start it with:\n  " + "\n  ".join(MINERU_START_COMMANDS)
+                "Start it with scripts/setup_mineru.sh (next to this script; idempotent, --check only reports), or by hand:\n  " + "\n  ".join(MINERU_START_COMMANDS)
                 + "\nWait until `mineru server status` reports the parse server ready, then retry. Never use --remote for an unpublished manuscript.\n"
                 "For a text-only, low-fidelity edition instead (two-column order, formulas, and tables may be lost), rerun with --fallback pdftotext or --fallback pdfplumber."
             )

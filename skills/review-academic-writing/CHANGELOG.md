@@ -1,5 +1,14 @@
 # 变更说明
 
+## 0.16.3（2026-10-26）
+
+一键安装本地 MinerU，让只有 Claude Code 的使用者把 GitHub 链接交给宿主就能装完整套环境。已有脚本的命令行、文件格式不变。
+
+- 新增 `scripts/setup_mineru.sh`：幂等地检查并完成 MinerU 的安装与启动。步骤：`uv` 缺失时退出码 2 并给提示（不替使用者装 `uv`）；`mineru` 不在 PATH 时 `uv tool install "mineru==4.0.12" --python 3.12`（已装其他版本时只报告，不替换）；`mineru-kit models verify --tier standard` 失败时才下载模型；telemetry 未关时关闭；`parse_server.local.mode` 不是 managed 时设置并标记需要重启；服务未运行时 `server start`，模式改过时 `server restart`；然后轮询 `server status --json` 直到 `running`、`local.healthy`、非 `starting`、`mode` 非 off，默认最多等 180 秒。退出码 0 就绪、1 未就绪、2 缺前提。`--check` 只报告每一步会做什么，不改任何东西；`--version`、`--tier`、`--python`、`--wait` 可改默认值。脚本把 `~/.local/bin` 临时加进 PATH，从不使用 `--remote`。
+- `extract_pdf.py`：找不到 MinerU 和解析服务未就绪两处提示都先指向 `scripts/setup_mineru.sh`，手动命令列表保留在后面。
+- SKILL.md 第 1 节第 4 步、包 README 的 MinerU 一节和根 README 的安装步骤改为先运行脚本；根 README 加一段可直接贴给 Claude Code 的安装请求（一步 `claude plugin install --marketplace <链接>` 加运行脚本）。
+- 测试加 7 个（`tests/test_setup_mineru.py`，用临时目录里的假 `uv`、`mineru`、`mineru-kit` 记录调用并模拟状态：缺 uv 退出 2 且不跑任何命令；全新机器按顺序安装、下载、关遥测、设模式、启动；已就绪时只执行只读命令；改模式后重启而非启动；`--check` 不改状态；`--check` 就绪时退出 0；其他版本只报告不替换），共 167 个。
+
 ## 0.16.2（2026-10-26）
 
 在一次完整的七阶段审稿（28 页 ACL 投稿，8 个前缀检查点、29 窗遮罩阅读、45 次保真审计）里发现的四处修补。命令行、文件格式、日志 schema 不变。

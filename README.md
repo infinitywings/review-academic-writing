@@ -37,6 +37,12 @@
 
 ### 第 1 步：装 skill
 
+**最省事的装法（只有 Claude Code 时）。** 把下面这段贴给 Claude Code，它会装插件、检查并安装本地 MinerU、启动解析服务并确认就绪；过程中会弹几次权限确认：
+
+> 安装 https://github.com/infinitywings/review-academic-writing 这个插件（命令 `claude plugin install review-academic-writing --marketplace https://github.com/infinitywings/review-academic-writing`），然后运行它附带的 `scripts/setup_mineru.sh`（在插件缓存目录 `~/.claude/plugins/cache/infinitywings/review-academic-writing/<版本>/skills/review-academic-writing/scripts/` 下）装好本地 MinerU 并等到解析服务就绪。不要用 MinerU 的 `--remote`。装完提醒我重启。
+
+`claude plugin install --marketplace <source>` 接受 `owner/repo`、https 链接或本地路径，没登记过的 marketplace 会自动登记，所以一条命令就够。下面是分步的写法。
+
 **Claude Code / Claude Desktop（Code 标签）。** 在会话里登记 marketplace（名字是 `infinitywings`），然后安装插件，装完重启一次：
 
 ```
@@ -52,7 +58,13 @@
 
 ### 第 2 步：装 PDF 解析器（稿件是 PDF 时需要）
 
-稿件是 Word 或 Markdown 时跳过这一步。PDF 用本地 MinerU 解析（约 850 MB 的版面、公式、表格和 OCR 模型，不是语言模型；M4 MacBook Air 上解析一篇 28 页双栏稿件约三分钟）。需要 `uv`，装到用户目录而不是项目目录：
+稿件是 Word 或 Markdown 时跳过这一步。PDF 用本地 MinerU 解析（约 850 MB 的版面、公式、表格和 OCR 模型，不是语言模型；M4 MacBook Air 上解析一篇 28 页双栏稿件约三分钟）。需要 `uv`，装到用户目录而不是项目目录。包内的 `scripts/setup_mineru.sh` 幂等地完成全部步骤（没装就装、模型缺了就下、服务没起就起、已就绪时什么都不改，`--check` 只报告），退出码 0 即就绪：
+
+```bash
+bash skills/review-academic-writing/scripts/setup_mineru.sh
+```
+
+手动执行时等价于：
 
 ```bash
 uv tool install "mineru==4.0.12" --python 3.12
@@ -72,7 +84,7 @@ mineru server status --json
 
 读者和审计默认走 `claude -p --model claude-opus-5-5`，即使用者自己的 Claude 订阅，工具、MCP 和设置全部禁用；有 Codex 订阅的人派发时加 `--runtime codex`；服务器上也可以用 OpenAI 兼容接口（`--runtime http`）。一篇 28 页稿件做完整流程（8 个前缀检查点、29 窗遮罩阅读、1 个分支、40 多次保真审计）读者侧调用约 70 次、墙钟约两小时，花费相当于几美元的 API 额度。只要快速审读或只审某一节，在请求里说明，流程会按比例缩小覆盖范围但保留阶段顺序。
 
-逐条命令、字段要求和降级说明见 `skills/review-academic-writing/README.md` 与 `references/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单；从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 160 个用例通过（没有 spaCy 时跳过 1 个）。
+逐条命令、字段要求和降级说明见 `skills/review-academic-writing/README.md` 与 `references/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单；从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 167 个用例通过（没有 spaCy 时跳过 1 个）。
 
 ## 状态
 
