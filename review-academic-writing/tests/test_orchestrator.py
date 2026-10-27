@@ -197,6 +197,9 @@ class FakeLLM:
                                   "editor_check": "the threshold alone was usable", "evidence": [], "candidate_id": None}],
                 "candidates": [{"id": data["next_candidate_id"], "anchor": A("B0005", "91 percent"), "question": "Is 91 percent compared with anything?", "evidence": []}]}
 
+    def step_recheck(self, data, batch, attempt):
+        return {"summary": f"pass {data['pass']} found nothing new", "candidates": []}
+
     def step_decisions(self, data, batch, attempt):
         common = {"verification": "v", "countercheck": "c", "evidence": []}
         return {"summary": "five decisions", "decisions": [
@@ -438,19 +441,19 @@ class OrchestratorTests(unittest.TestCase):
         # Summary with literal counts.
         summary = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
         self.assertTrue(summary["ok"])
-        self.assertEqual(summary["totals"]["editor"]["calls"], 13)
+        self.assertEqual(summary["totals"]["editor"]["calls"], 17)  # 13 plus two recheck passes over two batches
         self.assertEqual(summary["totals"]["readers"]["calls"], 7)
         self.assertEqual(summary["totals"]["readers"]["by_kind"], {"prefix": 1, "masked": 2, "branch": 1, "audit": 3})
-        self.assertEqual(summary["totals"]["calls"], 20)
+        self.assertEqual(summary["totals"]["calls"], 24)
         self.assertEqual(summary["totals"]["retries"], 2)
-        self.assertEqual(summary["totals"]["editor"]["input_tokens"], 1300)
-        self.assertEqual([c["label"] for c in summary["editor_calls"]], ["00-scope", "01-reading-batch01", "01-reading-batch01-b", "01-reading-batch01-c", "01-reading-batch02", "02-checks-batch01", "02-checks-batch02", "03-reconcile", "04-decisions", "05-repairs", "05-repairs-audit", "06-review", "07-report"])
+        self.assertEqual(summary["totals"]["editor"]["input_tokens"], 1700)
+        self.assertEqual([c["label"] for c in summary["editor_calls"]], ["00-scope", "01-reading-batch01", "01-reading-batch01-b", "01-reading-batch01-c", "01-reading-batch02", "02-checks-batch01", "02-checks-batch02", "02-checks-pass2-batch01", "02-checks-pass2-batch02", "02-checks-pass3-batch01", "02-checks-pass3-batch02", "03-reconcile", "04-decisions", "05-repairs", "05-repairs-audit", "06-review", "07-report"])
         self.assertEqual([c["status"] for c in summary["editor_calls"]][:4], ["ok", "rejected", "rejected", "ok"])
         self.assertEqual(summary["stages"]["decisions"], {"status": "recorded", "accepted": 2, "needs_author": 1, "rejected": 1, "merged": 1})
         self.assertEqual(summary["stages"]["repairs"], {"status": "recorded", "repairs": 3, "with_wording": 1, "author_questions": 2, "audits": 3, "converted_by_audit": ["C05"]})
         self.assertEqual(summary["stages"]["review"]["issues"], 3)
         self.assertEqual([(a["label"], a["verdict"], a["accepted"]) for a in summary["audits"]], [("C01", "preserved", True), ("C05", "changed", False), ("C05-2", "changed", False)])
-        self.assertEqual(len(self.server.requests), 20)
+        self.assertEqual(len(self.server.requests), 24)
         # Prompts: the system prompt names the role; editor prompts embed the reference sections; no file holds the key.
         self.assertEqual(self.server.requests[0]["body"]["messages"][0]["content"], orch.llm.EDITOR_SYSTEM_PROMPT)
         first = (self.out / "editor" / "00-scope.prompt.txt").read_text(encoding="utf-8")
@@ -627,6 +630,28 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("it does not mention W02, W03.", second)
         self.assertIn("| W03 |", (self.out / "report.md").read_text(encoding="utf-8"))
 
+    def test_later_checks_passes_add_only_what_the_earlier_ones_missed(self):
+        def step_recheck(data, batch, attempt):
+            found = [{"id": "x", "anchor": A("B0002", "a separate observer"), "question": "Separate from what?", "evidence": []}] if data["pass"] == 2 and batch == 1 else []
+            return {"summary": "rechecked", "candidates": found}
+
+        self.server.step_recheck = step_recheck
+        self.server.break_step = "decisions"  # the fake's decisions name C01-C05 only; this test is about the checks stage
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 1, out + err)
+
+        def recorded(label):
+            prompt = (self.out / "editor" / f"{label}.prompt.txt").read_text(encoding="utf-8")
+            return [c["id"] for c in json.loads(prompt.rsplit("\n=== INPUT (one JSON object) ===\n", 1)[1])["already_recorded"]["candidates"]]
+
+        self.assertEqual(recorded("02-checks-pass2-batch01"), ["C01", "C02", "C03", "C04"])
+        self.assertEqual(recorded("02-checks-pass3-batch02"), ["C01", "C02", "C03", "C04", "C05"])
+        checks = json.loads((self.out / "journal" / "02-checks.notes.json").read_text(encoding="utf-8"))
+        self.assertEqual(checks["candidates"][-1], {"id": "C05", "anchor": A("B0002", "a separate observer"), "question": "Separate from what?", "evidence": []})
+        summary = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual((summary["stages"]["checks"]["passes"], summary["stages"]["checks"]["candidates_by_pass"]), (3, [4, 1, 0]))
+        self.assertEqual(summary["failure"]["stage"], "decisions")
+
     def test_checks_asks_for_the_short_fields_before_the_long_passages(self):
         # Flash-Next followed the example's order and closed the object after passages, dropping the three fields after
         # it in 3 of 4 replays; with them first it kept all of them in 4 of 4.
@@ -640,7 +665,7 @@ class OrchestratorTests(unittest.TestCase):
         # (3 of 4 first checks answers flawed); with this rule 3 of 4 came back clean.
         rule = "keeping typographic quotation marks such as \u201c \u201d \u2018 \u2019 exactly as they appear"
         steps = sorted(p.stem for p in (PACKAGE / "server" / "prompts").glob("*.txt") if '"quote"' in p.read_text(encoding="utf-8"))
-        self.assertEqual(steps, ["checks", "decisions", "reading", "reconcile", "repairs"])
+        self.assertEqual(steps, ["checks", "decisions", "reading", "recheck", "reconcile", "repairs"])
         for step in steps:
             self.assertIn(rule, (PACKAGE / "server" / "prompts" / f"{step}.txt").read_text(encoding="utf-8"), step)
 

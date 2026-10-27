@@ -553,18 +553,53 @@ class Run:
                 self.branch_question = result["branch_question"]
             summaries.append(call_summary(self.client.calls[-1]))
             self.say(f"checks: batch {number}/{len(batches)} accepted")
-        checks = {"snapshot_id": self.index["snapshot_id"], "summary": " ".join(summaries), "concepts": merged["concepts"]}
-        if not merged["concepts"]:
-            checks["no_concepts_reason"] = " ".join(merged["reasons"]) or "No concept record was relevant."
-        checks.update({"passages": [merged["passages"][i] for i in self.included], "checkpoint_plan": merged["checkpoint_plan"], "candidates": merged["candidates"]})
+        def notes_with(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+            checks = {"snapshot_id": self.index["snapshot_id"], "summary": " ".join(summaries), "concepts": merged["concepts"]}
+            if not merged["concepts"]:
+                checks["no_concepts_reason"] = " ".join(merged["reasons"]) or "No concept record was relevant."
+            checks.update({"passages": [merged["passages"][i] for i in self.included], "checkpoint_plan": merged["checkpoint_plan"], "candidates": candidates})
+            return checks
+
+        # Later passes look only for candidates the earlier ones missed: the same prompt at temperature 0 would repeat itself,
+        # and two single-pass runs of the SaTC proposal (11 and 5 candidates) raised no problem in common.
+        found = [len(merged["candidates"])]
+        for pass_number in range(2, self.args.checks_passes + 1):
+            before = len(merged["candidates"])
+            for number, batch in enumerate(batches, 1):
+                values = {"batch": number, "batches": len(batches), "pass": pass_number, "passes": self.args.checks_passes, "block_range": f"{batch[0]} to {batch[-1]}",
+                          "input": {"snapshot_id": self.index["snapshot_id"], "pass": pass_number, "reader_profile": self.profile, "batch_block_ids": batch,
+                                    "blocks": self.block_rows(batch), "paraphrases_of_all_included_blocks": paraphrases,
+                                    "already_recorded": {"concepts": [{"concept_id": c["concept_id"], "term": c["term"]} for c in merged["concepts"]],
+                                                         "candidates": [{"id": c["id"], "anchor": c["anchor"], "question": c["question"]} for c in merged["candidates"]]}}}
+
+                def accept_more(parsed: Any, call: llm.Call, batch: list[str] = batch) -> list[dict[str, Any]]:
+                    require(isinstance(parsed, dict), "The response must be one JSON object.")
+                    require_array(parsed, "candidates")
+                    require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
+                    candidates = []
+                    for n, row in enumerate(parsed["candidates"]):
+                        require(isinstance(row, dict), "Each candidate must be an object.")
+                        require(isinstance(row.get("anchor"), dict) and row["anchor"].get("block_id") in batch, f"Each candidate's anchor must be in this batch ({', '.join(batch)}).")
+                        candidates.append({**row, "id": f"C{len(merged['candidates']) + n + 1:02d}"})
+                    try:
+                        rs.validate_notes("checks", notes_with(merged["candidates"] + candidates), start, self.index, {})
+                    except rp.ReviewDataError as exc:
+                        raise Rejected(helper_message(exc)) from exc
+                    return candidates
+
+                label = f"02-checks-pass{pass_number}" + (f"-batch{number:02d}" if len(batches) > 1 else "")
+                merged["candidates"] += self.ask("recheck", label, values, accept_more, schemas.recheck(batch, list(self.blocks)))
+                self.say(f"checks: pass {pass_number}/{self.args.checks_passes} batch {number}/{len(batches)} accepted")
+            found.append(len(merged["candidates"]) - before)
+        checks = notes_with(merged["candidates"])
         try:
             self.record("checks", checks, self.out / "checks.json")
         except rp.ReviewDataError as exc:
             raise StopRun("checks", helper_message(exc), "Each batch passed validation but the merged notes did not; inspect checks.json.") from exc
         if self.branch_question:
             self.write_json(self.out / "branch-question.json", {"id": "Q01", "question": self.branch_question["question"], "selected_with_full_text": True, "reason": self.branch_question["reason"]})
-        self.stages["checks"] = {"status": "recorded", "batches": len(batches), "concepts": len(merged["concepts"]), "candidates": len(merged["candidates"]),
-                                 "checkpoint_plan": len(merged["checkpoint_plan"]), "branch_question": self.branch_question is not None}
+        self.stages["checks"] = {"status": "recorded", "batches": len(batches), "passes": self.args.checks_passes, "candidates_by_pass": found, "concepts": len(merged["concepts"]),
+                                 "candidates": len(merged["candidates"]), "checkpoint_plan": len(merged["checkpoint_plan"]), "branch_question": self.branch_question is not None}
         self.say(f"checks: recorded ({len(merged['candidates'])} candidates, {len(merged['checkpoint_plan'])} planned checkpoints)")
 
     # ------------------------------------------------------------ 3. readers through dispatch_reader
@@ -937,7 +972,7 @@ class Run:
         editor_config, reader_config = llm.load_config(self.config), llm.load_config(self.reader_config)
         summary = {"ok": ok, "outcome": outcome, "manuscript": str(self.manuscript), "snapshot_id": self.index.get("snapshot_id"), "out": str(self.out),
                    "editor": {"base_url": editor_config.get("base_url"), "model": editor_config.get("model")}, "readers_config": {"base_url": reader_config.get("base_url"), "model": reader_config.get("model")},
-                   "options": {"batch_blocks": self.args.batch_blocks, "prefix_checkpoints": self.args.prefix_checkpoints, "masked_windows": self.args.masked_windows, "masked_budget": self.args.masked_budget, "language": self.args.language},
+                   "options": {"batch_blocks": self.args.batch_blocks, "checks_passes": self.args.checks_passes, "prefix_checkpoints": self.args.prefix_checkpoints, "masked_windows": self.args.masked_windows, "masked_budget": self.args.masked_budget, "language": self.args.language},
                    "stages": self.stages, "editor_calls": [c.row() for c in self.client.calls], "reader_calls": self.reader_calls, "audits": self.audit_rows,
                    "totals": self.statistics(), "failure": failure, "recorded_at": utc_now()}
         self.write_json(self.out / "summary.json", summary)
@@ -990,13 +1025,14 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--max-events", type=int, default=40, help="Maximum masked reader calls, corrections included (default 40).")
     run.add_argument("--prefix-checkpoints", type=int, default=3, help="Maximum prefix checkpoints the checks plan may request (default 3).")
     run.add_argument("--batch-blocks", type=int, default=20, help="Blocks per reading and checks prompt (default 20).")
+    run.add_argument("--checks-passes", type=int, default=3, help="Passes of the checks stage; passes after the first only add candidates the earlier ones missed (default 3).")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    for name in ("masked_windows", "masked_budget", "max_events", "prefix_checkpoints", "batch_blocks"):
-        if getattr(args, name) < 0 or (name in ("masked_budget", "max_events", "batch_blocks") and getattr(args, name) <= 0):
+    for name in ("masked_windows", "masked_budget", "max_events", "prefix_checkpoints", "batch_blocks", "checks_passes"):
+        if getattr(args, name) < 0 or (name in ("masked_budget", "max_events", "batch_blocks", "checks_passes") and getattr(args, name) <= 0):
             print(json.dumps({"ok": False, "error": {"code": "cli_error", "message": f"--{name.replace('_', '-')} must be a positive integer."}}), file=sys.stderr)
             return 2
     try:

@@ -40,6 +40,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - Candidate ids and concept ids need only be unique within this batch.
 - Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - A word broken by a space (“as sume”, “assess ment”) is left by PDF extraction, not written by the author; do not raise it as a candidate.
+- An unfinished drafting placeholder (TODO, TBD, XX, [citation needed], an empty pair of brackets) is a candidate, not a note in wording_check: a reader takes the passage as incomplete. Quote the placeholder as the anchor.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===

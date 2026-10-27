@@ -388,5 +388,21 @@ class MaskedReaderTests(unittest.TestCase):
         self.assertEqual((result["sequence"], result["complete"], result["next_mode"]), (3, False, "window"))
 
 
+    def test_response_schema_offers_only_whole_sentences_of_a_text_source_as_quotes(self):
+        packet = {"sequence": 3, "mode": "window", "available_lookup_ids": ["F1"],
+                  "carry_memory": {"gist": "g", "notes": [{"id": "n1", "kind": "established", "text": "t", "sources": ["B1"], "since": 1}]}}
+        exposed = {"B1": "We call that purpose the device\u2019s usage. It reads \u201cclear\u201d too!\nNext line", "F1": None}
+        schema = reader.response_schema(packet, exposed)
+        anchors = schema["properties"]["understood"]["items"]["properties"]["anchor"]["anyOf"]
+        self.assertEqual(anchors[0], {"type": "string", "enum": ["B1", "F1"]})
+        self.assertEqual(anchors[1]["properties"], {"source_id": {"const": "B1"},
+                                                    "quote": {"type": "string", "enum": ["", "It reads \u201cclear\u201d too!", "Next line", "We call that purpose the device\u2019s usage."]}})
+        self.assertEqual(anchors[2]["properties"], {"source_id": {"const": "F1"}, "quote": {"type": "string"}})
+        memory = schema["properties"]["carry_memory"]["properties"]
+        self.assertEqual(memory["notes"]["items"]["properties"]["since"], {"type": "integer", "enum": [1, 3]})
+        self.assertEqual(memory["dropped"]["items"]["properties"]["id"], {"type": "string", "enum": ["n1"]})
+        self.assertEqual([a["properties"]["kind"] for a in schema["properties"]["next_action"]["anyOf"]], [{"const": "advance"}, {"const": "lookup"}])
+
+
 if __name__ == "__main__":
     unittest.main()

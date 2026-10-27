@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 import uuid
@@ -82,6 +83,7 @@ ASSET_POLICIES = ("strict-prefix", "reference-jump")
 BASIS_KINDS = ("explicit", "inferred", "background")
 MEMORY_UNITS = ("words", "characters")
 NOTE_KINDS = ("established", "tentative", "open_question", "qualification")
+SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
 SUPPORT_KINDS = ("stated", "inferred", "background", "undetermined")
 
 
@@ -131,7 +133,9 @@ BRANCH_RESPONSE_FORMAT = {
 def response_schema(packet, exposed):
     """RESPONSE_FORMAT as a JSON Schema for a constrained decoder: the closed vocabularies, the source ids this event
     exposes, the `since` values a note may carry, the carried notes that may be dropped, and the lookups the packet
-    allows. validate_response stays the authority (lineage, the memory budget, exact quotes)."""
+    allows. A quote from a text block is one of its whole sentences (or empty), so the decoder writes it byte for byte;
+    readers had written straight apostrophes for curly ones, and a frozen response may not be repaired afterwards.
+    validate_response stays the authority (lineage, the memory budget)."""
     def obj(properties, optional=()):
         return {"type": "object", "properties": properties, "required": [k for k in properties if k not in optional], "additionalProperties": False}
 
@@ -139,7 +143,11 @@ def response_schema(packet, exposed):
         return {"type": "string", "enum": sorted(values)}
 
     text = {"type": "string"}
-    anchor = {"anyOf": [one_of(exposed), obj({"source_id": one_of(exposed), "quote": text}, optional=("quote",))]}
+    anchors = [one_of(exposed)]
+    for source, block in sorted(exposed.items()):
+        quote = text if block is None else one_of({""} | {piece.strip() for piece in SENTENCE_BREAK.split(block) if piece.strip()})
+        anchors.append(obj({"source_id": {"const": source}, "quote": quote}, optional=("quote",)))
+    anchor = {"anyOf": anchors}
     carried = packet["carry_memory"]["notes"]
     sources = set(exposed) | {source for note in carried for source in note["sources"]}
     note = obj({"id": text, "kind": one_of(NOTE_KINDS), "text": text, "sources": {"type": "array", "items": one_of(sources), "minItems": 1},

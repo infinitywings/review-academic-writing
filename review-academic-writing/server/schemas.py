@@ -97,6 +97,11 @@ def checks(batch: list[str], included: list[str], block_ids: list[str], remainin
     }, optional=("no_concepts_reason",))
 
 
+def recheck(batch: list[str], block_ids: list[str]) -> Schema:
+    return obj({"summary": text(), "candidates": array(obj({"id": {"type": "string", "pattern": SAFE_ID_PATTERN}, "anchor": anchor(batch), "question": text(),
+                                                             "evidence": array(anchor(block_ids))}))})
+
+
 def reconcile(included: list[str], block_ids: list[str], branch_ids: list[str]) -> Schema:
     checkpoint = obj({"id": text(), "record_sequence": {"type": "integer", "minimum": 0}, "anchor": anchor(included), "result": text(), "limitation": text()},
                      optional=("record_sequence", "anchor"))
