@@ -563,6 +563,7 @@ class Run:
         # Later passes look only for candidates the earlier ones missed: the same prompt at temperature 0 would repeat itself,
         # and two single-pass runs of the SaTC proposal (11 and 5 candidates) raised no problem in common.
         found = [len(merged["candidates"])]
+        skipped: list[str] = []
         for pass_number in range(2, self.args.checks_passes + 1):
             before = len(merged["candidates"])
             for number, batch in enumerate(batches, 1):
@@ -588,7 +589,14 @@ class Run:
                     return candidates
 
                 label = f"02-checks-pass{pass_number}" + (f"-batch{number:02d}" if len(batches) > 1 else "")
-                merged["candidates"] += self.ask("recheck", label, values, accept_more, schemas.recheck(batch, list(self.blocks)))
+                try:
+                    merged["candidates"] += self.ask("recheck", label, values, accept_more, schemas.recheck(batch, list(self.blocks)))
+                except StopRun as exc:
+                    # A recheck only adds candidates; losing one batch's additions must not cost the first pass.
+                    skipped.append(label)
+                    self.log("recheck_skipped", label=label, message=str(exc))
+                    self.say(f"checks: pass {pass_number}/{self.args.checks_passes} batch {number}/{len(batches)} skipped after every attempt failed")
+                    continue
                 self.say(f"checks: pass {pass_number}/{self.args.checks_passes} batch {number}/{len(batches)} accepted")
             found.append(len(merged["candidates"]) - before)
         checks = notes_with(merged["candidates"])
@@ -598,7 +606,7 @@ class Run:
             raise StopRun("checks", helper_message(exc), "Each batch passed validation but the merged notes did not; inspect checks.json.") from exc
         if self.branch_question:
             self.write_json(self.out / "branch-question.json", {"id": "Q01", "question": self.branch_question["question"], "selected_with_full_text": True, "reason": self.branch_question["reason"]})
-        self.stages["checks"] = {"status": "recorded", "batches": len(batches), "passes": self.args.checks_passes, "candidates_by_pass": found, "concepts": len(merged["concepts"]),
+        self.stages["checks"] = {"status": "recorded", "batches": len(batches), "passes": self.args.checks_passes, "candidates_by_pass": found, "rechecks_skipped": skipped, "concepts": len(merged["concepts"]),
                                  "candidates": len(merged["candidates"]), "checkpoint_plan": len(merged["checkpoint_plan"]), "branch_question": self.branch_question is not None}
         self.say(f"checks: recorded ({len(merged['candidates'])} candidates, {len(merged['checkpoint_plan'])} planned checkpoints)")
 

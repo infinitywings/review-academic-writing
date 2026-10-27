@@ -652,6 +652,22 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual((summary["stages"]["checks"]["passes"], summary["stages"]["checks"]["candidates_by_pass"]), (3, [4, 1, 0]))
         self.assertEqual(summary["failure"]["stage"], "decisions")
 
+    def test_a_recheck_batch_that_never_validates_is_skipped_and_the_run_completes(self):
+        original = self.server.step_recheck
+
+        def step_recheck(data, batch, attempt):
+            if data["pass"] == 2 and batch == 1:
+                return {"summary": "broken", "candidates": [{"id": "x", "anchor": A("B0002", "not in the text"), "question": "q", "evidence": []}]}
+            return original(data, batch, attempt)
+
+        self.server.step_recheck = step_recheck
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        summary = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual((summary["stages"]["checks"]["candidates_by_pass"], summary["stages"]["checks"]["rechecks_skipped"]), ([4, 0, 0], ["02-checks-pass2-batch01"]))
+        self.assertEqual([e["label"] for e in self.log_events() if e["event"] == "recheck_skipped"], ["02-checks-pass2-batch01"])
+        self.assertEqual(summary["stages"]["review"]["issues"], 3)
+
     def test_checks_asks_for_the_short_fields_before_the_long_passages(self):
         # Flash-Next followed the example's order and closed the object after passages, dropping the three fields after
         # it in 3 of 4 replays; with them first it kept all of them in 4 of 4.
