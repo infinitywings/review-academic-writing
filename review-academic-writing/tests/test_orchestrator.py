@@ -301,12 +301,20 @@ class AnchorCanonicalizationTests(unittest.TestCase):
         self.assertEqual(value, [A("B0004", 'the "a" model'), A("B0004", 'the "b" model'), A("B0099", 'the "a" model'), A("B0004", "We tested the \u201ca\u201d")])
         self.assertEqual([r["quote"] for r in rewrites], ['We tested the "a"'])
 
-    def test_a_garbled_inline_formula_resolves_to_the_block_formula(self):
-        blocks = {b["block_id"]: b for b in rp.build_index("# T\n\nWe need $R _ { 1 } , \\ldots , R _ { n }$ here, so $A \\therefore B$ holds.\n")["blocks"]}
+    def test_a_garbled_or_unmarked_formula_resolves_to_the_block_formula(self):
+        blocks = {b["block_id"]: b for b in rp.build_index("# T\n\nWe need $R _ { 1 } , \\ldots , R _ { n }$ here, so $A \\therefore B$ holds. "
+                                                          "The set $S ( I )$ survives if $R ,$ holds.\n")["blocks"]}
         dropped = A("B0002", "We need $R _ { 1 } ,  , R _ { n }$ here")  # \ldots is not a JSON escape, so the decoder left it out
         tabbed = A("B0002", "so $A \therefore B$ holds.")  # one backslash: JSON reads \t as a tab
-        value, _ = orch.canonical_anchors([dropped, tabbed], blocks)
-        self.assertEqual(value, [A("B0002", "We need $R _ { 1 } , \\ldots , R _ { n }$ here"), A("B0002", "so $A \\therefore B$ holds.")])
+        unmarked = A("B0002", "The set S(I) survives if R, holds.")
+        value, _ = orch.canonical_anchors([dropped, tabbed, unmarked], blocks)
+        self.assertEqual(value, [A("B0002", "We need $R _ { 1 } , \\ldots , R _ { n }$ here"), A("B0002", "so $A \\therefore B$ holds."),
+                                 A("B0002", "The set $S ( I )$ survives if $R ,$ holds.")])
+
+    def test_a_quote_that_ends_inside_a_formula_keeps_the_whole_formula(self):
+        blocks = {b["block_id"]: b for b in rp.build_index("# T\n\nThe set of possibilities $S ( I )$ contains every case.\n")["blocks"]}
+        value, _ = orch.canonical_anchors(A("B0002", "The set of possibilities S(I)"), blocks)
+        self.assertEqual(value, A("B0002", "The set of possibilities $S ( I )$"))
 
     def test_anchors_at_every_depth_are_canonicalized(self):
         response = {"summary": 'kept "as is"',

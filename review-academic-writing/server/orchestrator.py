@@ -64,9 +64,10 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")  # ids that may become
 PREVIEW_CHARS = 200
 TYPOGRAPHY = str.maketrans({"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
                             "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
-# Models drop or garble LaTeX inside quoted formulas (\ldots lost, \therefore read as a tab), so quote matching treats each one as a unit.
-INLINE_MATH = re.compile(r"\$[^$\n]+\$")
-MATH_PLACEHOLDER = "\ufffc"
+# Quoting a formula, models drop its markup ($S ( I )$ written S(I)) or garble its commands in JSON (\ldots left out,
+# \therefore read as a tab), so quote matching ignores LaTeX markup: $ _ ^ { }, \commands, and a tab, backspace or form
+# feed with the letters after it. Newlines stay whitespace: extracted blocks contain real ones.
+LATEX_MARKUP = re.compile(r"[$_^{}]|\\[A-Za-z]+|[\x08\x09\x0c][A-Za-z]*")
 EXECUTION_MODE = "bounded stateless chat-completions requests to an OpenAI-compatible endpoint; isolation by request content, not by sandbox"
 
 
@@ -186,8 +187,8 @@ def dedupe_anchors(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def fold(text: str) -> tuple[str, list[tuple[int, int]]]:
-    """`text` with typographic quotes and dashes folded to ASCII, NFKC per character, whitespace dropped, and each inline `$...$` formula
-    reduced to one placeholder; spans[i] is the (start, end) range in `text` of folded character i."""
+    """`text` with typographic quotes and dashes folded to ASCII, NFKC per character, and whitespace and LaTeX markup dropped;
+    spans[i] is the (start, end) range in `text` of folded character i."""
     folded: list[str] = []
     spans: list[tuple[int, int]] = []
 
@@ -199,23 +200,27 @@ def fold(text: str) -> tuple[str, list[tuple[int, int]]]:
                     spans.append((at, at + 1))
 
     offset = 0
-    for match in INLINE_MATH.finditer(text):
+    for match in LATEX_MARKUP.finditer(text):
         plain(offset, match.start())
-        folded.append(MATH_PLACEHOLDER)
-        spans.append(match.span())
         offset = match.end()
     plain(offset, len(text))
     return "".join(folded), spans
 
 
 def block_span(text: str, quote: str) -> str | None:
-    """The text of the one span of `text` that equals `quote` after folding both; None when there is no such span or more than one."""
+    """The text of the one span of `text` that equals `quote` after folding both, widened over adjacent `$` and `}` so a
+    formula stays whole; None when there is no such span or more than one."""
     target, _ = fold(quote)
     folded, spans = fold(text)
     start = folded.find(target)
     if not target or start < 0 or folded.find(target, start + 1) >= 0:
         return None
-    return text[spans[start][0]:spans[start + len(target) - 1][1]].strip()
+    begin, end = spans[start][0], spans[start + len(target) - 1][1]
+    while begin > 0 and text[begin - 1] == "$":
+        begin -= 1
+    while end < len(text) and text[end] in "$}":
+        end += 1
+    return text[begin:end].strip()
 
 
 def canonical_anchors(value: Any, blocks: dict[str, dict[str, Any]]) -> tuple[Any, list[dict[str, str]]]:
