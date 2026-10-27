@@ -31,22 +31,52 @@
 | `docs/literature-review-2026-10-21.md` | 八篇核心文献的方法调研、证据归类与资源审计 |
 | `REFERENCES.md` | 文献、工具与数据资源清单，含每项借用了什么、什么未验证 |
 
-## 快速开始
+## 安装与使用
 
-Claude Code 或 Claude Desktop（Code 标签）里：
+前提：电脑上已经有 Claude Code（或 Claude Desktop 的 Code 标签）或 OpenAI Codex，并已登录各自的订阅。编辑和读者角色都由订阅的模型担任，不需要另外申请 API 账号。
+
+### 第 1 步：装 skill
+
+**Claude Code / Claude Desktop（Code 标签）。** 在会话里登记 marketplace（名字是 `infinitywings`），然后安装插件，装完重启一次：
 
 ```
 /plugin marketplace add infinitywings/review-academic-writing
 /plugin install review-academic-writing@infinitywings
 ```
 
-Claude Code 2.1.275 以上可以一步完成：`/plugin install review-academic-writing --marketplace infinitywings/review-academic-writing`。Codex 在本仓库目录里直接发现 `$review-academic-writing`；装到用户目录用 `$skill-installer`，或把 `skills/review-academic-writing/` 复制到 `~/.agents/skills/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单。手动复制安装、MinerU 环境（可选，缺失时 `extract_pdf.py extract --fallback pdftotext` 降级为纯文本）和一次审稿的命令顺序见 `skills/review-academic-writing/README.md`。
+命令行等价于 `claude plugin marketplace add infinitywings/review-academic-writing` 加 `claude plugin install review-academic-writing@infinitywings`；Claude Code 2.1.275 以上可以一步完成：`/plugin install review-academic-writing --marketplace infinitywings/review-academic-writing`。装好后 skill 名为 `review-academic-writing:review-academic-writing`，`claude plugin list` 显示版本。升级用 `claude plugin marketplace update infinitywings`，再 `claude plugin update review-academic-writing@infinitywings`，然后重启。之前手动复制到 `~/.claude/skills/` 的旧副本会与插件重名，升级前先移走。
 
-从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 156 个用例通过（没有 spaCy 时跳过 1 个）。然后在宿主里提供稿件并调用 skill。
+**Codex。** 克隆本仓库，在仓库目录里打开 Codex 就能用 `$review-academic-writing`（仓库根的 `.agents/skills/review-academic-writing` 是指向包目录的符号链接，Codex 跟随符号链接）。要在任何目录都能用，把 `skills/review-academic-writing/` 复制或链接到 `~/.agents/skills/review-academic-writing`，或在 Codex 里用 `$skill-installer` 从本仓库安装。Windows 上没有符号链接支持的检出会把链接变成一个文本文件，这时用复制。
+
+**手动复制。** `cp -R skills/review-academic-writing ~/.claude/skills/review-academic-writing`，Claude Code 同样会读取它；不要与插件安装并存。
+
+### 第 2 步：装 PDF 解析器（稿件是 PDF 时需要）
+
+稿件是 Word 或 Markdown 时跳过这一步。PDF 用本地 MinerU 解析（约 850 MB 的版面、公式、表格和 OCR 模型，不是语言模型；M4 MacBook Air 上解析一篇 28 页双栏稿件约三分钟）。需要 `uv`，装到用户目录而不是项目目录：
+
+```bash
+uv tool install "mineru==4.0.12" --python 3.12
+mineru-kit models download --tier standard
+mineru telemetry disable
+mineru server start
+mineru config set parse_server.local.mode managed
+mineru server restart
+mineru server status --json
+```
+
+最后一条输出里 `running` 和 `parse_server.local.healthy` 为 true 即就绪；服务常驻后每篇只付解析时间。没有 MinerU 也能跑：抽取命令加 `--fallback pdftotext`（poppler，`brew install poppler`）得到低保真的纯文本，双栏顺序、公式、表格和图注可能丢失，凡用于结论的段落要回 PDF 核对。未发表稿件不要用 MinerU 的 `--remote`（官方云服务），脚本拒绝这个选项。
+
+### 第 3 步：跑一次审稿
+
+在宿主会话里给出稿件（拖入 PDF 或写路径），说明目标读者和任务，例如"用 review-academic-writing 对这篇稿件做完整审稿，读者是本领域的审稿人"。模型按 `SKILL.md` 走七个阶段：抽取与索引 → 读者画像与范围 → 逐块阅读笔记 → 概念、段落、措辞检查与检查点计划 → 派发信息受限的读者（前缀检查点、遮罩滑窗阅读、分支追问）→ 汇总、决定、修复（每条替换句经独立保真审计）→ 就绪检查与最终报告。所有中间文件写在稿件旁边的运行目录（如 `run/`），不进 skill 目录；每个阶段的记录入哈希链，终稿每条结论对应一条已记录的候选、决定和修改。
+
+读者和审计默认走 `claude -p --model claude-opus-5-5`，即使用者自己的 Claude 订阅，工具、MCP 和设置全部禁用；有 Codex 订阅的人派发时加 `--runtime codex`；服务器上也可以用 OpenAI 兼容接口（`--runtime http`）。一篇 28 页稿件做完整流程（8 个前缀检查点、29 窗遮罩阅读、1 个分支、40 多次保真审计）读者侧调用约 70 次、墙钟约两小时，花费相当于几美元的 API 额度。只要快速审读或只审某一节，在请求里说明，流程会按比例缩小覆盖范围但保留阶段顺序。
+
+逐条命令、字段要求和降级说明见 `skills/review-academic-writing/README.md` 与 `references/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单；从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 160 个用例通过（没有 spaCy 时跳过 1 个）。
 
 ## 状态
 
-实验性。2026 年 10 月在一篇真实稿件上完整走过一轮七阶段流程（结果不在仓库内，稿件未发表）；三个独立前缀读者和一次遮罩阅读的观察与编辑的独立检查重合了九成，并补充了六个编辑没有列出的问题；独立审计拦下了编辑自己写的一条放宽原文范围的替换句。这些是单次运行的观察，不是效果验证。
+实验性。2026 年 10 月在两篇真实稿件上各完整走过一轮七阶段流程（结果不在仓库内，稿件未发表）。第一轮：三个独立前缀读者和一次遮罩阅读的观察与编辑的独立检查重合了九成，并补充了六个编辑没有列出的问题；独立审计拦下了编辑自己写的一条放宽原文范围的替换句。第二轮（28 页，8 个前缀检查点、29 窗遮罩阅读、1 个分支、45 次审计）：46 个候选中 28 条接受、12 条转为作者问题；审计驳回了 20 版替换句，驳回理由集中在新增量词、改动时间从句和给表格行补主语。这些是单次运行的观察，不是效果验证。
 
 ## 依据
 
