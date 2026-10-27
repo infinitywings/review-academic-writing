@@ -329,6 +329,10 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("--config applies to --runtime http only.", err)
 
+    def test_a_raw_tab_inside_a_json_string_is_parsed(self):
+        # A constrained decoder lets one through when a model writes \therefore with a single backslash.
+        self.assertEqual(dr.parse_result('{"quote": "so $A \therefore B$"}'), ({"quote": "so $A \therefore B$"}, None, False))
+
 
 # ---------------------------------------------------------------- http runtime
 

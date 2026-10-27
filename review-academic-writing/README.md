@@ -139,9 +139,9 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 ```
 
 - 密钥只从 `api_key_env` 指定的环境变量读取，不写在文件或命令行里；变量未设置时以退出码 2 结束并说明变量名。任何输出文件都不含密钥，`provenance.json` 只记录变量名。文件里出现 `api_key`，或 `extra_headers` 里出现 `Authorization`，都会被拒绝。没有 `api_key_env` 时不发 Authorization 头（无鉴权的内网服务）。
-- 请求：system 消息与 claude 运行时相同，user 消息是通用提示加 packet；`temperature`（默认 0）和 `max_tokens` 来自配置；`json_mode` 为 true 时带 `response_format: {"type": "json_object"}`，端点不支持时设为 false，返回的代码围栏会被剥掉。`--model` 覆盖配置里的 `model`，`--timeout` 覆盖 `timeout_seconds`（默认 300 秒）；`--effort` 不适用。可选键：`retry_backoff_seconds`（默认 1）、`price_per_token`、`ca_file`（自签证书的 CA 文件）。
+- 请求：system 消息与 claude 运行时相同，user 消息是通用提示加 packet；`temperature`（默认 0）和 `max_tokens` 来自配置；`json_mode` 为 true 时带 `response_format: {"type": "json_object"}`，端点不支持时设为 false，返回的代码围栏会被剥掉。`--model` 覆盖配置里的 `model`，`--timeout` 覆盖 `timeout_seconds`（默认 300 秒）；`--effort` 不适用。可选键：`retry_backoff_seconds`（默认 1）、`price_per_token`、`ca_file`（自签证书的 CA 文件）、`json_schema`（默认 false，见下一节）。字符串里的原始制表符等控制字符按普通字符解析（`json.loads(strict=False)`）。
 - HTTP 429、5xx 和连接失败在同一次调用内重试，最多三次，等待 1 秒、2 秒（`Retry-After` 优先，上限 60 秒）；每次尝试的状态码、错误和等待时间记录在 `provenance.json` 的 `attempts`。三次都失败，或 4xx，这一次调用算解析失败，进入与 claude 运行时相同的更正协议（b、c）。
-- `provenance.json` 写 `runtime: "http"`、`base_url`、`url`、`model`、`api_key_env`、`request`（温度、max_tokens、response_format、超时）、`http_status`、`attempt_count`、`attempts`、`response_id`、`response_model`、`finish_reason`、`usage`（响应的 usage 对象）、`input_tokens`、`output_tokens`；`session_id` 是响应的 id，也写进遮罩回执的 `agent_id`，审计文件的 `auditor.agent_id` 为 `http-` 加 id 的后半段。`cost_usd` 为 null，除非配置给出 `price_per_token: {"input": 每输入 token 美元, "output": 每输出 token 美元}`。
+- `provenance.json` 写 `runtime: "http"`、`base_url`、`url`、`model`、`api_key_env`、`request`（温度、max_tokens、response_format（JSON Schema 只记名字和 sha256）、超时）、`http_status`、`attempt_count`、`attempts`、`response_id`、`response_model`、`finish_reason`、`usage`（响应的 usage 对象）、`input_tokens`、`output_tokens`；`session_id` 是响应的 id，也写进遮罩回执的 `agent_id`，审计文件的 `auditor.agent_id` 为 `http-` 加 id 的后半段。`cost_usd` 为 null，除非配置给出 `price_per_token: {"input": 每输入 token 美元, "output": 每输出 token 美元}`。
 - 重定向一律拒绝（3xx 算这一次调用失败，请求不会带着密钥发到别处）。`base_url` 用 `http://` 且主机不是本机回环时，密钥会明文传输：脚本在 stderr 打一行警告并写进 `provenance.json` 的 `transport_warning`，不阻止；内网之外请用 `https://`。
 - 隔离说明是 `bare chat-completions request with no tools; isolation by request content, not by sandbox`：读者和编辑可以是同一个端点，隔离靠请求内容，不靠进程或沙箱。仓库根目录的 `docs/server-deployment.md` 说明这一运行时在服务器部署里的位置。
 
@@ -171,7 +171,9 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 
 回答交给助手之前，控制器做两处修整，校验规则不变。重提的回答缺了顶层字段时，从上一次回答带过来，同名字段以新回答为准，`log.jsonl` 记 `fields_carried`。带 `block_id` 和 `quote` 的对象里，`quote` 不是块原文子串时，两边都把弯引号、弯撇号、各种连字符（U+2010–U+2012）、en dash、em dash、减号折成 ASCII，逐字符做 NFKC 并去掉空白后再找：恰好一处就换成块原文的那一段，零处或多处就原样交给助手拒绝。每次替换记一条 `anchor_canonicalized`，`summary.json` 的 `totals.anchors_canonicalized` 计数，`editor/<label>.response.json` 仍是模型原话。`--batch-blocks` 默认 20：40 块一批时 Qwen3.8-Flash-Next 的 checks 输出曾陷入重复，直到写满上下文。
 
-目录 `--out` 下：`editor/` 每次编辑调用的 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`（label 如 `01-reading-batch01`、重试加 `-b`、`-c`、`-d`）；`readers/<P01>/`、`masked/`、`audits/` 下是 `dispatch_reader.py` 的文件集；`journal/` 是回执链；`scope.json`、`reading.json` 等是记录时的笔记副本；`log.jsonl` 按时间记录每个事件（`checks_frozen` 一定在第一个 `reader_dispatch` 之前）。密钥只从 `api_key_env` 指定的环境变量读，任何文件不含密钥。
+配置里 `json_schema` 为 true 时，每一步编辑调用带 `response_format: {"type": "json_schema", ...}`，Schema 由 `server/schemas.py` 按这一步的模板示例和校验规则生成：必填字段按示例顺序，封闭词表（类别、严重度、分类、状态）用枚举，`block_id` 和候选 id 只能取本步允许的值，reading、checks 一批的条数、decisions、repairs、review 的条数固定为应有的数。读者和审计调用不带 Schema，仍按 `json_mode`。Schema 存为 `editor/<label>.schema.json`。端点要支持 `json_schema`（vLLM 用 xgrammar 后端测试过），并且服务器要禁止 JSON 里的自由空白（vLLM：`--structured-outputs-config '{"backend": "xgrammar", "disable_any_whitespace": true}'`，这个选项只在服务器级生效）。原因：模型在点评里引用原文时写了不转义的直引号，字符串提前结束；只有 JSON 模式时解码器随后关掉对象，后面的段落全部丢失，或一直输出空白直到上限；有 Schema、没有自由空白时，唯一能接着写的是下一个必填字段，回答保持完整，只是那一句点评被截短。比对引文时，行内公式 `$...$` 整体算一个单位：模型在 JSON 里写 LaTeX 常少一个反斜杠（`\ldots` 被丢掉，`\therefore` 被读成制表符），公式外的文字唯一对上就换成原文。report 的回答必须提到 review 里的每个问题编号，漏了就重提。
+
+目录 `--out` 下：`editor/` 每次编辑调用的 `<label>.prompt.txt`、`.schema.json`（开启 `json_schema` 时）、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`（label 如 `01-reading-batch01`、重试加 `-b`、`-c`、`-d`）；`readers/<P01>/`、`masked/`、`audits/` 下是 `dispatch_reader.py` 的文件集；`journal/` 是回执链；`scope.json`、`reading.json` 等是记录时的笔记副本；`log.jsonl` 按时间记录每个事件（`checks_frozen` 一定在第一个 `reader_dispatch` 之前）。密钥只从 `api_key_env` 指定的环境变量读，任何文件不含密钥。
 
 `server/prompts/` 的模板用 `{{section:references/staged-review.md|## 2. Save reading notes}}` 和 `{{file:assets/notes/reading.json}}` 在渲染时把 references 的对应小节和笔记模板原文装进去，所以模板只写该步需要的规则，规则文件改了提示自动跟上；每次调用实际发出的全文在 `editor/<label>.prompt.txt`。
 
@@ -200,6 +202,6 @@ python3 -m unittest discover -s tests
 - `references/`：分阶段记录协议、遮罩阅读协议、执行流程、审稿规则、用词规则、输出契约、试验摘要、文献依据、插件化构想。
 - `assets/`：两种读者画像、阶段笔记模板、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
 - `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
-- `server/`：服务器全自动运行的编排器 `orchestrator.py`、编辑端 HTTP 客户端 `llm.py`，`prompts/` 下八个编辑步骤模板。
+- `server/`：服务器全自动运行的编排器 `orchestrator.py`、编辑端 HTTP 客户端 `llm.py`、每步回答的 JSON Schema `schemas.py`，`prompts/` 下八个编辑步骤模板。
 - `tests/`：七个 unittest 文件。
 - `VERSION`、`CHANGELOG.md`：版本与变更。

@@ -50,6 +50,40 @@ JOURNAL_FILES = ["00-start.json", "01-reading.notes.json", "01-reading.receipt.j
                  "05-repairs.notes.json", "05-repairs.receipt.json", "06-ready.json"]
 
 
+def schema_errors(value, schema, path="$"):
+    """Where `value` breaks `schema`, for the JSON Schema keywords server/schemas.py uses."""
+    if "anyOf" in schema:
+        return [] if any(not schema_errors(value, branch, path) for branch in schema["anyOf"]) else [f"{path}: matches no anyOf branch"]
+    if "const" in schema and value != schema["const"]:
+        return [f"{path}: {value!r} is not {schema['const']!r}"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"{path}: {value!r} is not one of {schema['enum']}"]
+    kinds = {"object": dict, "array": list, "string": str, "integer": int, "null": type(None)}
+    kind = schema.get("type")
+    if kind is not None and (not isinstance(value, kinds[kind]) or isinstance(value, bool)):
+        return [f"{path}: is not {kind}"]
+    errors = []
+    if kind == "string":
+        if not schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", len(value)):
+            errors.append(f"{path}: length {len(value)} is out of range")
+        if "pattern" in schema and not re.search(schema["pattern"], value):
+            errors.append(f"{path}: does not match {schema['pattern']}")
+    elif kind == "integer" and value < schema.get("minimum", value):
+        errors.append(f"{path}: is below {schema['minimum']}")
+    elif kind == "array":
+        if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", len(value)):
+            errors.append(f"{path}: {len(value)} items is out of range")
+        for n, item in enumerate(value):
+            errors += schema_errors(item, schema["items"], f"{path}[{n}]")
+    elif kind == "object":
+        errors += [f"{path}: missing {key}" for key in schema["required"] if key not in value]
+        errors += [f"{path}: unexpected {key}" for key in value if key not in schema["properties"]]
+        for key, item in value.items():
+            if key in schema["properties"]:
+                errors += schema_errors(item, schema["properties"][key], f"{path}.{key}")
+    return errors
+
+
 def A(block_id, quote):
     return {"block_id": block_id, "quote": quote}
 
@@ -191,7 +225,8 @@ class FakeLLM:
         return {"summary": "Three findings on a four-block excerpt; one reader checkpoint, one masked run.", "issue_order": ["C01", "C05", "C04"]}
 
     def step_report(self, data, batch, attempt):
-        return {"report_markdown": "# Academic writing review\n\n## Scope and reader\n\n- " + data["report_language"] + "\n"}
+        return {"report_markdown": "# Academic writing review\n\n## Scope and reader\n\n- " + data["report_language"] + "\n\n"
+                + "".join(f"| {issue['id']} |\n" for issue in data["review"]["issues"])}
 
     # ------------------------------------------------------------ readers and auditor
 
@@ -265,6 +300,13 @@ class AnchorCanonicalizationTests(unittest.TestCase):
         value, rewrites = orch.canonical_anchors(response, self.blocks)
         self.assertEqual(value, [A("B0004", 'the "a" model'), A("B0004", 'the "b" model'), A("B0099", 'the "a" model'), A("B0004", "We tested the \u201ca\u201d")])
         self.assertEqual([r["quote"] for r in rewrites], ['We tested the "a"'])
+
+    def test_a_garbled_inline_formula_resolves_to_the_block_formula(self):
+        blocks = {b["block_id"]: b for b in rp.build_index("# T\n\nWe need $R _ { 1 } , \\ldots , R _ { n }$ here, so $A \\therefore B$ holds.\n")["blocks"]}
+        dropped = A("B0002", "We need $R _ { 1 } ,  , R _ { n }$ here")  # \ldots is not a JSON escape, so the decoder left it out
+        tabbed = A("B0002", "so $A \therefore B$ holds.")  # one backslash: JSON reads \t as a tab
+        value, _ = orch.canonical_anchors([dropped, tabbed], blocks)
+        self.assertEqual(value, [A("B0002", "We need $R _ { 1 } , \\ldots , R _ { n }$ here"), A("B0002", "so $A \\therefore B$ holds.")])
 
     def test_anchors_at_every_depth_are_canonicalized(self):
         response = {"summary": 'kept "as is"',
@@ -509,6 +551,56 @@ class OrchestratorTests(unittest.TestCase):
         second = (self.out / "editor" / "02-checks-batch01-b.prompt.txt").read_text(encoding="utf-8")
         self.assertIn("Attempt 1: checkpoint_plan is missing; give it as an array, [] when there are none.", second)
         self.assertNotIn("checkpoint_plan must be an array", second)
+
+    def use_json_schema(self):
+        config = json.loads(self.config.read_text())
+        self.config.write_text(json.dumps({**config, "json_schema": True}))
+
+    def test_with_json_schema_each_editor_request_carries_its_step_schema(self):
+        self.use_json_schema()
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        bodies = [r["body"] for r in self.server.requests]
+        editor = [b for b in bodies if b["messages"][0]["content"].startswith("You are the editor")]
+        self.assertEqual({b["response_format"]["type"] for b in editor}, {"json_schema"})
+        self.assertEqual({json.dumps(b["response_format"]) for b in bodies if b not in editor}, {json.dumps({"type": "json_object"})})
+        checks = next(b for b in editor if b["messages"][1]["content"].startswith("Editor step: checks (batch 1 of 2,"))
+        schema = checks["response_format"]["json_schema"]["schema"]
+        passages = schema["properties"]["passages"]
+        self.assertEqual((passages["minItems"], passages["maxItems"], passages["items"]["properties"]["block_id"]["enum"]), (2, 2, ["B0002", "B0003"]))
+        self.assertEqual(list(schema["properties"]), ["summary", "checkpoint_plan", "candidates", "branch_question", "concepts", "no_concepts_reason", "passages"])
+        saved = json.loads((self.out / "editor" / "02-checks-batch01.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, schema)
+        provenance = json.loads((self.out / "editor" / "02-checks-batch01.provenance.json").read_text(encoding="utf-8"))
+        self.assertEqual(provenance["request"]["response_format"], {"type": "json_schema", "name": "response", "schema_sha256": orch.dr.sha256_bytes(orch.dr.encoded(saved))})
+
+    def test_every_accepted_editor_response_fits_the_schema_its_step_sent(self):
+        # A schema stricter than its validator would force a constrained model away from a valid answer.
+        self.use_json_schema()
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        labels = [e["label"] for e in self.log_events() if e["event"] == "editor_call" and e["status"] == "ok"]
+        self.assertEqual(sorted({label[:2] for label in labels}), ["00", "01", "02", "03", "04", "05", "06", "07"])
+        for label in labels:
+            schema = json.loads((self.out / "editor" / f"{label}.schema.json").read_text(encoding="utf-8"))
+            response = json.loads((self.out / "editor" / f"{label}.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(schema_errors(response, schema), [], label)
+
+    def test_a_report_that_stops_before_an_issue_is_re_prompted(self):
+        original = self.server.step_report
+
+        def step_report(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if attempt == 1:
+                value["report_markdown"] = value["report_markdown"].split("| W02 |")[0]
+            return value
+
+        self.server.step_report = step_report
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        second = (self.out / "editor" / "07-report-b.prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("it does not mention W02, W03.", second)
+        self.assertIn("| W03 |", (self.out / "report.md").read_text(encoding="utf-8"))
 
     def test_checks_asks_for_the_short_fields_before_the_long_passages(self):
         # Flash-Next followed the example's order and closed the object after passages, dropping the three fields after

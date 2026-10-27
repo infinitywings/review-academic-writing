@@ -60,7 +60,7 @@ SYSTEM_PROMPTS = {
 RUNTIME_FLAGS = ["-p", "--restricted", "--strict-mcp-config", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--permission-prompts", "none"]
 ISOLATION_NOTE = "claude -p --restricted --strict-mcp-config --tools '' --setting-sources '' : tools disabled by the runtime, MCP and settings skipped; not an OS sandbox"
 HTTP_ISOLATION_NOTE = "bare chat-completions request with no tools; isolation by request content, not by sandbox"
-HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
+HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "json_schema", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
 HTTP_ATTEMPTS = 3
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 RETRY_AFTER_CAP_SECONDS = 60.0
@@ -293,6 +293,9 @@ class HttpRuntime:
         self.json_mode = config.get("json_mode", False)
         if not isinstance(self.json_mode, bool):
             raise DispatchError("json_mode must be true or false.")
+        self.json_schema = config.get("json_schema", False)
+        if not isinstance(self.json_schema, bool):
+            raise DispatchError("json_schema must be true or false.")
         configured_timeout = config.get("timeout_seconds", 300)
         if isinstance(configured_timeout, bool) or not isinstance(configured_timeout, (int, float)) or configured_timeout <= 0:
             raise DispatchError("timeout_seconds must be a positive number.")
@@ -326,7 +329,7 @@ class HttpRuntime:
             short = short[len("chatcmpl-"):]
         return "http-" + short[:12]
 
-    def request_body(self, role: str, prompt: str) -> dict[str, Any]:
+    def request_body(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": SYSTEM_PROMPTS[role]}, {"role": "user", "content": prompt}],
@@ -334,7 +337,9 @@ class HttpRuntime:
         }
         if self.max_tokens is not None:
             body["max_tokens"] = self.max_tokens
-        if self.json_mode:
+        if schema is not None and self.json_schema:
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "response", "schema": schema, "strict": True}}
+        elif self.json_mode:
             body["response_format"] = {"type": "json_object"}
         return body
 
@@ -352,8 +357,8 @@ class HttpRuntime:
         except urllib.error.HTTPError as exc:
             return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
 
-    def call(self, role: str, prompt: str) -> dict[str, Any]:
-        body = self.request_body(role, prompt)
+    def call(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = self.request_body(role, prompt, schema)
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         started_at = utc_now()
         clock = time.monotonic()
@@ -421,7 +426,7 @@ class HttpRuntime:
             "url": self.url,
             "model": self.model,
             "api_key_env": self.api_key_env,
-            "request": {"temperature": self.temperature, "max_tokens": self.max_tokens, "response_format": body.get("response_format"), "timeout_seconds": self.timeout},
+            "request": {"temperature": self.temperature, "max_tokens": self.max_tokens, "response_format": recorded_format(body.get("response_format")), "timeout_seconds": self.timeout},
             "transport_warning": self.transport_warning,
             "http_status": status,
             "attempt_count": len(attempts),
@@ -442,12 +447,21 @@ class HttpRuntime:
 Runtime = ClaudeRuntime | HttpRuntime
 
 
+def recorded_format(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The response_format as provenance records it: a JSON schema by name and digest, since the caller saves the schema itself."""
+    if not response_format or response_format.get("type") != "json_schema":
+        return response_format
+    spec = response_format["json_schema"]
+    return {"type": "json_schema", "name": spec["name"], "schema_sha256": sha256_bytes(encoded(spec["schema"]))}
+
+
 def parse_result(text: str) -> tuple[Any | None, str | None, bool]:
     """Parse the model's result as one JSON object; tolerate a surrounding code fence."""
     fenced = CODE_FENCE.match(text)
     body = fenced.group(1) if fenced else text
     try:
-        value = json.loads(body)
+        # strict=False: a constrained decoder can let a raw tab or form feed into a string (a model writing \therefore or \frac with one backslash).
+        value = json.loads(body, strict=False)
     except ValueError as exc:
         return None, f"{type(exc).__name__}: {exc}", fenced is not None
     if not isinstance(value, dict):

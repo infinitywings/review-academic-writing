@@ -1,5 +1,15 @@
 # 变更说明
 
+## 0.14.1+server.2（2026-10-26）
+
+编辑调用改用按步骤生成的 JSON Schema 约束解码，引文比对把行内公式当作一个单位，报告必须覆盖每个问题。助手的校验规则不变。
+
+- 新增 `server/schemas.py`：八个编辑步骤各一份 JSON Schema，照模板示例的字段顺序列出必填字段；类别、严重度、观察分类、决定状态用枚举；`block_id` 只能取本步允许的块，候选 id 只能取已有候选；reading、checks 每批的条数，decisions、repairs、review 的条数都固定。配置新键 `json_schema`（默认 false）为 true 时，编辑调用带 `response_format: {"type": "json_schema", ...}`，Schema 存为 `editor/<label>.schema.json`，`provenance.json` 只记名字和 sha256；读者和审计调用不变。要求服务器禁止 JSON 里的自由空白（vLLM 0.31：`--structured-outputs-config '{"backend": "xgrammar", "disable_any_whitespace": true}'`；请求里的同名参数会被忽略）。依据：SaTC 稿件前 8 页在 checks 第 2 批停下，模型在 B0026 的点评里引用原文，把 “clear” 的弯引号写成直引号，JSON 字符串在那里结束，20 段只剩 3 段；同一请求重放，原样 4 次全部截断；加一条"点评里也不写直引号"的规则 4 次只有 1 次写全，另 2 次写满 4 万 token；只加 Schema 4 次 1 次合格，其余在引号后输出空白直到上限；Schema 加请求级 `disable_any_whitespace` 4 次全部写满（vLLM 只读服务器级配置）；把 Schema 转成不含自由空白的 xgrammar 语法随请求发送，4 次都在 6–8K token 内正常结束，2 次完全合格，另 2 次只差一条含公式的引文。
+- 引文比对时行内公式 `$...$` 整体折成一个占位符，其余折叠规则不变，仍要求唯一匹配才替换。依据：上面那 2 次，模型在 JSON 里引用 `\ldots`、`\therefore` 时少写一个反斜杠，`\l` 不是合法转义被解码器丢掉，`\t` 被读成制表符。
+- `dispatch_reader.parse_result` 用 `json.loads(strict=False)`，字符串里的原始制表符等控制字符不再算解析失败。依据：同上，xgrammar 的字符串规则放行制表符，严格解析把整个回答判为非 JSON。
+- report 的回答必须提到 review 里每个问题的编号（W01 等），漏了带缺的编号重提，并提示直引号可能截断了字符串。依据：Schema 只有一个字段时，字符串提前结束会让报告无声地截短。
+- 测试加 5 个，共 157 个：开启 `json_schema` 时编辑请求带 Schema、checks 批次的段落条数和块编号被固定、Schema 文件和 provenance 摘要一致，读者请求仍是 `json_object`；假端点全流程里每个被接收的回答都符合它那一步发送的 Schema（第一次运行就发现 `no_concepts_reason` 被要求非空，已放宽）；公式被丢掉或读成制表符的引文还原为原文；报告缺问题编号时重提；字符串里含原始制表符的回答能解析。
+
 ## 0.14.1+server.1（2026-10-26）
 
 分支 `server-openai-endpoint` 承接服务器（OpenAI 兼容接口）这条线，main 已转向 Claude Code / Codex 插件。编排器在模型回答交给校验之前做两处修整，并调小分批默认值；助手的校验规则不变。

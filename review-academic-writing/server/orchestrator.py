@@ -51,6 +51,7 @@ import llm  # noqa: E402
 import masked_reader as mr  # noqa: E402
 import review_packets as rp  # noqa: E402
 import review_steps as rs  # noqa: E402
+import schemas  # noqa: E402
 
 STEPS = ("scope", "reading", "checks", "reconcile", "decisions", "repairs", "review", "report")
 ATTEMPT_SUFFIXES = ("", "-b", "-c", "-d")  # one prompt plus at most three re-prompts
@@ -63,6 +64,9 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")  # ids that may become
 PREVIEW_CHARS = 200
 TYPOGRAPHY = str.maketrans({"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
                             "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
+# Models drop or garble LaTeX inside quoted formulas (\ldots lost, \therefore read as a tab), so quote matching treats each one as a unit.
+INLINE_MATH = re.compile(r"\$[^$\n]+\$")
+MATH_PLACEHOLDER = "\ufffc"
 EXECUTION_MODE = "bounded stateless chat-completions requests to an OpenAI-compatible endpoint; isolation by request content, not by sandbox"
 
 
@@ -181,26 +185,37 @@ def dedupe_anchors(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def fold(text: str) -> tuple[str, list[int]]:
-    """`text` with typographic quotes and dashes folded to ASCII, NFKC per character, and whitespace dropped; origin[i] is the offset in `text` of folded character i."""
+def fold(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """`text` with typographic quotes and dashes folded to ASCII, NFKC per character, whitespace dropped, and each inline `$...$` formula
+    reduced to one placeholder; spans[i] is the (start, end) range in `text` of folded character i."""
     folded: list[str] = []
-    origin: list[int] = []
-    for offset, char in enumerate(text):
-        for piece in unicodedata.normalize("NFKC", char).translate(TYPOGRAPHY):
-            if not piece.isspace():
-                folded.append(piece)
-                origin.append(offset)
-    return "".join(folded), origin
+    spans: list[tuple[int, int]] = []
+
+    def plain(start: int, end: int) -> None:
+        for at in range(start, end):
+            for piece in unicodedata.normalize("NFKC", text[at]).translate(TYPOGRAPHY):
+                if not piece.isspace():
+                    folded.append(piece)
+                    spans.append((at, at + 1))
+
+    offset = 0
+    for match in INLINE_MATH.finditer(text):
+        plain(offset, match.start())
+        folded.append(MATH_PLACEHOLDER)
+        spans.append(match.span())
+        offset = match.end()
+    plain(offset, len(text))
+    return "".join(folded), spans
 
 
 def block_span(text: str, quote: str) -> str | None:
     """The text of the one span of `text` that equals `quote` after folding both; None when there is no such span or more than one."""
     target, _ = fold(quote)
-    folded, origin = fold(text)
+    folded, spans = fold(text)
     start = folded.find(target)
     if not target or start < 0 or folded.find(target, start + 1) >= 0:
         return None
-    return text[origin[start]:origin[start + len(target) - 1] + 1].strip()
+    return text[spans[start][0]:spans[start + len(target) - 1][1]].strip()
 
 
 def canonical_anchors(value: Any, blocks: dict[str, dict[str, Any]]) -> tuple[Any, list[dict[str, str]]]:
@@ -310,14 +325,14 @@ class Run:
         call.parsed = response
         return response
 
-    def ask(self, step: str, label: str, values: dict[str, Any], accept: Callable[[Any, llm.Call], Any]) -> Any:
+    def ask(self, step: str, label: str, values: dict[str, Any], accept: Callable[[Any, llm.Call], Any], schema: dict[str, Any] | None = None) -> Any:
         history: list[str] = []
         previous: dict[str, Any] | None = None
         for number, suffix in enumerate(ATTEMPT_SUFFIXES):
             prompt = render(step, values)
             if history:
                 prompt = with_correction(prompt, history)
-            call = self.client.call(label + suffix, prompt)
+            call = self.client.call(label + suffix, prompt, schema)
             if call.parsed is None:
                 message = f"The response was not one JSON object ({call.parse_error})."
             else:
@@ -371,7 +386,7 @@ class Run:
             except rp.ReviewDataError as exc:
                 raise Rejected(helper_message(exc)) from exc
 
-        scope = self.ask("scope", "00-scope", values, accept)
+        scope = self.ask("scope", "00-scope", values, accept, schemas.scope(self.args.task, list(self.blocks)))
         self.write_json(self.out / "scope.json", scope)
         try:
             rs.start_run(self.index, self.profile, scope, self.journal)
@@ -435,7 +450,7 @@ class Run:
                 return [rows[i] for i in batch]
 
             label = "01-reading" + (f"-batch{number:02d}" if len(batches) > 1 else "")
-            for row in self.ask("reading", label, values, accept):
+            for row in self.ask("reading", label, values, accept, schemas.reading(batch)):
                 accepted[row["anchor"]["block_id"]] = row
             summaries.append(call_summary(self.client.calls[-1]))
             self.say(f"reading: batch {number}/{len(batches)} accepted")
@@ -521,7 +536,7 @@ class Run:
                         "reason": provisional.get("no_concepts_reason"), "branch_question": question}
 
             label = "02-checks" + (f"-batch{number:02d}" if len(batches) > 1 else "")
-            result = self.ask("checks", label, values, accept)
+            result = self.ask("checks", label, values, accept, schemas.checks(batch, self.included, list(self.blocks), remaining))
             merged["concepts"] += result["concepts"]
             merged["checkpoint_plan"] += result["plan"]
             merged["candidates"] += result["candidates"]
@@ -692,7 +707,7 @@ class Run:
                 raise Rejected(helper_message(exc)) from exc
             return reconcile
 
-        reconcile = self.ask("reconcile", "03-reconcile", values, accept)
+        reconcile = self.ask("reconcile", "03-reconcile", values, accept, schemas.reconcile(self.included, list(self.blocks), [branch["id"]] if branch else []))
         self.stages["reconcile"] = {"status": "recorded", "checkpoints": len(reconcile["checkpoints"]), "branches": len(reconcile["branches"]),
                                     "observations": len(reconcile["observations"]), "candidates_added": len(reconcile["candidates"])}
         self.say(f"reconcile: recorded ({len(reconcile['observations'])} observations, {len(reconcile['candidates'])} candidates added)")
@@ -715,7 +730,7 @@ class Run:
                 raise Rejected(helper_message(exc)) from exc
             return decisions
 
-        decisions = self.ask("decisions", "04-decisions", values, accept)
+        decisions = self.ask("decisions", "04-decisions", values, accept, schemas.decisions([c["id"] for c in candidates], list(self.blocks)))
         counts = {status: sum(1 for d in decisions["decisions"] if d["status"] == status) for status in ("accepted", "needs_author", "rejected", "merged")}
         self.stages["decisions"] = {"status": "recorded", **counts}
         self.say("decisions: recorded (" + ", ".join(f"{v} {k}" for k, v in counts.items()) + ")")
@@ -790,7 +805,8 @@ class Run:
         retained = self.retained()
         wanted = [r["decision"]["candidate_id"] for r in retained]
         base_input = {"snapshot_id": self.index["snapshot_id"], "retained": retained, "blocks": self.block_rows(self.included)}
-        rows = self.ask("repairs", "05-repairs", {"input": base_input}, lambda parsed, call: self.validate_repairs(parsed, wanted, start, notes))
+        rows = self.ask("repairs", "05-repairs", {"input": base_input}, lambda parsed, call: self.validate_repairs(parsed, wanted, start, notes),
+                        schemas.repairs(wanted, list(self.blocks)))
         summary = self.client.calls[-1].parsed["summary"]
         audits: dict[str, dict[str, Any]] = {}
         for key in wanted:
@@ -800,7 +816,8 @@ class Run:
         if failed:
             feedback = [{"candidate_id": key, "audited_wording": audits[key]["proposed_wording"], "verdict": audits[key]["verdict"], "changed": audits[key]["changed"], "auditor_notes": audits[key]["notes"]} for key in failed]
             retry_input = {**base_input, "retained": [r for r in retained if r["decision"]["candidate_id"] in failed], "audit_feedback": feedback}
-            revised = self.ask("repairs", "05-repairs-audit", {"input": retry_input}, lambda parsed, call: self.validate_repairs(parsed, failed, start, notes, rows))
+            revised = self.ask("repairs", "05-repairs-audit", {"input": retry_input}, lambda parsed, call: self.validate_repairs(parsed, failed, start, notes, rows),
+                               schemas.repairs(failed, list(self.blocks)))
             for key in failed:
                 rows[key] = revised[key]
                 if rows[key].get("proposed_wording") is not None:
@@ -875,7 +892,7 @@ class Run:
                 raise Rejected(helper_message(exc)) from exc
             return review
 
-        review = self.ask("review", "06-review", values, accept)
+        review = self.ask("review", "06-review", values, accept, schemas.review(list(repairs)))
         self.write_json(self.out / "review.json", review)
         self.stages["review"] = {"status": "checked", "issues": len(review["issues"])}
         self.log("review_checked", issues=len(review["issues"]))
@@ -892,9 +909,12 @@ class Run:
 
         def accept(parsed: Any, call: llm.Call) -> str:
             require(isinstance(parsed, dict) and isinstance(parsed.get("report_markdown"), str) and parsed["report_markdown"].strip(), "report_markdown must be a nonempty string.")
+            missing = [issue["id"] for issue in review["issues"] if issue["id"] not in parsed["report_markdown"]]
+            require(not missing, f"report_markdown must present every issue of the review; it does not mention {', '.join(missing)}. "
+                                 "If the report stopped early, a straight double quotation mark probably ended the string: write “ ” or ‘ ’ inside it.")
             return parsed["report_markdown"]
 
-        report = self.ask("report", "07-report", values, accept)
+        report = self.ask("report", "07-report", values, accept, schemas.report())
         (self.out / "report.md").write_text(report.rstrip("\n") + "\n", encoding="utf-8")
         self.stages["report"] = {"status": "written", "path": str(self.out / "report.md")}
         self.say(f"report: {self.out / 'report.md'}")
