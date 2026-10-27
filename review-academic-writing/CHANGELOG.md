@@ -2,7 +2,7 @@
 
 ## 0.14.1+server.2（2026-10-26）
 
-编辑调用、遮罩读者和保真审计改用 JSON Schema 约束解码，引文比对忽略 LaTeX 标记，报告必须覆盖每个问题，抽取造成的拆词不再算作者的错。助手的校验规则不变。
+编辑调用、遮罩读者和保真审计改用 JSON Schema 约束解码，checks 阶段默认跑三遍，引文比对忽略 LaTeX 标记，报告必须覆盖每个问题，未完成的占位符一律列为问题，抽取造成的拆词不再算作者的错。助手的校验规则不变。
 
 - 新增 `server/schemas.py`：八个编辑步骤各一份 JSON Schema，照模板示例的字段顺序列出必填字段；类别、严重度、观察分类、决定状态用枚举；`block_id` 只能取本步允许的块，候选 id 只能取已有候选；reading、checks 每批的条数，decisions、repairs、review 的条数都固定。配置新键 `json_schema`（默认 false）为 true 时，编辑调用带 `response_format: {"type": "json_schema", ...}`，Schema 存为 `editor/<label>.schema.json`，`provenance.json` 只记名字和 sha256；读者和审计调用不变。要求服务器禁止 JSON 里的自由空白（vLLM 0.31：`--structured-outputs-config '{"backend": "xgrammar", "disable_any_whitespace": true}'`；请求里的同名参数会被忽略）。依据：SaTC 稿件前 8 页在 checks 第 2 批停下，模型在 B0026 的点评里引用原文，把 “clear” 的弯引号写成直引号，JSON 字符串在那里结束，20 段只剩 3 段；同一请求重放，原样 4 次全部截断；加一条"点评里也不写直引号"的规则 4 次只有 1 次写全，另 2 次写满 4 万 token；只加 Schema 4 次 1 次合格，其余在引号后输出空白直到上限；Schema 加请求级 `disable_any_whitespace` 4 次全部写满（vLLM 只读服务器级配置）；把 Schema 转成不含自由空白的 xgrammar 语法随请求发送，4 次都在 6–8K token 内正常结束，2 次完全合格，另 2 次只差一条含公式的引文。服务器开启该选项后重放 4 次，结构全部完整，按下一条的引文规则 3 次完全合格；随后整篇前 8 页一次跑通（28 次调用，10 分钟，1 次重提）。
 - 字符串不设 `minLength`、`maxLength`。依据：xgrammar 把有长度限制的字符串编译成不含反斜杠的字符集，模型写不出 `\n`、`\"`、`\\`；上面那次跑通的报告因此丢了全部换行（第一次回答只写了标题就结束），含 LaTeX 的引文也写不出命令。去掉长度限制后同一个报告请求重放 4 次，155–166 行，6 个问题编号都在。非空仍由校验规则检查。
@@ -10,8 +10,11 @@
 - `dispatch_reader.parse_result` 用 `json.loads(strict=False)`，字符串里的原始制表符等控制字符不再算解析失败。依据：同上，xgrammar 的字符串规则放行制表符，严格解析把整个回答判为非 JSON。
 - report 的回答必须提到 review 里每个问题的编号（W01 等），漏了带缺的编号重提，并提示直引号可能截断了字符串。依据：Schema 只有一个字段时，字符串提前结束会让报告无声地截短。
 - 遮罩读者和保真审计也带 Schema：`masked_reader.response_schema(packet, exposed)` 按 `RESPONSE_FORMAT` 生成，来源编号只能取这一步可见的，笔记的 `since` 只能是本步序号或带过来的值，`dropped` 只能列带过来的笔记，只有窗口模式且有可查目标时才允许 lookup；`dispatch_reader.audit_schema(request)` 把要原样抄回的 `candidate_id`、`proposed_wording`、`original` 定为输入原值（`const`），提示词示例里的 `auditor` 字段可写可不写。claude 运行时接受这个参数但不用。前缀读者和分支读者仍是 JSON 模式。依据：上面那次运行里遮罩阅读在第 1 个事件被拒（`carry_memory requires exactly gist, notes, dropped`），C08 的审计 6 次都没把 `original` 或 `proposed_wording` 抄对，这条修改因此被转成向作者提问。重放同一请求各 4 次：遮罩阅读原样 0/4 通过（3 次缺 `dropped`，1 次引文不符），加 Schema 4/4；审计原样 0/4，加 Schema 4/4（结论 3 次 preserved、1 次 changed）。
+- checks 阶段默认跑三遍（`--checks-passes`，默认 3）。第 1 遍不变；之后每一遍用新模板 `server/prompts/recheck.txt` 逐批重读，输入里列出到目前为止记录的全部候选，只要求补出漏掉的问题，回答只有 `summary` 和 `candidates`（各自的 Schema，锚点限本批）。新候选接着编号（C05、C06……），重复的交给 decisions 合并；`summary.json` 的 `stages.checks` 记 `passes`、`candidates_by_pass`。某一批复查 4 次都不合格时只跳过这一批（`log.jsonl` 记 `recheck_skipped`，`stages.checks.rechecks_skipped` 列出 label），运行继续。依据：同一稿件、同样设置的两次单遍运行分别提出 11 条和 5 条候选，按位置重合 4 段，指出的问题没有一条相同；温度 0 下重复同一提示只会得到同样的结果，所以后几遍改问"还漏了什么"。第一次三遍运行三遍分别得到 5、3、4 条。设 `max_tokens` 32768 后连跑两次：候选 26 条（10、6、10）和 21 条（5、5、11），约 12 个问题两次都提出；最终意见 9 条和 2 条，两次都有的是资质段的 TODO 和 B0034 的 "mismatching"；第一次多出的 7 条里有 4 条第二次也提出了但被 decisions 驳回，都是 minor 或 optional 级的措辞建议。
+- checks、recheck、decisions 模板加一条：未完成的占位符（TODO、TBD、XX、[citation needed]、空括号）一律列为候选，decisions 判为 needs_author、category other、severity major。依据：第二次单遍运行看到了资质段的 `[TODO: …]`，却在 wording_check 里写 "a placeholder, not a writing issue"，没有列为候选；加规则后的三遍运行把它列为 C01，判为 needs_author、major。
+- 遮罩读者引用文字段落时，`quote` 只能是该段的整句之一或空串（`SENTENCE_BREAK` 按句末标点后的空白切分），图表等无文字的来源不限。依据：遮罩阅读在第 3 个事件停下，读者把 `device’s` 写成 `device's`；冻结的读者回答按协议不得为通过校验而改写，所以在解码时就只给出原文的句子。同一请求重放 4 次全部通过，随后的三遍运行里 4 个事件全部读完。
 - checks 和 decisions 模板加一条：词中间被空格断开（“as sume”、“assess ment”）是 PDF 抽取留下的，不作为候选，已有的候选驳回。依据：上面那次报告把这两处列为作者的错字，PDF 里两个词都是完整的。
-- 测试加 7 个，共 159 个：开启 `json_schema` 时编辑请求带 Schema、checks 批次的段落条数和块编号被固定、Schema 文件和 provenance 摘要一致，读者请求仍是 `json_object`；假端点全流程里每个被接收的回答都符合它那一步发送的 Schema（第一次运行就发现 `no_concepts_reason` 被要求非空，已放宽）；公式被丢掉、读成制表符或去掉了 `$` 的引文还原为原文，止于公式中间的引文保留整个公式；报告缺问题编号时重提；字符串里含原始制表符的回答能解析；两个模板都有拆词规则。全流程测试同时核对遮罩读者和审计请求带 Schema、被接收的回答符合 Schema，前缀和分支读者仍是 `json_object`。
+- 测试加 10 个，共 162 个：开启 `json_schema` 时编辑请求带 Schema、checks 批次的段落条数和块编号被固定、Schema 文件和 provenance 摘要一致，读者请求仍是 `json_object`；假端点全流程里每个被接收的回答都符合它那一步发送的 Schema（第一次运行就发现 `no_concepts_reason` 被要求非空，已放宽）；公式被丢掉、读成制表符或去掉了 `$` 的引文还原为原文，止于公式中间的引文保留整个公式；报告缺问题编号时重提；字符串里含原始制表符的回答能解析；两个模板都有拆词规则；后几遍 checks 的输入列出此前所有候选、新候选接着编号、`candidates_by_pass` 计数；复查一批始终不合格时跳过、运行照常完成；遮罩读者 Schema 的引文只能是整句。全流程测试同时核对遮罩读者和审计请求带 Schema、被接收的回答符合 Schema，前缀和分支读者仍是 `json_object`。
 
 ## 0.14.1+server.1（2026-10-26）
 

@@ -152,7 +152,7 @@ python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run
 ```bash
 export LLM_API_KEY=...
 python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --out runs/2026-10-27 --config run/llm.json \
-    [--reader-config run/llm-reader.json] [--masked-windows 4] [--masked-budget 250] [--prefix-checkpoints 3] [--batch-blocks 20] \
+    [--reader-config run/llm-reader.json] [--masked-windows 4] [--masked-budget 250] [--prefix-checkpoints 3] [--batch-blocks 20] [--checks-passes 3] \
     [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt] [--language English]
 ```
 
@@ -161,7 +161,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 `--config` 的格式与上一节相同（编辑调用用它）；`--reader-config` 给读者和审计另一个端点或模型，不给时同 `--config`。`--out` 必须是不存在的目录。执行顺序：
 
 1. `index`，写 `index.json` 和读者画像；scope 模板让模型分配每个块（纳入或给出理由省略），经 `validate_scope` 后 `start` 建日志。
-2. reading、checks 按 `--batch-blocks` 个块分批调用模板，每批只看本批全文加其余块的一行摘要（checks 还看全部段落的 paraphrase 和前几批已记录的概念、候选、计划），控制器合并数组、重编号（K01、P01、C01）后交 `record`；每批先用 `review_steps` 的校验函数预检，覆盖和锚点错误按批回传。
+2. reading、checks 按 `--batch-blocks` 个块分批调用模板，每批只看本批全文加其余块的一行摘要（checks 还看全部段落的 paraphrase 和前几批已记录的概念、候选、计划），控制器合并数组、重编号（K01、P01、C01）后交 `record`；每批先用 `review_steps` 的校验函数预检，覆盖和锚点错误按批回传。checks 之后再按 `--checks-passes`（默认 3）逐批复查：`recheck` 模板列出到目前为止的全部候选，只要求补出漏掉的问题，新候选接着编号，重复的留给 decisions 合并；某一批始终不合格就跳过（`recheck_skipped`），运行继续。
 3. `02-checks.receipt.json` 存在后才派发读者：按 checks 的 `checkpoint_plan` 建前缀包并跑 `prefix`（模式 `bounded-request`），把纳入块按 `--masked-budget` 词分窗、取前 `--masked-windows` 窗跑一次 `masked`（`--masked-windows 0` 关闭），checks 阶段可以给出一个 `branch_question`，遮罩跑完后在对应显示事件上跑一次 `branch`。
 4. reconcile 模板看冻结的观察（前缀观察原文、遮罩每个事件的材料与回答、分支回答），模型只填 `result`、`limitation`、分类和新候选；路径、模式、plan_id、figure_policy 由控制器绑定。decisions、repairs 同样记录。
 5. 每条带 `proposed_wording` 的修改先经 `dispatch_reader.py audit`；verdict 不是 `preserved` 或任一属性 `changed` 时，把审计意见作为 `audit_feedback` 回传 repairs 模板重写一次，再审一次（文件名加 `-2`），仍不通过就转成向作者的提问（`kind: author_question`，`proposed_wording: null`）。
@@ -171,7 +171,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 
 回答交给助手之前，控制器做两处修整，校验规则不变。重提的回答缺了顶层字段时，从上一次回答带过来，同名字段以新回答为准，`log.jsonl` 记 `fields_carried`。带 `block_id` 和 `quote` 的对象里，`quote` 不是块原文子串时，两边都把弯引号、弯撇号、各种连字符（U+2010–U+2012）、en dash、em dash、减号折成 ASCII，逐字符做 NFKC 并去掉空白后再找：恰好一处就换成块原文的那一段，零处或多处就原样交给助手拒绝。每次替换记一条 `anchor_canonicalized`，`summary.json` 的 `totals.anchors_canonicalized` 计数，`editor/<label>.response.json` 仍是模型原话。`--batch-blocks` 默认 20：40 块一批时 Qwen3.8-Flash-Next 的 checks 输出曾陷入重复，直到写满上下文。
 
-配置里 `json_schema` 为 true 时，每一步编辑调用带 `response_format: {"type": "json_schema", ...}`，Schema 由 `server/schemas.py` 按这一步的模板示例和校验规则生成：必填字段按示例顺序，封闭词表（类别、严重度、分类、状态）用枚举，`block_id` 和候选 id 只能取本步允许的值，reading、checks 一批的条数、decisions、repairs、review 的条数固定为应有的数。遮罩读者和保真审计调用也带 Schema（`masked_reader.response_schema`、`dispatch_reader.audit_schema`；审计要原样抄回的三个字段定为输入原值），前缀读者和分支读者仍按 `json_mode`。字符串不设长度限制：xgrammar 会把有长度限制的字符串编译成不含反斜杠的字符集，写不出换行和转义。Schema 存为 `editor/<label>.schema.json`。端点要支持 `json_schema`（vLLM 用 xgrammar 后端测试过），并且服务器要禁止 JSON 里的自由空白（vLLM：`--structured-outputs-config '{"backend": "xgrammar", "disable_any_whitespace": true}'`，这个选项只在服务器级生效）。原因：模型在点评里引用原文时写了不转义的直引号，字符串提前结束；只有 JSON 模式时解码器随后关掉对象，后面的段落全部丢失，或一直输出空白直到上限；有 Schema、没有自由空白时，唯一能接着写的是下一个必填字段，回答保持完整，只是那一句点评被截短。比对引文时两边都去掉 LaTeX 标记（`$ _ ^ { }`、反斜杠命令，以及制表符、退格、换页连同其后的字母）：模型引用公式时常省掉标记（`$S ( I )$` 写成 `S(I)`），在 JSON 里写 LaTeX 又常少一个反斜杠（`\ldots` 被丢掉，`\therefore` 被读成制表符）；唯一对上就换成原文，并扩到相邻的 `$` 和 `}`。report 的回答必须提到 review 里的每个问题编号，漏了就重提。
+配置里 `json_schema` 为 true 时，每一步编辑调用带 `response_format: {"type": "json_schema", ...}`，Schema 由 `server/schemas.py` 按这一步的模板示例和校验规则生成：必填字段按示例顺序，封闭词表（类别、严重度、分类、状态）用枚举，`block_id` 和候选 id 只能取本步允许的值，reading、checks 一批的条数、decisions、repairs、review 的条数固定为应有的数。遮罩读者和保真审计调用也带 Schema（`masked_reader.response_schema`、`dispatch_reader.audit_schema`；审计要原样抄回的三个字段定为输入原值），前缀读者和分支读者仍按 `json_mode`。遮罩读者引用文字段落时只能引整句：冻结的读者回答不能事后改写，所以在解码时只给出原文的句子。字符串里的重复循环没有长度上限可挡（用正则限长时 xgrammar 编译报错），所以配置要设 `max_tokens`；Flash-Next 上设 32768，正常的编辑调用最多约 1.4 万 token（含思考）。字符串不设长度限制：xgrammar 会把有长度限制的字符串编译成不含反斜杠的字符集，写不出换行和转义。Schema 存为 `editor/<label>.schema.json`。端点要支持 `json_schema`（vLLM 用 xgrammar 后端测试过），并且服务器要禁止 JSON 里的自由空白（vLLM：`--structured-outputs-config '{"backend": "xgrammar", "disable_any_whitespace": true}'`，这个选项只在服务器级生效）。原因：模型在点评里引用原文时写了不转义的直引号，字符串提前结束；只有 JSON 模式时解码器随后关掉对象，后面的段落全部丢失，或一直输出空白直到上限；有 Schema、没有自由空白时，唯一能接着写的是下一个必填字段，回答保持完整，只是那一句点评被截短。比对引文时两边都去掉 LaTeX 标记（`$ _ ^ { }`、反斜杠命令，以及制表符、退格、换页连同其后的字母）：模型引用公式时常省掉标记（`$S ( I )$` 写成 `S(I)`），在 JSON 里写 LaTeX 又常少一个反斜杠（`\ldots` 被丢掉，`\therefore` 被读成制表符）；唯一对上就换成原文，并扩到相邻的 `$` 和 `}`。report 的回答必须提到 review 里的每个问题编号，漏了就重提。
 
 目录 `--out` 下：`editor/` 每次编辑调用的 `<label>.prompt.txt`、`.schema.json`（开启 `json_schema` 时）、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`（label 如 `01-reading-batch01`、重试加 `-b`、`-c`、`-d`）；`readers/<P01>/`、`masked/`、`audits/` 下是 `dispatch_reader.py` 的文件集；`journal/` 是回执链；`scope.json`、`reading.json` 等是记录时的笔记副本；`log.jsonl` 按时间记录每个事件（`checks_frozen` 一定在第一个 `reader_dispatch` 之前）。密钥只从 `api_key_env` 指定的环境变量读，任何文件不含密钥。
 
