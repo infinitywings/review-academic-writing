@@ -1,5 +1,15 @@
 # 变更说明
 
+## 0.16.2（2026-10-26）
+
+在一次完整的七阶段审稿（28 页 ACL 投稿，8 个前缀检查点、29 窗遮罩阅读、45 次保真审计）里发现的四处修补。命令行、文件格式、日志 schema 不变。
+
+- `extract_pdf.py extract` 给 `mineru parse` 传 `--wait <timeout>`：之前 MinerU 的默认等待是 60 秒，28 页的稿件会被当作解析失败报告。等待时长取自 `--timeout`（整数秒）。
+- `extract_pdf.py postprocess` 删除被抽成文字的投稿行号栏：连续 5 个以上 3–4 位整数组成的行（ACL/EMNLP 模板的行号，如 `001 002 003 …`）整行丢弃，并在抽取说明里记 `Dropped N line-number gutter line(s)` 和各段范围。之前这些行会被 `index` 当成正文块，使检查点前缀包和遮罩窗口里出现数字串。
+- `dispatch_reader.py`：读者回答里的锚点引文与原文不完全一致（`check-observation` 报 `quote is not exact text` / `not an exact substring`，多见于抽取把一个词断成两半的位置）现在按可更正失败处理（anchor 提示，带原回答重提一次），不再直接拒绝整次调用。
+- `dispatch_reader.py masked`：一次运行在某个序号被拒绝停止后再续跑，重试的序号标为 `E06r1`（再失败 `E06r1b`…），不再因为 `events/E06.packet.json` 已存在而拒绝续跑。
+- 测试加 3 个（行号栏删除与说明；不精确锚点第二次更正通过；续跑使用 r1 标签），`--wait` 由已有的 extract 测试覆盖，共 160 个。
+
 ## 0.16.1（2026-10-26）
 
 - `dispatch_reader.py` 的 claude 运行时不给 `--model` 时默认 `claude-opus-5-5`（常量 `CLAUDE_DEFAULT_MODEL`）；`--model` 仍可覆盖。codex 和 http 运行时不变。本机实测 `claude -p --model claude-opus-5-5` 在受限模式下可用。
