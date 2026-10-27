@@ -128,6 +128,36 @@ BRANCH_RESPONSE_FORMAT = {
 }
 
 
+def response_schema(packet, exposed):
+    """RESPONSE_FORMAT as a JSON Schema for a constrained decoder: the closed vocabularies, the source ids this event
+    exposes, the `since` values a note may carry, the carried notes that may be dropped, and the lookups the packet
+    allows. validate_response stays the authority (lineage, the memory budget, exact quotes)."""
+    def obj(properties, optional=()):
+        return {"type": "object", "properties": properties, "required": [k for k in properties if k not in optional], "additionalProperties": False}
+
+    def one_of(values):
+        return {"type": "string", "enum": sorted(values)}
+
+    text = {"type": "string"}
+    anchor = {"anyOf": [one_of(exposed), obj({"source_id": one_of(exposed), "quote": text}, optional=("quote",))]}
+    carried = packet["carry_memory"]["notes"]
+    sources = set(exposed) | {source for note in carried for source in note["sources"]}
+    note = obj({"id": text, "kind": one_of(NOTE_KINDS), "text": text, "sources": {"type": "array", "items": one_of(sources), "minItems": 1},
+                "since": {"type": "integer", "enum": sorted({packet["sequence"]} | {note["since"] for note in carried})}})
+    dropped = {"type": "array", "items": obj({"id": one_of(n["id"] for n in carried), "reason": text}), "maxItems": len(carried)} if carried else {"type": "array", "maxItems": 0}
+    actions = [obj({"kind": {"const": "advance"}, "target": {"type": "null"}, "reason": text})]
+    if packet["mode"] == "window" and packet["available_lookup_ids"]:
+        actions.append(obj({"kind": {"const": "lookup"}, "target": one_of(packet["available_lookup_ids"]), "reason": text}))
+    return obj({
+        "understanding": text,
+        "understood": {"type": "array", "items": obj({"claim": text, "basis": one_of(BASIS_KINDS), "anchor": anchor})},
+        "uncertain": {"type": "array", "items": obj({"question": text, "needed_now": {"type": "boolean"}, "anchor": anchor})},
+        "resolved": {"type": "array", "items": obj({"question": text, "change": text})},
+        "next_action": {"anyOf": actions},
+        "carry_memory": obj({"gist": text, "notes": {"type": "array", "items": note}, "dropped": dropped}),
+        "source_recognition": obj({"recognized": {"type": "boolean"}, "description": text}),
+    })
+
 def empty_memory():
     return {"gist": "", "notes": []}
 

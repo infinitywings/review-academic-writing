@@ -11,6 +11,10 @@ Under plain JSON mode the decoder may then close the object, dropping every late
 whitespace until the token limit. Under a schema, and with the server's disable_any_whitespace option
 (vLLM), the only continuation is the next required field, so the response stays complete. The validators
 remain the authority; a schema only narrows what the model can emit.
+
+Strings carry no minLength or maxLength: xgrammar compiles a length-bounded string to characters without a
+backslash, so the model could write no \n, \" or \\ (the report lost every line break; LaTeX quotes lost
+their commands). Nonempty strings are left to the validators.
 """
 from __future__ import annotations
 
@@ -23,24 +27,18 @@ sys.path.insert(0, str(SCRIPTS))
 import review_packets as rp  # noqa: E402
 import review_steps as rs  # noqa: E402
 
-PROSE = 3000  # characters in one free-text field
-QUOTE = 1500  # characters in one exact quotation
-ID = 32  # the orchestrator's SAFE_ID length
 SAFE_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
 
 Schema = dict[str, Any]
 
 
-def text(limit: int | None = PROSE) -> Schema:
-    schema: Schema = {"type": "string", "minLength": 1}
-    if limit is not None:
-        schema["maxLength"] = limit
-    return schema
+def text() -> Schema:
+    return {"type": "string"}
 
 
 def one_of(values: Iterable[str]) -> Schema:
     values = sorted(set(values))
-    return {"type": "string", "enum": values} if values else {"type": "string", "maxLength": 0}
+    return {"type": "string", "enum": values} if values else {"type": "string", "enum": [""]}
 
 
 def nullable(schema: Schema) -> Schema:
@@ -63,7 +61,7 @@ def obj(properties: dict[str, Schema], optional: Iterable[str] = ()) -> Schema:
 
 
 def anchor(block_ids: Iterable[str]) -> Schema:
-    return obj({"block_id": one_of(block_ids), "quote": text(QUOTE)})
+    return obj({"block_id": one_of(block_ids), "quote": text()})
 
 
 def candidate(included: list[str], block_ids: list[str]) -> Schema:
@@ -87,28 +85,28 @@ def checks(batch: list[str], included: list[str], block_ids: list[str], remainin
     nullable_anchor = nullable(anchor(block_ids))
     return obj({
         "summary": text(),
-        "checkpoint_plan": array(obj({"id": text(ID), "anchor": anchor(included), "mode": {"const": "bounded-request"}, "reason": text()}),
+        "checkpoint_plan": array(obj({"id": text(), "anchor": anchor(included), "mode": {"const": "bounded-request"}, "reason": text()}),
                                  at_most=max(remaining_checkpoints, 0)),
         "candidates": array(candidate(included, block_ids)),
         "branch_question": nullable(obj({"question": text(), "reason": text(), "after_block_id": one_of(included)})),
-        "concepts": array(obj({"concept_id": text(ID), "term": text(500), "first_mention": anchor(block_ids),
+        "concepts": array(obj({"concept_id": text(), "term": text(), "first_mention": anchor(block_ids),
                                "earliest_usable_explanation": nullable_anchor, "first_critical_use": nullable_anchor, "assessment": text()})),
-        "no_concepts_reason": {"type": "string", "maxLength": PROSE},
+        "no_concepts_reason": text(),
         "passages": array(obj({"block_id": one_of(batch), "structure_check": text(), "wording_check": text(),
                                "evidence": array(anchor(block_ids), at_least=1)}), exactly=len(batch)),
     }, optional=("no_concepts_reason",))
 
 
 def reconcile(included: list[str], block_ids: list[str], branch_ids: list[str]) -> Schema:
-    checkpoint = obj({"id": text(ID), "record_sequence": {"type": "integer", "minimum": 0}, "anchor": anchor(included), "result": text(), "limitation": text()},
+    checkpoint = obj({"id": text(), "record_sequence": {"type": "integer", "minimum": 0}, "anchor": anchor(included), "result": text(), "limitation": text()},
                      optional=("record_sequence", "anchor"))
     return obj({
         "summary": text(),
         "checkpoints": array(checkpoint),
-        "no_checkpoints_reason": {"type": "string", "maxLength": PROSE},
+        "no_checkpoints_reason": text(),
         "branches": array(obj({"id": one_of(branch_ids), "result": text(), "limitation": text()}), at_most=len(branch_ids)),
-        "observations": array(obj({"id": text(ID), "source_id": text(ID), "reader_question": text(), "classification": one_of(rs.OBSERVATION_KINDS),
-                                   "editor_check": text(), "evidence": array(anchor(block_ids)), "candidate_id": nullable(text(ID))})),
+        "observations": array(obj({"id": text(), "source_id": text(), "reader_question": text(), "classification": one_of(rs.OBSERVATION_KINDS),
+                                   "editor_check": text(), "evidence": array(anchor(block_ids)), "candidate_id": nullable(text())})),
         "candidates": array(candidate(included, block_ids)),
     }, optional=("no_checkpoints_reason",))
 
@@ -130,7 +128,7 @@ def repairs(wanted: list[str], block_ids: list[str]) -> Schema:
     return obj({"summary": text(),
                 "repairs": array(obj({"candidate_id": one_of(wanted), "kind": one_of({"edit", "move", "author_question"}), "action": text(),
                                       "proposed_wording": nullable(text()), "original": array(anchor(block_ids)),
-                                      "basis": array(obj({"fact": text(), "location": text(ID)})), "scientific_fidelity": text(),
+                                      "basis": array(obj({"fact": text(), "location": text()})), "scientific_fidelity": text(),
                                       "new_terms_check": text(), "affected_block_ids": array(one_of(block_ids), at_least=1),
                                       "author_question": nullable(text())}), exactly=len(wanted))})
 
@@ -140,4 +138,4 @@ def review(issue_ids: list[str]) -> Schema:
 
 
 def report() -> Schema:
-    return obj({"report_markdown": text(None)})
+    return obj({"report_markdown": text()})

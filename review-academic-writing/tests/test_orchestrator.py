@@ -58,9 +58,9 @@ def schema_errors(value, schema, path="$"):
         return [f"{path}: {value!r} is not {schema['const']!r}"]
     if "enum" in schema and value not in schema["enum"]:
         return [f"{path}: {value!r} is not one of {schema['enum']}"]
-    kinds = {"object": dict, "array": list, "string": str, "integer": int, "null": type(None)}
+    kinds = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool, "null": type(None)}
     kind = schema.get("type")
-    if kind is not None and (not isinstance(value, kinds[kind]) or isinstance(value, bool)):
+    if kind is not None and (not isinstance(value, kinds[kind]) or (kind == "integer" and isinstance(value, bool))):
         return [f"{path}: is not {kind}"]
     errors = []
     if kind == "string":
@@ -571,7 +571,12 @@ class OrchestratorTests(unittest.TestCase):
         bodies = [r["body"] for r in self.server.requests]
         editor = [b for b in bodies if b["messages"][0]["content"].startswith("You are the editor")]
         self.assertEqual({b["response_format"]["type"] for b in editor}, {"json_schema"})
-        self.assertEqual({json.dumps(b["response_format"]) for b in bodies if b not in editor}, {json.dumps({"type": "json_object"})})
+        auditor = [b for b in bodies if b["messages"][0]["content"].startswith("You are the auditor")]
+        prefix_or_branch = [b for b in bodies if b["messages"][1]["content"].startswith("Act as the target academic reader") or "branch packet" in b["messages"][1]["content"][:200]]
+        masked = [b for b in bodies if b not in editor + auditor + prefix_or_branch]
+        self.assertTrue(auditor and masked and prefix_or_branch)
+        self.assertEqual({b["response_format"]["type"] for b in auditor + masked}, {"json_schema"})
+        self.assertEqual({json.dumps(b["response_format"]) for b in prefix_or_branch}, {json.dumps({"type": "json_object"})})
         checks = next(b for b in editor if b["messages"][1]["content"].startswith("Editor step: checks (batch 1 of 2,"))
         schema = checks["response_format"]["json_schema"]["schema"]
         passages = schema["properties"]["passages"]
@@ -593,6 +598,18 @@ class OrchestratorTests(unittest.TestCase):
             schema = json.loads((self.out / "editor" / f"{label}.schema.json").read_text(encoding="utf-8"))
             response = json.loads((self.out / "editor" / f"{label}.response.json").read_text(encoding="utf-8"))
             self.assertEqual(schema_errors(response, schema), [], label)
+        checked = set()
+        for path in list((self.out / "masked").rglob("summary.json")) + list((self.out / "audits").rglob("summary.json")):
+            summary = json.loads(path.read_text(encoding="utf-8"))
+            if summary["command"] not in ("masked", "audit"):
+                continue
+            for call in summary["calls"]:
+                if call["status"] == "ok":
+                    schema = json.loads((path.parent / f"{call['label']}.schema.json").read_text(encoding="utf-8"))
+                    response = json.loads((path.parent / f"{call['label']}.response.json").read_text(encoding="utf-8"))
+                    self.assertEqual(schema_errors(response, schema), [], f"{path.parent.name}/{call['label']}")
+                    checked.add(summary["command"])
+        self.assertEqual(checked, {"masked", "audit"})
 
     def test_a_report_that_stops_before_an_issue_is_re_prompted(self):
         original = self.server.step_report
@@ -626,6 +643,11 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(steps, ["checks", "decisions", "reading", "reconcile", "repairs"])
         for step in steps:
             self.assertIn(rule, (PACKAGE / "server" / "prompts" / f"{step}.txt").read_text(encoding="utf-8"), step)
+
+    def test_checks_and_decisions_treat_a_word_broken_by_a_space_as_extraction(self):
+        # MinerU split "assume" and "assessment" in the SaTC proposal; the report listed both as the author's typos.
+        for step in ("checks", "decisions"):
+            self.assertIn("word broken by a space", (orch.PROMPTS / f"{step}.txt").read_text(encoding="utf-8"), step)
 
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")

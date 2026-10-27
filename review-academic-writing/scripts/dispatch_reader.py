@@ -150,7 +150,8 @@ class ClaudeRuntime:
     def agent_id(self, session_id: str | None) -> str:
         return "claude-p-" + (session_id or "unknown")[:8]
 
-    def call(self, role: str, prompt: str) -> dict[str, Any]:
+    def call(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        """`schema` is accepted for a uniform interface and unused: claude -p has no constrained decoding."""
         command = self.command(role)
         started_at = utc_now()
         clock = time.monotonic()
@@ -490,13 +491,16 @@ class Events:
     def path(self, label: str, suffix: str) -> Path:
         return self.dir / f"{label}.{suffix}"
 
-    def dispatch(self, runtime: Runtime, role: str, label: str, generic: str, payload: bytes, packet_file: Path, note: str | None, corrects: str | None) -> dict[str, Any]:
+    def dispatch(self, runtime: Runtime, role: str, label: str, generic: str, payload: bytes, packet_file: Path, note: str | None, corrects: str | None,
+                 schema: dict[str, Any] | None = None) -> dict[str, Any]:
         source = generic + ("\n\n" + note if note else "")
         prompt = source + "\n\n" + payload.decode("utf-8")
         write_new(self.path(label, "prompt.txt"), prompt.encode("utf-8"))
         if note:
             write_new(self.path(label, "prompt-source.txt"), (source + "\n").encode("utf-8"))
-        run = runtime.call(role, prompt)
+        if schema is not None:
+            write_new(self.path(label, "schema.json"), encoded(schema))
+        run = runtime.call(role, prompt, schema)
         write_new(self.path(label, "cli.json"), encoded(run["record"]))
         raw: bytes = run["raw"]
         write_new(self.path(label, "response.raw"), raw)
@@ -587,14 +591,15 @@ def classify_helper_error(exc: BaseException) -> Failure:
     return Failure("budget" if BUDGET_MESSAGE.search(message) else "rejected", message)
 
 
-def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generic: str, payload: bytes, packet_file: Path, accept: Callable[[dict[str, Any]], Any]) -> tuple[dict[str, Any] | None, Any, Failure | None]:
+def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generic: str, payload: bytes, packet_file: Path, accept: Callable[[dict[str, Any]], Any],
+                  schema: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, Any, Failure | None]:
     """Dispatch, validate, and correct up to MAX_CORRECTIONS times. Returns (call, accepted value, failure)."""
     budget_sizes: list[int] = []
     format_errors: list[str] = []
     note: str | None = None
     for number, suffix in enumerate(ATTEMPT_SUFFIXES):
         label = base + suffix
-        call = events.dispatch(runtime, role, label, generic, payload, packet_file, note, base if suffix else None)
+        call = events.dispatch(runtime, role, label, generic, payload, packet_file, note, base if suffix else None, schema)
         if call["parsed"] is None:
             failure = Failure("format", call["parse_error"] or "no response")
         else:
@@ -688,6 +693,7 @@ def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
         issued = mr.packet(run, packet_file, state["pending_lookup"])
         packet = json.loads(packet_file.read_bytes())
         seen_before = set(state["seen"]) | set(state["seen_assets"])
+        schema = mr.response_schema(packet, mr.exposed_sources(case, state, packet))
 
         def accept(call: dict[str, Any], packet_file: Path = packet_file) -> dict[str, Any]:
             try:
@@ -695,7 +701,7 @@ def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
             except (mr.Invalid, KeyError, TypeError, ValueError) as exc:
                 raise classify_helper_error(exc) from exc
 
-        call, record, failure = attempt_chain(events, runtime, "reader", label, generic, packet_file.read_bytes(), packet_file, accept)
+        call, record, failure = attempt_chain(events, runtime, "reader", label, generic, packet_file.read_bytes(), packet_file, accept, schema)
         entry = {"sequence": seq, "mode": issued["mode"], "label": call["label"], "status": call["status"]}
         if failure is not None:
             entry["error"] = str(failure)
@@ -754,6 +760,17 @@ def check_audit_shape(audit: Any, request: dict[str, Any]) -> None:
         raise Failure("format", "notes must be a string")
 
 
+def audit_schema(request: dict[str, Any]) -> dict[str, Any]:
+    """The audit response as a JSON Schema: the three copied fields fixed to the input's values, so a constrained
+    decoder copies them byte for byte (Flash-Next rewrote curly apostrophes in them on every attempt)."""
+    checks = {key: {"type": "string", "enum": sorted(AUDIT_CHECK_VALUES)} for key in AUDIT_CHECKS}
+    properties = {"candidate_id": {"const": request["candidate_id"]}, "proposed_wording": {"const": request["proposed_wording"]}, "original": {"const": request["original"]},
+                  "verdict": {"type": "string", "enum": sorted(AUDIT_VERDICTS)},
+                  "checks": {"type": "object", "properties": checks, "required": list(AUDIT_CHECKS), "additionalProperties": False}, "notes": {"type": "string"},
+                  "auditor": {"const": {"mode": "bounded-request", "agent_id": "filled in by the controller"}}}
+    return {"type": "object", "properties": properties, "required": [key for key in properties if key != "auditor"], "additionalProperties": False}
+
+
 def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
     input_file = Path(args.input)
     request = rp.load_json(input_file)
@@ -772,7 +789,7 @@ def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dic
         write_new(out, encoded(audit))
         return audit
 
-    call, audit, failure = attempt_chain(events, runtime, "auditor", label, events.generic_prompt("audit"), input_file.read_bytes(), input_file, accept)
+    call, audit, failure = attempt_chain(events, runtime, "auditor", label, events.generic_prompt("audit"), input_file.read_bytes(), input_file, accept, audit_schema(request))
     if failure is not None:
         return events.finish("audit", stop_message(label, failure), False, {"label": label})
     changed = [k for k in AUDIT_CHECKS if audit["checks"][k] == "changed"]
