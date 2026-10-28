@@ -84,7 +84,7 @@ Readers and auditors run through `claude -p` with tools, MCP servers, and settin
 
 ## Status
 
-Experimental (version 0.19.2). In October 2026 the full procedure was run on three unpublished manuscripts:
+Experimental (version 0.20.0). In October 2026 the full procedure was run on three unpublished manuscripts:
 
 | | Paper A | Paper B | Proposal |
 | --- | --- | --- | --- |
