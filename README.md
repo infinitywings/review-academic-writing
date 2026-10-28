@@ -107,7 +107,7 @@ Typical reasons for rejecting a wording were an added quantifier, a dropped cond
 | `validation/` | Validation protocol, human-study design, and scoring guide (partly in Chinese) |
 | `REFERENCES.md` | Sources the design borrows from, and what each does and does not support |
 
-The full command reference for each script is in [`skills/review-academic-writing/README.md`](skills/review-academic-writing/README.md) (in Chinese) and in `references/`.
+The full command reference for each script is in [`skills/review-academic-writing/README.md`](skills/review-academic-writing/README.md) and in `references/`.
 
 ## Development
 
