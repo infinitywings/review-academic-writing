@@ -4,8 +4,10 @@
 
 - Required intermediate records
 - Input preparation and mode selection
+- Checkpoint design: the minimum
 - Prefix worker instructions
 - Controller records and diagnosis
+- Citation spot-check
 - Revision and validation
 
 ## Required intermediate records
@@ -31,6 +33,17 @@ If the host's worker can access files or tools, restrict its task to the supplie
 If no complete child-tool trace is exposed, record that limitation explicitly. Retain the actual dispatch settings and exact supplied packet as evidence of the input provided, without asserting that the worker's later access to other resources has been independently ruled out.
 
 Before dispatch, inspect the packet's final visible characters. When a definition and its first dependent claim share a paragraph, use an exact sentence quotation or character offset that stops before the definition. The helper deliberately avoids automatic sentence splitting so abbreviations, formulas, and bilingual punctuation do not silently change the boundary.
+
+## Checkpoint design: the minimum
+
+Two runs of this skill on the same manuscript with different checkpoint designs found different things: many short prefixes placed inside the introduction surfaced first-reading obstacles and undefined terms; a few long prefixes ending at section ends surfaced claim strength, formula counterexamples, and citations that needed checking. Neither design finds what the other does. The checks-stage `checkpoint_plan` therefore needs at least:
+
+- one short prefix that stops inside the introduction, at the first critical use of a central concept or at the contribution statement, so that a reader who has only the opening is tested;
+- one long prefix that stops at the end of a main section (method, results), so that a reader who holds a whole argument is tested on its claims and rules.
+
+Record in the plan's `reason` which of the two each entry is, and in the controller record the reader's model, its effort or reasoning setting when the runtime exposes one, and the language the reader answers in. Different models ask different questions: in the 2026-10-27 comparison one reader asked only about logic and claim support and another only about what blocked a first reading. A reader that asked nothing at a checkpoint is weak evidence that the passage is clear, and no evidence at all about the kinds of question that model does not tend to ask; say so in the reconcile notes rather than treating silence as adequacy.
+
+Masked sliding-window reading (masked-reading.md) is optional for a manuscript of about 13,000 words or fewer: there the prefix checkpoints above already cover the reading path, and a masked run mostly repeats them at a higher call cost. Run it when the user asks for it, when the manuscript is longer, or when a question about note loss across sections is open.
 
 ## Prefix worker instructions
 
@@ -75,6 +88,20 @@ Then let the full editor determine whether a question is answered later, whether
 Require a causal explanation for each recommendation: identify the understanding condition restored and why that change helps at that location. Distinguish the understanding prerequisite from evidence that substantiates the scientific claim. A claim can be introduced before its evidence when the text honestly signals what will be established later.
 
 Treat checkpoint sampling as sampling. Do not estimate recall from the number of reported issues. Treat the absence of a question as limited model evidence, especially if the model could supply domain knowledge beyond the stated reader profile.
+
+## Citation spot-check
+
+A citation that carries a comparison or a novelty claim (the checks stage marks these in `claim_check.citation_check`) is checked against its source when the source is available: read the cited work's abstract and introduction, or the specific section the manuscript points to, and decide whether the manuscript's one-line account of it holds. Record every check in one JSON file in the run directory, `run/citation-checks.json`, an array of objects with:
+
+| Field | Record |
+| --- | --- |
+| `citation` | the reference as the manuscript gives it (number or author-year) and the block id of the claim |
+| `claim` | the manuscript's sentence that leans on it, quoted exactly |
+| `source_checked` | what was read: abstract, introduction, a section, or `unavailable` |
+| `verdict` | `supported`, `overstated`, `contradicted`, or `unverified` |
+| `note` | the sentence or fact in the source that decides it, or why it could not be decided |
+
+The template is `assets/notes/citation-checks.json`. An `overstated` or `contradicted` verdict becomes a candidate in the checks or reconcile stage like any other evidence; the final report lists the checked citations and their verdicts in the verification section. The step is on by default for a research proposal (the panel reads novelty claims against the cited field) and optional for a manuscript review; say in the scope record which citations were checked and which were not. Do not fetch sources through a service the user has not authorized; `unverified` with the reason is the honest record.
 
 ## Revision and validation
 

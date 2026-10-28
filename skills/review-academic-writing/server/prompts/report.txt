@@ -19,6 +19,7 @@ What to return: exactly one JSON object with this key and nothing else:
 
 - Fill every section of the template; where nothing applies, say so in one sentence rather than deleting the section.
 - In "Verification and remaining uncertainty", state the execution mode exactly as the input describes it (bounded stateless requests to an OpenAI-compatible endpoint; isolation by request content, not by sandbox) and that the helper checks concern files, order, coverage, and quotations, not the truth of a diagnosis or human comprehension.
+- In the same section give the candidate counts from decision_counts (accepted, needs_author, merged, rejected). When rejected is 0, add one sentence explaining why no candidate was rejected, drawn from the records (for example, few candidates on a short excerpt, or each candidate confirmed by a reader observation); do not invent a rejection. Say that the citation spot-check was not run on this server.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===

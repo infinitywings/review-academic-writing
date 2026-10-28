@@ -42,13 +42,13 @@ bash <skill-dir>/scripts/setup_mineru.sh          # 安装、下载模型、启�
 bash <skill-dir>/scripts/setup_mineru.sh --check  # 只报告每一步的状态，不改任何东西
 ```
 
-退出码 0 表示本地解析服务已就绪，1 表示等待后仍未就绪，2 表示缺 `uv`。`--version`、`--tier`、`--python`、`--wait` 可改默认值（4.0.12、standard、3.12、180 秒）。脚本从不使用 `--remote`。手动执行时等价于：
+退出码 0 表示本地解析服务已就绪，1 表示等待后仍未就绪，2 表示缺 `uv`。`--version`、`--tier`、`--python`、`--wait` 可改默认值（4.0.12、standard、3.12、180 秒）。脚本从不使用 `--remote`。`mineru telemetry` 和 `mineru config` 在服务未启动时都报 `Local mineru server is not running`，所以脚本先 `server start` 再关遥测、设 managed 模式，最后重启一次让模式生效。手动执行时等价于：
 
 ```bash
 uv tool install "mineru==4.0.12" --python 3.12
 mineru-kit models download --tier standard
-mineru telemetry disable
 mineru server start
+mineru telemetry disable
 mineru config set parse_server.local.mode managed
 mineru server restart
 mineru server status --json
@@ -81,11 +81,11 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 
 下面的路径以 `run/` 为例。把 `<skill-dir>` 换成安装路径。每条命令的字段要求见 `references/staged-review.md` 和 `references/output-contract.md`。
 
-0. 稿件是 PDF 时先抽取并清理。`extract` 在解析服务未就绪时以退出码 2 结束，并打印上面的启动命令。`postprocess` 合并碎片化粗体、规范段落空行、保留 HTML 表格和 LaTeX、删除重复页眉页脚，写出页码对照 `manuscript.md.pages.json` 和抽取说明 `manuscript.md.extraction-notes.txt`（抄进 scope 的 `extraction_notes`）。Markdown 里没有页码注释时，用 `--layout` 给出 MinerU 的 `middle.json` 或 `content_list.json`：
+0. 稿件是 PDF 时先抽取并清理。`extract` 在解析服务未就绪时以退出码 2 结束，并打印上面的启动命令；`--timeout`（秒，默认 3600）同时传给 `mineru parse --wait`。`postprocess` 合并碎片化粗体、规范段落空行、保留 HTML 表格和 LaTeX、删除重复页眉页脚和投稿行号栏，写出页码对照 `manuscript.md.pages.json` 和抽取说明 `manuscript.md.extraction-notes.txt`（抄进 scope 的 `extraction_notes`）。加 `--pdf manuscript.pdf` 时用 `pdftotext` 的文字层做词表，把版面解析连写、断开、多了连字符或多了字母的词改回文字层里的写法（只改成文字层确有的文本，改动逐条写进抽取说明，页码对照的哈希是改后的段落；文字层另存为 `manuscript.md.text-layer.txt`）；没有 poppler 时省略 `--pdf` 或用 `--text-layer` 给一个现成的文字层文件。Markdown 里没有页码注释时，用 `--layout` 给出 MinerU 的 `middle.json` 或 `content_list.json`：
 
 	```bash
-	python3 <skill-dir>/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU"
-	python3 <skill-dir>/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md
+	python3 <skill-dir>/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU" --timeout 3600
+	python3 <skill-dir>/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md --pdf manuscript.pdf
 	```
 
 	MinerU 不可用而又要继续时，第一条命令加 `--fallback pdftotext`（或 `pdfplumber`），见上面的降级说明；插件安装后 `<skill-dir>` 就是 SKILL.md 里 `${CLAUDE_SKILL_DIR}` 展开的目录。
@@ -102,7 +102,7 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 	python3 <skill-dir>/scripts/review_steps.py start --index run/index.json --profile run/reader-profile.json --scope run/scope.json --out run/journal
 	```
 
-3. 依次记录 reading 和 checks 两个阶段。checks 阶段只放编辑自己的检查和 checkpoint 计划。装了 spaCy 时可以先运行 `difficulty_features.py nominate`（见上一节），把排名靠前的块作为 `wording_check` 的待查段落：
+3. 依次记录 reading 和 checks 两个阶段。checks 阶段只放编辑自己的检查和 checkpoint 计划：每个纳入块除 `structure_check`、`wording_check` 外还要有 `claim_check`（主张强度、一次反例、承重引文三项），reading 里每条 `open_questions` 要么被某个候选引用，要么写进 `no_candidate` 并给理由；checkpoint 计划至少一个引言内的短前缀和一个节末的长前缀（见 `references/workflow.md`）。装了 spaCy 时可以先运行 `difficulty_features.py nominate`（见上一节），把排名靠前的块作为 `wording_check` 的待查段落：
 
 	```bash
 	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reading --notes run/reading.json
@@ -127,7 +127,7 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 	tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
 	```
 
-	然后记录 reconcile、decisions、repairs 三个阶段，再检查就绪：
+	然后记录 reconcile、decisions、repairs 三个阶段，再检查就绪。repairs 里 `kind` 为 `edit` 而 `proposed_wording` 为 null 的条目必须给 `wording_withheld_reason`：
 
 	```bash
 	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reconcile --notes run/reconcile.json
@@ -226,12 +226,12 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 167 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 190 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
 - `scripts/masked_reader.py` 只读写运行格式 5。格式 4 的运行用 0.9.0 的脚本重放，格式 2 用 `scripts/legacy/masked_reader_v2.py`。
-- `scripts/review_steps.py` 只读 `schema_version` 3 的日志。
+- `scripts/review_steps.py` 只读 `schema_version` 4 的日志（0.17.0 起；checks 笔记多了 `claim_check` 和 `no_candidate`，repairs 多了 `wording_withheld_reason`）。0.16 的日志用 0.16.3 的脚本重放。
 - 每条带替换句的修改都要先通过独立保真审计（`assets/prompts/fidelity-audit.txt`），审计 JSON 的路径写在 repairs 笔记的 `audit_path` 里。
 - `SHA256SUMS` 覆盖包内除它自身以外的每个文件。在包目录运行 `shasum -a 256 -c SHA256SUMS` 可核对。
 
@@ -239,7 +239,7 @@ python3 -m unittest discover -s tests
 
 - `SKILL.md`：主流程。
 - `references/`：分阶段记录协议、遮罩阅读协议、执行流程、审稿规则、用词规则、输出契约、试验摘要、文献依据、插件化构想。
-- `assets/`：两种读者画像、阶段笔记模板、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
+- `assets/`：两种读者画像、阶段笔记模板（含引文抽查记录 `citation-checks.json`）、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
 - `scripts/`：五个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`）、MinerU 安装脚本 `setup_mineru.sh`、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
 - `server/`：服务器全自动运行的编排器 `orchestrator.py`、编辑端 HTTP 客户端 `llm.py`，`prompts/` 下八个编辑步骤模板。
 - `tests/`：八个 unittest 文件。

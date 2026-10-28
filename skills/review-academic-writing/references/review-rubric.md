@@ -79,6 +79,14 @@
 - Classify them separately: adding a definition cannot establish a causal claim, and a transition cannot supply missing data.
 - If repair requires new scientific information, mark an author decision or verification need; do not invent a fact, citation, assumption, or result.
 
+## 4b. Claim strength, rules, and citations
+
+Record these in the checks stage as each block's `claim_check`; they are the checks most often skipped when a review concentrates on first-reading difficulty.
+
+- Absolute and comparative claims: for every "no existing method", "the first", "every", "widely used", "outperforms", or "always", name the evidence the manuscript gives for that strength (a measurement, a cited survey, a stated scope) and whether the strength matches it. A claim that holds under a scope the text states elsewhere is a candidate for restating the scope at the claim, not for weakening the claim.
+- One counterexample per rule: for each formula, metric, threshold, or decision rule, try one concrete case that the rule should handle (a boundary value, an empty set, a tie, a sign flip, a unit change) and record what the rule gives. A rule that fails its own stated purpose on the tried case is a candidate; a rule that survives is recorded as checked.
+- Citations that carry weight: a citation that supports a comparison ("unlike [12], we ...") or a novelty claim ("no prior work ...") is a candidate for the citation spot-check in workflow.md; a citation that only points to background is not. Record which it is.
+
 ## 5. Scientific meaning invariants
 
 For every proposed rewrite or move, compare the original and revised text for:

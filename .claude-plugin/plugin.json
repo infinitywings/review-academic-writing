@@ -1,6 +1,6 @@
 {
   "name": "review-academic-writing",
-  "version": "0.16.3",
+  "version": "0.17.0",
   "description": "Review academic manuscripts with a staged, receipt-chained record, information-limited reader checks, and an independent fidelity audit for every proposed wording.",
   "author": {
     "name": "Chenglong Fu"

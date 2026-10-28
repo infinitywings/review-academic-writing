@@ -496,6 +496,204 @@ class ExtractCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("postprocess", result.stdout)
 
+    def test_postprocess_with_a_text_layer_file_repairs_words(self):
+        source = self.root / "repair.md"
+        source.write_text(REPAIR_MD)
+        layer = self.root / "layer.txt"
+        layer.write_text(LAYER)
+        clean = self.root / "clean.md"
+        code, out, err = self.run_main(["postprocess", "--input", str(source), "--out", str(clean), "--text-layer", str(layer)])
+        self.assertEqual(code, 0, err)
+        response = json.loads(out)
+        self.assertEqual(response["text_layer"], "file")
+        self.assertEqual(response["word_repairs"], 2)
+        self.assertEqual(response["unresolved_tokens"], 1)
+        self.assertNotIn("text_layer_file", response)
+        self.assertIn("The points lie within the hallway region.", clean.read_text())
+        self.assertIn("A source compromise can poison the build.", clean.read_text())
+        self.assertIn("ordinal 2: 'blie' -> 'lie'", (self.root / "clean.md.extraction-notes.txt").read_text())
+        self.assertFalse((self.root / "clean.md.text-layer.txt").exists())
+
+    def test_postprocess_with_a_pdf_saves_the_pdftotext_layer(self):
+        source = self.root / "repair.md"
+        source.write_text(REPAIR_MD)
+        layer = self.root / "layer.txt"
+        layer.write_text(LAYER)
+        stub = self.root / "pdftotext"
+        stub.write_text(f"#!/bin/sh\ncat {layer}\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        clean = self.root / "clean.md"
+        code, out, err = self.run_main(["postprocess", "--input", str(source), "--out", str(clean), "--pdf", str(self.pdf), "--pdftotext", str(stub)])
+        self.assertEqual(code, 0, err)
+        response = json.loads(out)
+        self.assertEqual(response["text_layer"], "pdftotext")
+        self.assertEqual(response["word_repairs"], 2)
+        saved = self.root / "clean.md.text-layer.txt"
+        self.assertEqual(response["text_layer_file"], str(saved))
+        self.assertIn("A source compromise can poison the build.", saved.read_text())
+        self.assertIn("co-\nhort", saved.read_text())
+        self.assertIn("The points lie within the hallway region.", clean.read_text())
+
+    def test_postprocess_refuses_both_pdf_and_text_layer(self):
+        source = self.root / "repair.md"
+        source.write_text(REPAIR_MD)
+        layer = self.root / "layer.txt"
+        layer.write_text(LAYER)
+        clean = self.root / "clean.md"
+        code, out, err = self.run_main(["postprocess", "--input", str(source), "--out", str(clean), "--pdf", str(self.pdf), "--text-layer", str(layer)])
+        self.assertEqual(code, 2)
+        self.assertIn("Give --pdf or --text-layer, not both", err)
+        self.assertFalse(clean.exists())
+
+    def test_postprocess_with_a_pdf_needs_pdftotext(self):
+        source = self.root / "repair.md"
+        source.write_text(REPAIR_MD)
+        clean = self.root / "clean.md"
+        with unittest.mock.patch.object(ex.shutil, "which", return_value=None):
+            code, out, err = self.run_main(["postprocess", "--input", str(source), "--out", str(clean), "--pdf", str(self.pdf)])
+        self.assertEqual(code, 2)
+        self.assertIn("poppler", err)
+        self.assertFalse(clean.exists())
+
+
+# An invented text layer, as pdftotext would print it: real newlines, so the line-end
+# hyphens in "co-\nhort" and "well-\nknown" are the kind the vocabulary resolves.
+LAYER = """Admission Checking
+A source compromise can poison the build. We assess
+the risk with a cohort of users; the co-
+hort is small. The set is well-
+known to the team, and the well-known set is small. The
+points lie within the hallway region, and the hallway is long.
+Every assessment uses the same window.
+See the code and the link here.
+"""
+LAYER_LINE_END_ONLY = """We assess the risk with a co-
+hort of users.
+"""
+REPAIR_MD = """<!-- page 1 of 1 -->
+
+# Admission Checking
+
+The points blie within the hallway region.
+
+A sourcecompromise can poison the build.
+
+The qzxv is long.
+"""
+
+
+class WordRepairTests(unittest.TestCase):
+    def setUp(self):
+        self.vocab = ex.Vocabulary(LAYER)
+
+    def repair(self, text, vocab=None):
+        return ex.repair_words(text, vocab or self.vocab)
+
+    def test_run_together_words_are_split_when_the_layer_has_them_adjacent(self):
+        repaired, changes, unresolved = self.repair("A sourcecompromise can poison the build.")
+        self.assertEqual(repaired, "A source compromise can poison the build.")
+        self.assertEqual(changes, [("sourcecompromise", "source compromise")])
+        self.assertEqual(unresolved, [])
+
+    def test_run_together_words_never_adjacent_in_the_layer_are_left_alone(self):
+        text = "The buildusers poison the build."
+        repaired, changes, unresolved = self.repair(text)
+        self.assertEqual(repaired, text)
+        self.assertEqual(changes, [])
+        self.assertEqual(unresolved, ["buildusers"])
+
+    def test_split_word_joins_its_neighbour(self):
+        repaired, changes, unresolved = self.repair("Every assess ment uses the same window.")
+        self.assertEqual(repaired, "Every assessment uses the same window.")
+        self.assertEqual(changes, [("assess ment", "assessment")])
+        self.assertEqual(unresolved, [])
+
+    def test_spurious_hyphen_is_dropped_when_the_layer_has_the_word_unbroken(self):
+        repaired, changes, unresolved = self.repair("The risk with a co-hort of users.")
+        self.assertEqual(repaired, "The risk with a cohort of users.")
+        self.assertEqual(changes, [("co-hort", "cohort")])
+        self.assertEqual(unresolved, [])
+
+    def test_line_end_hyphen_alone_leaves_both_readings_unchanged(self):
+        vocab = ex.Vocabulary(LAYER_LINE_END_ONLY)
+        for text in ("We assess the risk with a co-hort of users.", "We assess the risk with a cohort of users."):
+            with self.subTest(text=text):
+                repaired, changes, unresolved = self.repair(text, vocab)
+                self.assertEqual(repaired, text)
+                self.assertEqual(changes, [])
+                self.assertEqual(unresolved, [])
+
+    def test_missing_hyphen_is_restored_from_a_one_line_spelling(self):
+        repaired, changes, unresolved = self.repair("The set is wellknown to the team.")
+        self.assertEqual(repaired, "The set is well-known to the team.")
+        self.assertEqual(changes, [("wellknown", "well-known")])
+        self.assertEqual(unresolved, [])
+
+    def test_garbled_letters_are_resolved_from_context(self):
+        repaired, changes, unresolved = self.repair("The points blie within the hallway region, and the b bhallway is long.")
+        self.assertEqual(repaired, "The points lie within the hallway region, and the hallway is long.")
+        self.assertEqual(changes, [("blie", "lie"), ("b bhallway", "hallway")])
+        self.assertEqual(unresolved, [])
+
+    def test_unknown_token_without_a_repair_is_reported_unresolved(self):
+        text = "The qzxv is long."
+        repaired, changes, unresolved = self.repair(text)
+        self.assertEqual(repaired, text)
+        self.assertEqual(changes, [])
+        self.assertEqual(unresolved, ["qzxv"])
+
+    def test_math_code_urls_latex_commands_and_links_are_never_changed(self):
+        text = "See $a_{blie} + 1$, the code `blie`, the link [blie](https://example.org/blie), https://example.org/blie, and \\blie here."
+        repaired, changes, unresolved = self.repair(text)
+        self.assertEqual(repaired, text)
+        self.assertEqual(changes, [])
+        self.assertEqual(unresolved, [])
+
+
+class WordRepairPostprocessTests(unittest.TestCase):
+    def test_sidecar_hashes_and_notes_describe_the_repaired_edition(self):
+        result = ex.postprocess(REPAIR_MD, None, "repair.md", text_layer=LAYER)
+        self.assertIn("\nThe points lie within the hallway region.\n", result["markdown"])
+        self.assertIn("\nA source compromise can poison the build.\n", result["markdown"])
+        index = rp.build_index(result["markdown"])
+        sidecar = result["sidecar"]
+        self.assertEqual(len(sidecar["paragraphs"]), len(index["blocks"]))
+        for block, para in zip(index["blocks"], sidecar["paragraphs"]):
+            self.assertEqual(para["sha256"], sha(block["text"]))
+        self.assertEqual(result["word_repairs"], [{"ordinal": 2, "before": "blie", "after": "lie"},
+                                                  {"ordinal": 3, "before": "sourcecompromise", "after": "source compromise"}])
+        notes = result["notes"]
+        self.assertIn("repaired 2 extraction word break(s)", notes)
+        self.assertIn("ordinal 2: 'blie' -> 'lie'", notes)
+        self.assertIn("Uncertain: 1 token(s) not found in the text layer", notes)
+        self.assertIn("'qzxv'", notes)
+        self.assertEqual(result["unresolved_tokens"], 1)
+        not_checked = [line for line in notes.splitlines() if line.startswith("Not checked here")]
+        self.assertEqual(len(not_checked), 1)
+        self.assertNotIn("hyphenation", not_checked[0])
+
+    def test_without_a_text_layer_the_notes_say_words_were_not_checked(self):
+        result = ex.postprocess(REPAIR_MD, None, "repair.md")
+        self.assertIn("\nThe points blie within the hallway region.\n", result["markdown"])
+        self.assertEqual(result["word_repairs"], [])
+        notes = result["notes"]
+        self.assertIn("Word breaks were not checked against the PDF text layer", notes)
+        not_checked = [line for line in notes.splitlines() if line.startswith("Not checked here")]
+        self.assertEqual(len(not_checked), 1)
+        self.assertIn("hyphenation at line ends", not_checked[0])
+
+    def test_tables_display_math_and_code_are_not_touched(self):
+        table = "<table><tr><td>sourcecompromise</td><td>co-hort</td></tr></table>"
+        math = "$$\nblie = wellknown + 1\n$$"
+        code = "```\nassess ment co-hort\n```"
+        md = "<!-- page 1 of 1 -->\n\n" + table + "\n\n" + math + "\n\n" + code + "\n\nA sourcecompromise can poison the build.\n"
+        result = ex.postprocess(md, None, "blocks.md", text_layer=LAYER)
+        for block in (table, math, code):
+            self.assertIn("\n" + block + "\n", "\n" + result["markdown"])
+        self.assertIn("A source compromise can poison the build.", result["markdown"])
+        self.assertEqual(result["word_repairs"], [{"ordinal": 4, "before": "sourcecompromise", "after": "source compromise"}])
+        self.assertEqual(result["unresolved_tokens"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

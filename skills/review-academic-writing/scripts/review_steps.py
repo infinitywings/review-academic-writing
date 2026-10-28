@@ -27,7 +27,9 @@ import masked_reader as mr
 import review_packets as rp
 
 STAGES = ("reading", "checks", "reconcile", "decisions", "repairs")
-JOURNAL_SCHEMA = 3
+JOURNAL_SCHEMA = 4
+CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
+REPAIR_KINDS = {"edit", "move", "author_question"}
 FIGURE_POLICIES = {"strict-prefix", "reference-jump", "text-only"}
 AUDIT_VERDICTS = {"preserved", "changed", "undetermined"}
 AUDIT_CHECKS = ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "time_horizon", "numerical_values", "uncertainty", "causal_vs_associative")
@@ -246,7 +248,55 @@ def validate_candidates(value: dict, blocks: dict, included: set, stage: str) ->
         scoped_anchor(row["anchor"], blocks, included, "candidate.anchor")
         string(row["question"], "candidate.question")
         evidence(row["evidence"], blocks, "candidate.evidence")
+        if row.get("open_questions") is not None:
+            for n, item in enumerate(array(row["open_questions"], "candidate.open_questions")):
+                item = obj(item, f"candidate.open_questions[{n}]")
+                fields(item, {"block_id", "question"}, f"candidate.open_questions[{n}]")
+                string(item["block_id"], "candidate.open_questions.block_id")
+                string(item["question"], "candidate.open_questions.question")
     return candidates
+
+
+def open_question_accounting(value: dict, reading: dict, candidates: dict) -> None:
+    """Require every reading-stage open question to reach a candidate or an explicit no_candidate entry.
+
+    A candidate covers an open question when its `question` contains the open question's
+    text verbatim, or when it lists the question in `open_questions` by block id and text.
+    Everything else must appear in checks.no_candidate with a reason, so a question raised
+    while reading cannot disappear silently.
+    """
+    raised = []
+    for row in reading["paragraphs"]:
+        for question in row["open_questions"]:
+            raised.append((row["anchor"]["block_id"], question))
+    covered = set()
+    for row in candidates.values():
+        for key in raised:
+            if key[1] in row["question"]:
+                covered.add(key)
+        for item in row.get("open_questions") or []:
+            key = (item["block_id"], item["question"])
+            if key not in raised:
+                raise Error(f"candidate.open_questions names a question that reading notes did not raise for {key[0]}: {key[1]!r}.")
+            covered.add(key)
+    declined = set()
+    for n, item in enumerate(array(value.get("no_candidate"), "checks.no_candidate")):
+        item = obj(item, f"no_candidate[{n}]")
+        fields(item, {"block_id", "question", "reason"}, "no_candidate")
+        key = (string(item["block_id"], "no_candidate.block_id"), string(item["question"], "no_candidate.question"))
+        string(item["reason"], "no_candidate.reason")
+        if key not in raised:
+            raise Error(f"no_candidate names a question that reading notes did not raise for {key[0]}: {key[1]!r}.")
+        if key in declined:
+            raise Error(f"no_candidate lists the same question twice for {key[0]}: {key[1]!r}.")
+        if key in covered:
+            raise Error(f"no_candidate contradicts a candidate that already carries the question for {key[0]}: {key[1]!r}.")
+        declined.add(key)
+    missing = [key for key in raised if key not in covered and key not in declined]
+    if missing:
+        block, question = missing[0]
+        raise Error(f"Reading open question for {block} has no candidate and no no_candidate entry: {question!r}"
+                    + (f" (and {len(missing) - 1} more)." if len(missing) > 1 else "."))
 
 
 def all_candidates(notes: dict) -> dict:
@@ -292,10 +342,14 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
         seen = []
         for row in rows:
             row = obj(row, "passage")
-            fields(row, {"block_id", "structure_check", "wording_check", "evidence"}, "passage")
+            fields(row, {"block_id", "structure_check", "wording_check", "claim_check", "evidence"}, "passage")
             seen.append(string(row["block_id"], "passage.block_id"))
             for key in ("structure_check", "wording_check"):
                 string(row[key], "passage." + key)
+            claim = obj(row["claim_check"], "passage.claim_check")
+            fields(claim, set(CLAIM_CHECK_FIELDS), "passage.claim_check")
+            for key in CLAIM_CHECK_FIELDS:
+                string(claim[key], "passage.claim_check." + key)
             ev = evidence(row["evidence"], blocks, "passage.evidence")
             if not any(a["block_id"] == row["block_id"] for a in ev):
                 raise Error("Each passage check needs an exact quotation from that passage.")
@@ -308,7 +362,11 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             scoped_anchor(row["anchor"], blocks, included, "checkpoint_plan.anchor")
             rp._enum(row["mode"], CHECKPOINT_MODES, "checkpoint_plan.mode")
             string(row["reason"], "checkpoint_plan.reason")
-        validate_candidates(value, blocks, included, "checks")
+        candidates = validate_candidates(value, blocks, included, "checks")
+        # Recording always has the reading notes. A caller pre-checking one batch without
+        # them (server/orchestrator.py) does the accounting itself per batch.
+        if "reading" in previous:
+            open_question_accounting(value, previous["reading"], candidates)
     elif stage == "reconcile":
         plan = by_id(previous["checks"]["checkpoint_plan"], "id", "checkpoint_plan")
         points = by_id(array(value.get("checkpoints"), "reconcile.checkpoints"), "id", "checkpoints")
@@ -382,12 +440,19 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             raise Error("Repairs must correspond exactly to accepted and needs_author candidates.")
         for key, row in repairs.items():
             fields(row, {"kind", "action", "proposed_wording", "scientific_fidelity", "new_terms_check", "affected_block_ids", "author_question"}, "repair")
-            rp._enum(row["kind"], {"edit", "move", "author_question"}, "repair.kind")
+            rp._enum(row["kind"], REPAIR_KINDS, "repair.kind")
             for field in ("action", "scientific_fidelity", "new_terms_check"):
                 string(row[field], "repair." + field)
             for field in ("proposed_wording", "author_question"):
                 if row[field] is not None:
                     string(row[field], "repair." + field)
+            withheld = row.get("wording_withheld_reason")
+            if row["kind"] == "edit" and row["proposed_wording"] is None:
+                if withheld is None:
+                    raise Error(f"Repair {key} is an edit without proposed_wording; give wording_withheld_reason, or make it an author_question.")
+                string(withheld, "repair.wording_withheld_reason")
+            elif withheld is not None:
+                raise Error(f"Repair {key}: wording_withheld_reason belongs only to an edit that carries no proposed_wording.")
             affected = strings(row["affected_block_ids"], "repair.affected_block_ids", nonempty=True)
             if len(affected) != len(set(affected)) or not set(affected) <= blocks.keys():
                 raise Error("Affected block IDs must be distinct blocks from this source.")

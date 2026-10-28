@@ -26,6 +26,11 @@
       "block_id": "",
       "structure_check": "",
       "wording_check": "",
+      "claim_check": {
+        "claim_strength": "",
+        "counterexample": "",
+        "citation_check": ""
+      },
       "evidence": [
         {
           "block_id": "",
@@ -58,7 +63,20 @@
           "block_id": "",
           "quote": ""
         }
+      ],
+      "open_questions": [
+        {
+          "block_id": "",
+          "question": ""
+        }
       ]
+    }
+  ],
+  "no_candidate": [
+    {
+      "block_id": "",
+      "question": "",
+      "reason": ""
     }
   ]
 }

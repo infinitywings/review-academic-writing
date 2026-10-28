@@ -5,9 +5,10 @@
 #   1. uv present (never installed here; exit 2 with the hint when missing)
 #   2. mineru installed with `uv tool install "mineru==<version>"` when the command is missing
 #   3. models verified with `mineru-kit models verify --tier <tier>`; downloaded when they fail
-#   4. telemetry disabled
-#   5. parse_server.local.mode set to managed
-#   6. server started (or restarted when the mode changed), then polled until healthy
+#   4. server started when it is not running (`telemetry` and `config` need a running server)
+#   5. telemetry disabled
+#   6. parse_server.local.mode set to managed, then the server restarted so it takes effect
+#   7. polled until healthy
 #
 # Never uses MinerU's remote service. Exit 0 when the local parse server is ready,
 # 1 when it is not after the wait, 2 when a prerequisite is missing.
@@ -93,37 +94,8 @@ else
   fi
 fi
 
-# 4. telemetry
-if mineru telemetry status 2>/dev/null | grep -q '^state: *disabled'; then
-  step "telemetry: disabled"
-else
-  if [ "$CHECK" = 1 ]; then
-    step "telemetry: enabled or unset (would run: mineru telemetry disable)"
-  else
-    step "telemetry: disabling"
-    mineru telemetry disable >/dev/null 2>&1 || step "telemetry: disable failed (continuing)"
-  fi
-fi
-
-# 5. managed mode
-need_restart=0
-if mineru config get parse_server.local.mode 2>/dev/null | grep -q '= *managed'; then
-  step "parse_server.local.mode: managed"
-else
-  if [ "$CHECK" = 1 ]; then
-    step "parse_server.local.mode: not managed (would run: mineru config set parse_server.local.mode managed)"
-  else
-    step "parse_server.local.mode: setting managed"
-    if ! mineru config set parse_server.local.mode managed >/dev/null 2>&1; then
-      say "not ready: could not set parse_server.local.mode"
-      exit 1
-    fi
-    need_restart=1
-    changed=1
-  fi
-fi
-
-# 6. server
+# 4. server: `mineru telemetry ...` and `mineru config ...` answer "Local mineru server is not
+# running" until it is up, so start it before touching either setting.
 status_json() { mineru server status --json 2>/dev/null; }
 # Prints "ready", "starting", "stopped" or "unhealthy" from the status JSON.
 status_word() {
@@ -146,22 +118,54 @@ else:
 }
 
 state="$(status_word)"
-if [ "$CHECK" = 1 ]; then
+if [ "$state" = "stopped" ] && [ "$CHECK" != 1 ]; then
+  step "server: stopped; starting"
+  mineru server start >/dev/null 2>&1 || { say "not ready: mineru server start failed"; exit 1; }
+  changed=1
+  state="$(status_word)"
+else
   step "server: $state"
+fi
+
+# 5. telemetry
+if mineru telemetry status 2>/dev/null | grep -q '^state: *disabled'; then
+  step "telemetry: disabled"
+else
+  if [ "$CHECK" = 1 ]; then
+    step "telemetry: enabled or unset (would run: mineru telemetry disable)"
+  else
+    step "telemetry: disabling"
+    mineru telemetry disable >/dev/null 2>&1 || step "telemetry: disable failed (continuing)"
+  fi
+fi
+
+# 6. managed mode
+need_restart=0
+if mineru config get parse_server.local.mode 2>/dev/null | grep -q '= *managed'; then
+  step "parse_server.local.mode: managed"
+else
+  if [ "$CHECK" = 1 ]; then
+    step "parse_server.local.mode: not managed (would run: mineru config set parse_server.local.mode managed)"
+  else
+    step "parse_server.local.mode: setting managed"
+    if ! mineru config set parse_server.local.mode managed >/dev/null 2>&1; then
+      say "not ready: could not set parse_server.local.mode"
+      exit 1
+    fi
+    need_restart=1
+    changed=1
+  fi
+fi
+
+if [ "$CHECK" = 1 ]; then
   if [ "$state" = "ready" ]; then say "ready: local MinerU parse server is healthy"; exit 0; fi
   say "not ready: server is $state"
   exit 1
 fi
 
-if [ "$state" = "stopped" ]; then
-  step "server: stopped; starting"
-  mineru server start >/dev/null 2>&1 || { say "not ready: mineru server start failed"; exit 1; }
-  changed=1
-elif [ "$need_restart" = 1 ]; then
+if [ "$need_restart" = 1 ]; then
   step "server: restarting so the managed mode takes effect"
   mineru server restart >/dev/null 2>&1 || { say "not ready: mineru server restart failed"; exit 1; }
-else
-  step "server: $state"
 fi
 
 # 7. wait until healthy

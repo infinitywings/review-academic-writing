@@ -52,6 +52,9 @@ Identify unnecessary names that can become ordinary descriptions. Explain why an
 
 Record source-anchor validation, independent rechecks actually run, claim-preservation checks, sampled coverage, and unresolved scientific questions. Distinguish model predictions from observed human reading results.
 
+- Candidates: N accepted, N author questions, N merged, N rejected (from the decisions record). If none was rejected, say in one sentence why the counterchecks rejected nothing.
+- Citations checked against their sources, with verdicts, when the citation spot-check was run; otherwise say it was not run.
+
 ## Supporting work notes
 
 Provide the saved reading notes, concept/paragraph/wording checks, reconciled reader observations, candidate decisions, and repair comparisons in an accessible accompanying document or clearly labeled appendix. Summarize actual coverage and point to the records; do not expose internal bookkeeping in the main recommendations.

@@ -11,6 +11,7 @@
 - 6. Prepare repairs and check their meaning
 - 7. Check readiness and produce the report
 - Interrupted work, corrections, and smaller tasks
+- Field vocabularies
 
 ## Purpose and limits
 
@@ -66,11 +67,15 @@ Use [the checks template](../assets/notes/checks.json). Apply the existing revie
 
 **Paragraph relations.** In each included block's `structure_check`, describe how its proposition connects to preceding material, what it establishes for subsequent material, and whether its claim matches the evidence and scope. Point to actual locations. Check dispersed information by naming the pieces that must be combined. Do not replace this with a generic rating such as “flow is good.”
 
+**Claims, rules, and citations.** In each included block's `claim_check`, record three things, each as a nonempty string, each saying "none in this block" with the reason when that is the finding: `claim_strength`, the absolute or comparative claims (nothing, first, every, widespread, outperforms, always) with the evidence the text gives for that strength; `counterexample`, one attempt to break each formula, metric, or decision rule the block states, with the case tried and what happened; `citation_check`, whether a citation in the block carries a comparison or novelty claim and therefore needs its source checked (see the citation spot-check in workflow.md). The helper refuses a passage without all three. A block with no claim, no rule, and no citation still gets the three lines; they are then short.
+
 **Words and sentences.** In `wording_check`, inspect terms and phrases in context. For a questioned expression, record what it means, whether a name is necessary, and what an ordinary description could express. Check subjects, actions, noun strings, nesting, qualifications, and reference consistency. Also record why a passage or necessary term should remain when that is the result; do not create an issue just to demonstrate effort. Include at least one exact quote from the current block in each passage's `evidence`; add other supporting source anchors when relevant.
 
 **Checkpoint plan.** This stage is the editor's independent review: record it before consulting any reader observation, and the helper refuses `checkpoints`, `branches`, or `observations` here. Save the selection plan in `checkpoint_plan`, one entry per intended checkpoint with `id`, `anchor`, `mode`, and `reason`; state whether the selection used the full text. An empty plan is valid when no independent reader will be run. Dispatch readers only after this stage is recorded, following workflow.md and masked-reading.md.
 
 **Candidates.** Give each possible issue `id`, `anchor`, `question`, and `evidence`, where evidence is an array of exact source anchors. A question such as “Does the reader need the formal equation at this sentence?” is a candidate, not proof that the equation is too late. Keep the provenance of a reader question in the surrounding notes. Combine obvious duplicate symptoms or keep them for explicit merging in the next step. Zero candidates is valid.
+
+**Open questions from reading.** Every `open_questions` entry saved in the reading notes must reach this stage: either a candidate carries it (its `question` quotes the open question verbatim, or its optional `open_questions` array lists it as `{"block_id", "question"}` exactly as the reading note has it) or `no_candidate` lists it with `block_id`, `question`, and a `reason` why no candidate follows from it (answered by a later passage, ordinary background, outside the review's scope). The helper refuses checks notes that leave an open question in neither place, a `no_candidate` entry for a question reading never raised, a question listed twice, or a `no_candidate` entry for a question a candidate already carries. `no_candidate` is required; an empty array is valid when reading raised no open questions.
 
 Inspect the saved source anchors and the check of every included block, then run:
 
@@ -126,6 +131,7 @@ For each retained candidate, record:
 - `candidate_id`: the retained candidate being addressed.
 - `kind`: `edit`, `move`, or `author_question`.
 - `action` and `proposed_wording`: the full replacement or the precise move from one location to another; use null for wording when no justified replacement is possible.
+- `wording_withheld_reason`: required when `kind` is `edit` and `proposed_wording` is null; say why no replacement is offered (the manuscript does not supply the fact, the audit rejected every attempt, the fix depends on an author decision). Omit it or set it to null in every other case; the helper refuses it beside a proposed wording, on a move, or on an author question. An accepted edit without wording and without this reason is refused, so an item cannot be accepted and then left to the author without saying so.
 - `scientific_fidelity`: the source-to-repair check of claim strength, numbers, units, conditions, negation, assumptions, population, outcomes, time, and uncertainty. Name the relevant facts rather than writing only “preserved.” If intentionally narrowing an unsupported claim, say so.
 - `new_terms_check`: whether the proposed text introduced a label, acronym, compound noun, or unnecessary synonym, and what was done about it.
 - `affected_block_ids`: a nonempty list of known locations requiring corresponding changes or the author's clarification; inspect definitions, subsequent uses, and relevant captions.
@@ -160,6 +166,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py check-final --journal run/jo
 
 Use the completed findings and notes to write the user-facing report. Explain the most consequential changes in ordinary language. Keep implementation fields and receipts in supporting records; provide an accessible account of passage coverage, candidate decisions, and meaning checks. Report useful retained text as well as corrections. A rejected candidate may explain why something should stay; it must not reappear as an accepted criticism.
 
+State the candidate counts in the report's verification section: how many candidates were accepted, turned into author questions, merged, and rejected, taken from the decisions record. Zero rejections is a result that needs one sentence of explanation (for example, a short excerpt with few candidates, or every candidate confirmed by a reader observation), because a decisions stage that rejects nothing has not shown that its counterchecks could fail.
+
 If a new diagnosis appears while drafting, return to the relevant checks in a corrected run. Do not simply add it to the report or invent earlier notes for it.
 
 ## Interrupted work, corrections, and smaller tasks
@@ -171,3 +179,22 @@ If a new diagnosis appears while drafting, return to the relevant checks in a co
 - **Unavailable content:** record the omission and its consequences. Do not fill uncertain fields with guesses to pass a check.
 
 No stage requires a fixed number of problems or edits. An adequately supported decision to keep the text is a successful outcome.
+
+## Field vocabularies
+
+The helper accepts only these values; anything else is refused with a message naming the field.
+
+| Field | Values |
+| --- | --- |
+| `scope.task` | `review`, `structure_plan`, `revision`, `quick_review` |
+| `checkpoint_plan.mode`, `checkpoint.mode` | `fresh-prefix`, `bounded-request`, `masked-sequential`, `full-context` |
+| `checkpoint.figure_policy` | `text-only` (required for `fresh-prefix` and `bounded-request`), `strict-prefix`, `reference-jump` (a masked checkpoint must repeat its run's `asset_policy`; a `full-context` checkpoint may declare any of the three) |
+| `checkpoint.record_sequence` (masked) | an integer from 1 to the number of recorded display events of the run; `branch.branch_sequence` likewise names a recorded branch |
+| `observation.classification` | `absent_at_critical_use`, `resolved_later`, `needed_again`, `lost_in_notes`, `interpretation_changed`, `inferred_connection`, `asset_lookup`, `adequate` |
+| `decision.status` | `accepted`, `needs_author`, `rejected`, `merged` (with `merged_into` naming an accepted or needs_author candidate) |
+| `decision.category` (accepted and needs_author) | `late_prerequisite`, `unavailable_prerequisite`, `ambiguous_reference`, `scattered_information`, `retrieval_burden`, `missing_relation`, `paragraph_function`, `terminology_scope_drift`, `unsupported_claim`, `unnecessary_term`, `word_choice`, `sentence_structure`, `other` |
+| `decision.severity` | `critical`, `major`, `minor`, `optional` |
+| `decision.confidence` | `high`, `medium`, `low` |
+| `repair.kind` | `edit`, `move`, `author_question` |
+| `audit.verdict` | `preserved`, `changed`, `undetermined`; each of the nine `audit.checks` is `same`, `changed`, or `not_applicable` |
+| `audit.auditor.mode` | `bounded-request`, `fresh-prefix`, `full-context` |

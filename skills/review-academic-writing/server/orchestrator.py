@@ -375,17 +375,22 @@ class Run:
         self.case = self.masked_case()
         masked_ids = [i for window in self.case["windows"] for i in window] if self.case else []
         batches = chunks(self.included, self.args.batch_blocks)
-        merged: dict[str, Any] = {"concepts": [], "passages": {}, "checkpoint_plan": [], "candidates": [], "reasons": []}
+        merged: dict[str, Any] = {"concepts": [], "passages": {}, "checkpoint_plan": [], "candidates": [], "no_candidate": [], "reasons": []}
         summaries: list[str] = []
 
         def placeholder_passage(block_id: str) -> dict[str, Any]:
-            return {"block_id": block_id, "structure_check": "pending batch", "wording_check": "pending batch", "evidence": [{"block_id": block_id, "quote": self.blocks[block_id]["text"][:20]}]}
+            return {"block_id": block_id, "structure_check": "pending batch", "wording_check": "pending batch",
+                    "claim_check": {k: "pending batch" for k in rs.CLAIM_CHECK_FIELDS}, "evidence": [{"block_id": block_id, "quote": self.blocks[block_id]["text"][:20]}]}
+
+        def open_questions_of(ids: list[str]) -> list[dict[str, Any]]:
+            return [p for p in notes["reading"]["paragraphs"] if p["anchor"]["block_id"] in ids and p["open_questions"]]
 
         for number, batch in enumerate(batches, 1):
             remaining = self.args.prefix_checkpoints - len(merged["checkpoint_plan"])
             values = {"batch": number, "batches": len(batches), "block_range": f"{batch[0]} to {batch[-1]}",
                       "input": {"snapshot_id": self.index["snapshot_id"], "reader_profile": self.profile, "batch_block_ids": batch,
                                 "blocks": self.block_rows(batch), "paraphrases_of_all_included_blocks": paraphrases,
+                                "open_questions_of_batch_blocks": [{"block_id": p["anchor"]["block_id"], "question": q} for p in open_questions_of(batch) for q in p["open_questions"]],
                                 "already_recorded": {"concepts": [{"concept_id": c["concept_id"], "term": c["term"]} for c in merged["concepts"]],
                                                      "checkpoint_plan": merged["checkpoint_plan"], "candidates": [{"id": c["id"], "anchor": c["anchor"], "question": c["question"]} for c in merged["candidates"]]},
                                 "max_prefix_checkpoints": self.args.prefix_checkpoints, "remaining_prefix_checkpoints": remaining,
@@ -393,7 +398,7 @@ class Run:
 
             def accept(parsed: Any, call: llm.Call, batch: list[str] = batch, remaining: int = remaining) -> dict[str, Any]:
                 require(isinstance(parsed, dict), "The response must be one JSON object.")
-                for key in ("concepts", "passages", "checkpoint_plan", "candidates"):
+                for key in ("concepts", "passages", "checkpoint_plan", "candidates", "no_candidate"):
                     require(isinstance(parsed.get(key), list), f"{key} must be an array.")
                 require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
                 require(len(parsed["checkpoint_plan"]) <= remaining, f"checkpoint_plan may hold at most {remaining} more entries in this batch.")
@@ -427,11 +432,15 @@ class Run:
                 except rp.ReviewDataError as exc:
                     raise Rejected(helper_message(exc)) from exc
                 require(set(passages) == set(batch), f"This batch must check exactly blocks {', '.join(batch)}.")
+                try:
+                    rs.open_question_accounting({"no_candidate": parsed["no_candidate"]}, {"paragraphs": open_questions_of(batch)}, rs.by_id(candidates, "id", "candidates"))
+                except rp.ReviewDataError as exc:
+                    raise Rejected(helper_message(exc)) from exc
                 question = parsed.get("branch_question")
                 if question is not None:
                     require(isinstance(question, dict) and all(isinstance(question.get(k), str) and question[k].strip() for k in ("question", "reason", "after_block_id")),
                             "branch_question must be null or an object with nonempty question, reason, and after_block_id.")
-                return {"concepts": concepts, "plan": plan, "candidates": candidates, "passages": [passages[i] for i in batch],
+                return {"concepts": concepts, "plan": plan, "candidates": candidates, "passages": [passages[i] for i in batch], "no_candidate": parsed["no_candidate"],
                         "reason": provisional.get("no_concepts_reason"), "branch_question": question}
 
             label = "02-checks" + (f"-batch{number:02d}" if len(batches) > 1 else "")
@@ -439,6 +448,7 @@ class Run:
             merged["concepts"] += result["concepts"]
             merged["checkpoint_plan"] += result["plan"]
             merged["candidates"] += result["candidates"]
+            merged["no_candidate"] += result["no_candidate"]
             for row in result["passages"]:
                 merged["passages"][row["block_id"]] = row
             if result["reason"]:
@@ -450,7 +460,7 @@ class Run:
         checks = {"snapshot_id": self.index["snapshot_id"], "summary": " ".join(summaries), "concepts": merged["concepts"]}
         if not merged["concepts"]:
             checks["no_concepts_reason"] = " ".join(merged["reasons"]) or "No concept record was relevant."
-        checks.update({"passages": [merged["passages"][i] for i in self.included], "checkpoint_plan": merged["checkpoint_plan"], "candidates": merged["candidates"]})
+        checks.update({"passages": [merged["passages"][i] for i in self.included], "checkpoint_plan": merged["checkpoint_plan"], "candidates": merged["candidates"], "no_candidate": merged["no_candidate"]})
         try:
             self.record("checks", checks, self.out / "checks.json")
         except rp.ReviewDataError as exc:
@@ -653,7 +663,14 @@ class Run:
             rows[row["candidate_id"]] = row
         require(set(rows) == set(wanted), f"repairs must cover exactly {', '.join(wanted)}.")
         decisions = rs.by_id(notes["decisions"]["decisions"], "candidate_id", "decisions")
-        provisional = [{k: v for k, v in row.items() if k not in ("original", "basis")} | {"proposed_wording": None, "audit_path": None} for key, row in (others or {}).items() if key not in wanted]
+        def pending(row: dict[str, Any]) -> dict[str, Any]:
+            """The row as the helper will see it before the audit: no wording yet, so an edit needs a stand-in reason."""
+            stripped = {k: v for k, v in row.items() if k not in ("original", "basis")} | {"proposed_wording": None, "audit_path": None}
+            if row.get("kind") == "edit" and row.get("proposed_wording") is not None:
+                stripped["wording_withheld_reason"] = "pending the independent fidelity audit"
+            return stripped
+
+        provisional = [pending(row) for key, row in (others or {}).items() if key not in wanted]
         for key in wanted:
             row = rows[key]
             wording = row.get("proposed_wording")
@@ -661,6 +678,7 @@ class Run:
                 require(row.get("kind") == "author_question" and wording is None, f"Repair {key}: needs_author requires an author question, not a definitive replacement.")
             if wording is not None:
                 require(isinstance(wording, str) and wording.strip(), f"Repair {key}: proposed_wording must be null or a nonempty string.")
+                require(row.get("wording_withheld_reason") is None, f"Repair {key}: wording_withheld_reason belongs only to an edit without proposed_wording.")
                 original, basis = row.get("original"), row.get("basis")
                 require(isinstance(original, list) and original, f"Repair {key}: original must quote the exact source text the wording replaces.")
                 require(isinstance(basis, list), f"Repair {key}: basis must be an array of facts with locations.")
@@ -672,7 +690,7 @@ class Run:
                     except rp.ReviewDataError as exc:
                         raise Rejected(helper_message(exc)) from exc
                     require(anchor["block_id"] in affected, f"Repair {key}: original[{n}] quotes a block outside affected_block_ids.")
-            provisional.append({k: v for k, v in row.items() if k not in ("original", "basis")} | {"proposed_wording": None, "audit_path": None})
+            provisional.append(pending(row))
         try:
             rs.validate_notes("repairs", {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "repairs": provisional}, start, self.index, notes)
         except rp.ReviewDataError as exc:
@@ -728,7 +746,7 @@ class Run:
                     question = ("An independent fidelity audit found that the proposed replacement would change its scientific meaning"
                                 + (f" ({', '.join(result['changed'])})" if result["changed"] else "") + f": {result['notes']} "
                                 + f"Audited wording: {result['proposed_wording']!r}. Which wording keeps the intended meaning: the original text, or a revision that preserves these properties?")
-                    rows[key] = {**row, "kind": "author_question", "proposed_wording": None, "original": [], "basis": [], "author_question": question}
+                    rows[key] = {**row, "kind": "author_question", "proposed_wording": None, "wording_withheld_reason": None, "original": [], "basis": [], "author_question": question}
                     self.converted.append(key)
                     self.log("audit_converted", candidate_id=key)
                     self.say(f"repair {key}: audit still not preserved; converted to an author question")
@@ -802,6 +820,7 @@ class Run:
                             "execution_mode": EXECUTION_MODE, "concepts": notes["checks"]["concepts"], "reader_observations": notes["reconcile"]["observations"],
                             "checkpoints": [{k: v for k, v in c.items() if k not in ("packet_path", "observation_path", "run_path")} for c in notes["reconcile"]["checkpoints"]],
                             "repairs": notes["repairs"]["repairs"], "audits": self.audit_rows, "rejected_candidates": [d for d in notes["decisions"]["decisions"] if d["status"] == "rejected"],
+                            "decision_counts": {status: sum(1 for d in notes["decisions"]["decisions"] if d["status"] == status) for status in ("accepted", "needs_author", "rejected", "merged")},
                             "run_statistics": self.statistics()}}
 
         def accept(parsed: Any, call: llm.Call) -> str:

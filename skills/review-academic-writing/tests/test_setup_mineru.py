@@ -22,6 +22,8 @@ name="$(basename "$0")"
 echo "$name $*" >> "$CALLS"
 get() { sed -n "s/^$1=//p" "$STATE" | head -1; }
 set_() { grep -v "^$1=" "$STATE" > "$STATE.tmp"; echo "$1=$2" >> "$STATE.tmp"; mv "$STATE.tmp" "$STATE"; }
+# `mineru telemetry ...` and `mineru config ...` only answer while the local server is running.
+need_server() { [ "$(get running)" = 1 ] || { echo "Local mineru server is not running" >&2; exit 1; }; }
 case "$name $*" in
   "uv tool install"*)
     mkdir -p "$HOME/.local/bin"
@@ -30,10 +32,10 @@ case "$name $*" in
   "mineru --version") echo "MinerU version: $(get version)" ;;
   "mineru-kit models verify"*) [ "$(get models)" = 1 ] ;;
   "mineru-kit models download"*) set_ models 1 ;;
-  "mineru telemetry status") echo "state: $(get telemetry)" ;;
-  "mineru telemetry disable") set_ telemetry disabled ;;
-  "mineru config get parse_server.local.mode") echo "parse_server.local.mode = $(get mode)  [override]" ;;
-  "mineru config set parse_server.local.mode managed") set_ mode managed ;;
+  "mineru telemetry status") need_server; echo "state: $(get telemetry)" ;;
+  "mineru telemetry disable") need_server; set_ telemetry disabled ;;
+  "mineru config get parse_server.local.mode") need_server; echo "parse_server.local.mode = $(get mode)  [override]" ;;
+  "mineru config set parse_server.local.mode managed") need_server; set_ mode managed ;;
   "mineru server start") set_ running 1; set_ healthy 1 ;;
   "mineru server restart") set_ running 1; set_ healthy 1; set_ restarted 1 ;;
   "mineru server status --json")
@@ -95,8 +97,8 @@ class SetupMineruTests(unittest.TestCase):
             "mineru-kit models download --tier standard", "mineru telemetry disable",
             "mineru config set parse_server.local.mode managed", "mineru server start", "mineru server restart")]
         self.assertEqual(mutating, [
-            "mineru-kit models download --tier standard", "mineru telemetry disable",
-            "mineru config set parse_server.local.mode managed", "mineru server start"])
+            "mineru-kit models download --tier standard", "mineru server start", "mineru telemetry disable",
+            "mineru config set parse_server.local.mode managed", "mineru server restart"])
         self.assertIn("ready: local MinerU parse server is healthy (setup made changes)", result.stdout)
         self.assertTrue((self.home / ".local" / "bin" / "mineru").exists())
         self.assertNotIn("--remote", self.calls.read_text())
@@ -150,6 +152,34 @@ class SetupMineruTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("installed version differs from the tested 4.0.12; leaving it as is", result.stdout)
         self.assertNotIn("uv tool install", self.calls.read_text())
+
+    def test_server_is_started_before_telemetry_and_config_are_touched(self):
+        self.install_stub(self.bin, "uv")
+        self.write_state(version="4.0.12", models="0", telemetry="enabled", mode="off", running="0", healthy="0")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls_made()
+        start = calls.index("mineru server start")
+        first_telemetry = next(i for i, c in enumerate(calls) if c.startswith("mineru telemetry"))
+        first_config = next(i for i, c in enumerate(calls) if c.startswith("mineru config"))
+        self.assertLess(start, first_telemetry)
+        self.assertLess(start, first_config)
+        self.assertIn("mineru server restart", calls)
+        self.assertLess(calls.index("mineru config set parse_server.local.mode managed"), calls.index("mineru server restart"))
+        state = dict(line.split("=", 1) for line in self.state.read_text().splitlines() if line)
+        self.assertEqual((state["telemetry"], state["mode"], state["running"]), ("disabled", "managed", "1"))
+
+    def test_check_mode_on_a_stopped_server_reads_only(self):
+        self.install_stub(self.bin, "uv", "mineru", "mineru-kit")
+        self.write_state(version="4.0.12", models="1", telemetry="enabled", mode="off", running="0", healthy="0")
+        before = self.state.read_text()
+        result = self.run_script("--check")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("server: stopped", result.stdout)
+        self.assertIn("not ready: server is stopped", result.stdout)
+        self.assertEqual(self.state.read_text(), before)
+        self.assertFalse(any(c.startswith(("mineru telemetry disable", "mineru config set", "mineru server start", "mineru server restart"))
+                             for c in self.calls_made()))
 
 
 if __name__ == "__main__":

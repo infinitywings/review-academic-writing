@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,10 @@ DEFINITION = {"block_id": "B0004", "quote": "We call the time between consecutiv
 CRITICAL = {"block_id": "B0003", "quote": "the MSW exceeded two seconds"}
 ORIGINAL = {"block_id": "B0003", "quote": "Agreement fell sharply when the MSW exceeded two seconds"}
 WORDING = "Agreement fell sharply when consecutive measurements were more than two seconds apart."
+CLAIM_CHECK = {"claim_strength": "no absolute or comparative claim in this block", "counterexample": "no formula, metric, or rule to try a counterexample on",
+               "citation_check": "no citation carries a comparison or novelty claim here"}
+QUESTION = "Is the window defined before it is used?"
+SECOND_QUESTION = "Does the 412 include discarded pairs?"
 STAGE_FILES = {stage: [f"0{n}-{stage}.notes.json", f"0{n}-{stage}.receipt.json"]
                for n, stage in enumerate(("reading", "checks", "reconcile", "decisions", "repairs"), 1)}
 
@@ -76,7 +81,8 @@ class ReviewStepsTests(unittest.TestCase):
         if stage == "checks":
             return {**base, "concepts": [], "no_concepts_reason": "none questioned",
                     "checkpoint_plan": [{"id": "P1", "anchor": CRITICAL, "mode": "fresh-prefix", "reason": "first critical use of MSW"}],
-                    "passages": [{"block_id": b, "structure_check": "s", "wording_check": "w", "evidence": [A(b, self.text[b][:15])]} for b in INCLUDED],
+                    "passages": [{"block_id": b, "structure_check": "s", "wording_check": "w", "claim_check": CLAIM_CHECK, "evidence": [A(b, self.text[b][:15])]} for b in INCLUDED],
+                    "no_candidate": [],
                     "candidates": [{"id": "C01", "anchor": A("B0003", "the MSW exceeded two seconds"), "question": "Is MSW defined first?", "evidence": [DEFINITION]},
                                    {"id": "C02", "anchor": A("B0005", "412 pairs"), "question": "How were pairs counted?", "evidence": []},
                                    {"id": "C03", "anchor": A("B0002", "a separate observer"), "question": "Who observed?", "evidence": []},
@@ -102,6 +108,7 @@ class ReviewStepsTests(unittest.TestCase):
             {"candidate_id": "C02", "kind": "author_question", "action": "Ask how pairs were counted.", "proposed_wording": None,
              "scientific_fidelity": "no change", "new_terms_check": "none", "affected_block_ids": ["B0005"], "author_question": "How were the 412 pairs selected?", "audit_path": None},
             {"candidate_id": "C05", "kind": "edit", "action": "State the comparison rate.", "proposed_wording": None,
+             "wording_withheld_reason": "the comparison rate is not in the manuscript; the author must supply it",
              "scientific_fidelity": "rate preserved", "new_terms_check": "none", "affected_block_ids": ["B0005"], "author_question": None}]}
 
     def audit(self, **change):
@@ -161,7 +168,7 @@ class ReviewStepsTests(unittest.TestCase):
         receipts = [json.loads((self.journal / STAGE_FILES[s][1]).read_text()) for s in rs.STAGES]
         self.assertEqual([r["previous_receipt_sha256"] for r in receipts[1:]], [r["receipt_sha256"] for r in receipts[:-1]])
         self.assertEqual(receipts[4]["attachments"], [{"path": str(self.root / "audit-C01.json"), "sha256": sha(self.root / "audit-C01.json")}])
-        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 3)
+        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 4)
         self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
         self.assertEqual(self.names(), ["00-start.json", "01-reading.notes.json", "01-reading.receipt.json", "02-checks.notes.json", "02-checks.receipt.json",
                                         "03-reconcile.notes.json", "03-reconcile.receipt.json", "04-decisions.notes.json", "04-decisions.receipt.json",
@@ -492,6 +499,118 @@ class ReviewStepsTests(unittest.TestCase):
         self.assertEqual(json.loads(done.stdout), {"ok": True, "command": "start", "snapshot_id": self.sid, "next_stage": "reading", "journal": str(out)})
         self.assertEqual(self.names(out), ["00-start.json"])
         self.assertEqual(sorted(p.name for p in cwd.iterdir()), [])
+
+    def test_checks_passages_require_a_claim_check(self):
+        self.record("reading")
+        missing = self.notes("checks")
+        del missing["passages"][0]["claim_check"]
+        cases = [(missing, "passage is missing fields: claim_check")]
+        for key in ("claim_strength", "counterexample", "citation_check"):
+            absent = self.notes("checks")
+            absent["passages"][1]["claim_check"] = {k: v for k, v in CLAIM_CHECK.items() if k != key}
+            cases.append((absent, f"passage\\.claim_check is missing fields: {key}\\."))
+            for blank in ("", "   "):
+                empty = self.notes("checks")
+                empty["passages"][2]["claim_check"] = {**CLAIM_CHECK, key: blank}
+                cases.append((empty, f"passage\\.claim_check\\.{key} must be a nonempty string"))
+        as_string = self.notes("checks")
+        as_string["passages"][3]["claim_check"] = "no claims in this block"
+        cases.append((as_string, "passage\\.claim_check must be a JSON object with string keys"))
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "checks", value)
+        tolerated = self.notes("checks")
+        tolerated["passages"][0]["claim_check"] = {**CLAIM_CHECK, "note": "an extra key is tolerated"}
+        self.assertEqual(self.record("checks", tolerated)["next_stage"], "reconcile")
+        for stage in ("reconcile", "decisions", "repairs"):
+            self.record(stage)
+        self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
+        self.assertEqual(rs.check_final(self.journal, self.index, self.final_review())["issue_count"], 3)
+
+    def reading_asking(self, questions):
+        reading = self.notes("reading")
+        for row in reading["paragraphs"]:
+            row["open_questions"] = list(questions.get(row["anchor"]["block_id"], []))
+        return reading
+
+    def checks_with(self, no_candidate=None, question=None, open_questions=None):
+        checks = self.notes("checks")
+        if question is not None:
+            checks["candidates"][0]["question"] = question
+        if open_questions is not None:
+            checks["candidates"][0]["open_questions"] = open_questions
+        checks["no_candidate"] = [] if no_candidate is None else no_candidate
+        return checks
+
+    def test_open_questions_reach_a_candidate_or_a_no_candidate_entry(self):
+        covered = (
+            ("substring", self.checks_with(question=f"{QUESTION} Is MSW defined first?")),
+            ("listed", self.checks_with(open_questions=[{"block_id": "B0003", "question": QUESTION}])),
+            ("declined", self.checks_with(no_candidate=[{"block_id": "B0003", "question": QUESTION, "reason": "B0004 defines the window two blocks later; the late definition is C01"}])),
+        )
+        for name, checks in covered:
+            with self.subTest(name=name):
+                journal = self.root / f"open-{name}"
+                rs.start_run(self.index, PROFILE, self.scope(), journal)
+                self.record("reading", self.reading_asking({"B0003": [QUESTION]}), journal)
+                self.assertEqual(self.record("checks", checks, journal)["next_stage"], "reconcile")
+                saved = json.loads((journal / "02-checks.notes.json").read_text())
+                self.assertEqual(saved["no_candidate"], checks["no_candidate"])
+
+    def test_open_question_accounting_refusals(self):
+        self.record("reading", self.reading_asking({"B0003": [QUESTION], "B0005": [SECOND_QUESTION]}))
+        declined_second = {"block_id": "B0005", "question": SECOND_QUESTION, "reason": "C02 already asks how pairs were counted"}
+        declined_first = {"block_id": "B0003", "question": QUESTION, "reason": "the late definition is C01"}
+        no_array = self.checks_with()
+        del no_array["no_candidate"]
+        uncovered = re.escape(f"Reading open question for B0003 has no candidate and no no_candidate entry: {QUESTION!r}")
+        cases = (
+            (self.checks_with(), uncovered + re.escape(" (and 1 more).") + "$"),
+            (self.checks_with(no_candidate=[declined_second]), uncovered + "\\.$"),
+            (no_array, "checks\\.no_candidate must be an array"),
+            (self.checks_with(no_candidate=[{"block_id": "B0002", "question": "Who observed?", "reason": "C03 asks it"}]),
+             "no_candidate names a question that reading notes did not raise"),
+            (self.checks_with(no_candidate=[declined_first, declined_first]), "lists the same question twice"),
+            (self.checks_with(question=f"{QUESTION} Is MSW defined first?", no_candidate=[declined_first]), "contradicts a candidate"),
+            (self.checks_with(open_questions=[{"block_id": "B0002", "question": "Who observed?"}]),
+             "candidate\\.open_questions names a question that reading notes did not raise"),
+            (self.checks_with(no_candidate=[{**declined_first, "reason": ""}]), "no_candidate\\.reason must be a nonempty string"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "checks", value)
+
+    def test_edit_without_wording_needs_a_withheld_reason(self):
+        self.record_through("decisions")
+        no_reason = self.notes("repairs")
+        del no_reason["repairs"][2]["wording_withheld_reason"]
+        null_reason = self.notes("repairs")
+        null_reason["repairs"][2]["wording_withheld_reason"] = None
+        blank = self.notes("repairs")
+        blank["repairs"][2]["wording_withheld_reason"] = ""
+        with_wording = self.notes("repairs")
+        with_wording["repairs"][0]["wording_withheld_reason"] = "x"
+        question = self.notes("repairs")
+        question["repairs"][1]["wording_withheld_reason"] = "the author must answer first"
+        misplaced = "wording_withheld_reason belongs only to an edit that carries no proposed_wording"
+        for value, message in ((no_reason, "Repair C05 is an edit without proposed_wording; give wording_withheld_reason, or make it an author_question"),
+                               (null_reason, "Repair C05 is an edit without proposed_wording; give wording_withheld_reason, or make it an author_question"),
+                               (blank, "repair\\.wording_withheld_reason must be a nonempty string"),
+                               (with_wording, "Repair C01: " + misplaced),
+                               (question, "Repair C02: " + misplaced)):
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "repairs", value)
+        moved = self.notes("repairs")
+        moved["repairs"][2]["kind"] = "move"
+        del moved["repairs"][2]["wording_withheld_reason"]
+        self.assertEqual(self.record("repairs", moved)["next_stage"], "ready")
+        self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
+
+    def test_journal_schema_3_is_refused(self):
+        path = self.journal / "00-start.json"
+        original = json.loads(path.read_text())
+        path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": 3})))
+        self.assertRefused("Unsupported journal schema", self.record, "reading")
 
 
 if __name__ == "__main__":

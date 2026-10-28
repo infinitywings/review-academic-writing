@@ -138,9 +138,10 @@ class FakeLLM:
         return {"summary": f"batch {batch}", "paragraphs": rows}
 
     def step_checks(self, data, batch, attempt):
-        passages = [{"block_id": b["block_id"], "structure_check": "s", "wording_check": "w", "evidence": [A(b["block_id"], b["text"][:15])]} for b in data["blocks"]]
+        claim_check = {"claim_strength": "none", "counterexample": "no rule to test", "citation_check": "no citation"}
+        passages = [{"block_id": b["block_id"], "structure_check": "s", "wording_check": "w", "claim_check": claim_check, "evidence": [A(b["block_id"], b["text"][:15])]} for b in data["blocks"]]
         if batch == 1:
-            return {"summary": "first half", "no_concepts_reason": "",
+            return {"summary": "first half", "no_concepts_reason": "", "no_candidate": [],
                     "concepts": [{"concept_id": "x", "term": "MSW", "first_mention": CRITICAL, "earliest_usable_explanation": DEFINITION, "first_critical_use": CRITICAL, "assessment": "defined after its first critical use"}],
                     "passages": passages,
                     "checkpoint_plan": [{"id": "x", "anchor": CRITICAL, "mode": "bounded-request", "reason": "first critical use of MSW; selected with the full text"}],
@@ -148,7 +149,7 @@ class FakeLLM:
                                    {"id": "b", "anchor": A("B0002", "a separate observer"), "question": "Who observed?", "evidence": []},
                                    {"id": "c", "anchor": A("B0003", "MSW"), "question": "Same symptom as the first?", "evidence": []}],
                     "branch_question": {"question": "What does MSW stand for?", "reason": "tests whether the abbreviation was usable", "after_block_id": "B0003"}}
-        return {"summary": "second half", "concepts": [], "no_concepts_reason": "none questioned here", "passages": passages, "checkpoint_plan": [],
+        return {"summary": "second half", "concepts": [], "no_concepts_reason": "none questioned here", "no_candidate": [], "passages": passages, "checkpoint_plan": [],
                 "candidates": [{"id": "d", "anchor": A("B0005", "412 pairs"), "question": "How were pairs counted?", "evidence": []}], "branch_question": None}
 
     def step_reconcile(self, data, batch, attempt):

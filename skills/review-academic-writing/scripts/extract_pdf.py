@@ -8,7 +8,8 @@ Python standard library only. Three subcommands:
                low-fidelity extraction when MinerU is unavailable; by default
                the command stops and prints the MinerU start commands instead.
   postprocess  clean a MinerU Markdown file for review_packets.py index and write a
-               page sidecar plus extraction notes.
+               page sidecar plus extraction notes; with --pdf, repair words the extractor
+               broke, using the PDF's pdftotext text layer.
   case         build a masked_reader case.json from an index.json, the page sidecar,
                a word budget, and a user-supplied asset list.
 
@@ -269,6 +270,194 @@ def drop_line_number_gutters(segments: list[Segment]) -> list[tuple[Segment, str
     return dropped
 
 
+# ---------------------------------------------------------------- word repair against the text layer
+
+WORD = re.compile(r"[A-Za-z]+(?:['’][A-Za-z]+)*")
+HYPHENATED = re.compile(r"[A-Za-z]+(?:-[A-Za-z]+)+")
+TOKEN = re.compile(r"[A-Za-z]+(?:[-'’][A-Za-z]+)*")
+PROTECTED = re.compile(r"\$[^$\n]*\$|`[^`\n]*`|https?://\S+|\\[A-Za-z]+|!?\[[^\]\n]*\]\([^)\n]*\)|<[^<>\n]+>")
+LINE_END_HYPHEN = re.compile(r"([A-Za-z]+)-\n[ \t]*([A-Za-z]+)")
+CAPTURE = re.compile(r"[A-Za-z]+(?:[-'’ ]{1,2}[A-Za-z]+){0,5}")
+MAX_UNKNOWN_RUN = 3
+MAX_CONTEXT_DISTANCE = 2
+
+
+class Vocabulary:
+    """Words of the PDF text layer (pdftotext), used to tell extraction artifacts from real words.
+
+    A token of the cleaned edition is *known* when the text layer has it as a word, as a
+    hyphenated compound on one line, or as either reading of a word broken by a hyphen at a
+    line end (``co-`` at a line end followed by ``hort`` makes both ``cohort`` and ``co-hort`` known, since the layer
+    cannot say which was meant). Only unknown tokens are candidates for repair.
+    """
+
+    def __init__(self, text_layer: str) -> None:
+        self.flat = " ".join(text_layer.split())
+        self.lower = self.flat.lower()
+        self.words = {m.group(0).lower() for m in WORD.finditer(self.flat)}
+        self.hyphenated = {m.group(0).lower() for m in HYPHENATED.finditer(self.flat)}
+        # joined reading -> (hyphenated reading, hyphen position) for words broken at a line end
+        self.line_end: dict[str, tuple[str, int]] = {}
+        for a, b in LINE_END_HYPHEN.findall(text_layer):
+            self.line_end[(a + b).lower()] = ((a + "-" + b).lower(), len(a))
+
+    def known(self, token: str) -> bool:
+        low = re.sub(r"['’]s$", "", token.lower())  # a possessive is as known as its stem
+        if low in self.words or low in self.hyphenated:
+            return True
+        joined = low.replace("-", "")
+        if joined not in self.line_end:
+            return False
+        hyphenated, _ = self.line_end[joined]
+        if "-" in low:
+            # "co-hort" from "co-" at a line end: a real word unless the layer has "cohort" unbroken somewhere.
+            return low == hyphenated and joined not in self.words
+        # "wellknown" from "well-" at a line end: a real word unless the layer has "well-known" on one line.
+        return hyphenated not in self.hyphenated
+
+    def line_end_hyphenation(self, token: str) -> str | None:
+        """The hyphenated spelling of a joined token when the layer shows that spelling on one line."""
+        low = token.lower()
+        if "-" in low or low not in self.line_end:
+            return None
+        hyphenated, position = self.line_end[low]
+        return token[:position] + "-" + token[position:] if hyphenated in self.hyphenated else None
+
+    def bigram(self, a: str, b: str) -> bool:
+        """True when the layer has ``a`` and ``b`` as consecutive words separated by whitespace only."""
+        return re.search(r"(?<![a-z])" + re.escape(a.lower()) + r"\s+" + re.escape(b.lower()) + r"(?![a-z])", self.lower) is not None
+
+
+def letters(text: str) -> str:
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def edit_distance(a: str, b: str) -> int:
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def context_lookup(tokens: list[re.Match[str]], start: int, stop: int, vocab: Vocabulary) -> str | None:
+    """Find what the text layer has between the known words around tokens[start:stop].
+
+    Returns the layer's text when every occurrence of that context agrees, the text is
+    made of known words, and it differs from the edition run by at most a couple of
+    letters; otherwise None. A line-end hyphen inside the found text is resolved with the
+    vocabulary, or left alone when both readings are possible.
+    """
+    before = [t.group(0) for t in tokens[max(0, start - 2):start]]
+    after = [t.group(0) for t in tokens[stop:stop + 2]]
+    if not before or not after:
+        return None
+    gap = r"[^A-Za-z]{1,4}"
+    pattern = (r"(?<![A-Za-z])" + gap.join(re.escape(w) for w in before) + gap + r"([A-Za-z][A-Za-z'’\- ]{0,80}?)"
+               + gap + gap.join(re.escape(w) for w in after) + r"(?![A-Za-z])")
+    found = {" ".join(m.group(1).split()) for m in re.finditer(pattern, vocab.flat, re.IGNORECASE)}
+    if len({f.lower() for f in found}) != 1:
+        return None
+    candidate = found.pop()
+    if CAPTURE.fullmatch(candidate) is None:
+        return None
+    run_text = " ".join(t.group(0) for t in tokens[start:stop])
+    if edit_distance(letters(candidate), letters(run_text)) > MAX_CONTEXT_DISTANCE:
+        return None
+    if "- " in candidate:
+        joined, hyphenated = candidate.replace("- ", ""), candidate.replace("- ", "-")
+        if joined.lower() in vocab.words:
+            candidate = joined
+        elif hyphenated.lower() in vocab.hyphenated:
+            candidate = hyphenated
+        elif run_text.lower() in (joined.lower(), hyphenated.lower()):
+            return run_text  # the layer confirms the letters; which reading was meant stays open
+        else:
+            return None
+    if not all(vocab.known(w) for w in re.findall(r"[A-Za-z]+(?:[-'’][A-Za-z]+)*", candidate)):
+        return None
+    return candidate
+
+
+def repair_words(text: str, vocab: Vocabulary) -> tuple[str, list[tuple[str, str]], list[str]]:
+    """Repair run-together, split, hyphen-broken, and letter-garbled words using the text layer.
+
+    Returns the repaired text, the (before, after) pairs applied, and the unknown tokens left
+    unchanged. Inline math, inline code, URLs, LaTeX commands, and Markdown links are never
+    touched, and neither are HTML tags. Every repair restores text the layer actually contains; nothing is guessed.
+    """
+    protected = [(m.start(), m.end()) for m in PROTECTED.finditer(text)]
+    tokens = [m for m in TOKEN.finditer(text) if not any(s <= m.start() < e for s, e in protected)]
+    edits: list[tuple[int, int, str]] = []
+    unresolved: list[str] = []
+    consumed: set[int] = set()
+
+    def adjacent(a: re.Match[str], b: re.Match[str]) -> bool:
+        return a.end() < b.start() and text[a.end():b.start()].strip() == ""
+
+    def alone(n: int) -> str | None:
+        """A repair that needs no neighbour: drop a spurious hyphen, restore one, or split a run-together pair."""
+        word = tokens[n].group(0)
+        if "-" in word:
+            return word.replace("-", "") if word.replace("-", "").lower() in vocab.words else None
+        if vocab.line_end_hyphenation(word) is not None:
+            return vocab.line_end_hyphenation(word)
+        splits = [(word[:k], word[k:]) for k in range(1, len(word))
+                  if word[:k].lower() in vocab.words and word[k:].lower() in vocab.words and vocab.bigram(word[:k], word[k:])]
+        return splits[0][0] + " " + splits[0][1] if len(splits) == 1 else None
+
+    i = 0
+    while i < len(tokens):
+        if i in consumed or vocab.known(tokens[i].group(0)):
+            i += 1
+            continue
+        fix: tuple[int, int, str] | None = None
+        own = alone(i)
+        if own is not None:
+            fix = (tokens[i].start(), tokens[i].end(), own)
+            j = i + 1
+        else:
+            j = i + 1
+            while j < len(tokens) and j - i < MAX_UNKNOWN_RUN and not vocab.known(tokens[j].group(0)) and adjacent(tokens[j - 1], tokens[j]) and alone(j) is None:
+                j += 1
+            run = tokens[i:j]
+            word = run[0].group(0)
+            if len(run) == 1:
+                if i > 0 and (i - 1) not in consumed and adjacent(tokens[i - 1], run[0]) and (tokens[i - 1].group(0) + word).lower() in vocab.words:
+                    fix = (tokens[i - 1].start(), run[0].end(), tokens[i - 1].group(0) + word)
+                    consumed.add(i - 1)
+                elif j < len(tokens) and adjacent(run[0], tokens[j]) and (word + tokens[j].group(0)).lower() in vocab.words:
+                    fix = (run[0].start(), tokens[j].end(), word + tokens[j].group(0))
+                    consumed.add(j)
+            elif "".join(t.group(0) for t in run).lower() in vocab.words:
+                fix = (run[0].start(), run[-1].end(), "".join(t.group(0) for t in run))
+            if fix is None:
+                found = context_lookup(tokens, i, j, vocab)
+                if found is not None:
+                    fix = (run[0].start(), run[-1].end(), found)
+                elif i > 0 and (i - 1) not in consumed and len(tokens[i - 1].group(0)) == 1 and adjacent(tokens[i - 1], run[0]):
+                    # A stray single letter next to the garble ("b bhallway") is usually part of it,
+                    # even when the letter happens to be a known symbol in the layer.
+                    found = context_lookup(tokens, i - 1, j, vocab)
+                    if found is not None:
+                        fix = (tokens[i - 1].start(), run[-1].end(), found)
+                        consumed.add(i - 1)
+            if fix is None:
+                unresolved.extend(t.group(0) for t in run)
+        if fix is not None and fix[2] != text[fix[0]:fix[1]]:
+            edits.append(fix)
+        i = j
+    repaired = text
+    changes: list[tuple[str, str]] = []
+    for start, stop, replacement in sorted(edits, reverse=True):
+        changes.append((repaired[start:stop], replacement))
+        repaired = repaired[:start] + replacement + repaired[stop:]
+    changes.reverse()
+    return repaired, changes, unresolved
+
+
 # ---------------------------------------------------------------- layout page lookup
 
 
@@ -352,8 +541,12 @@ def assign_pages_from_layout(segments: list[Segment], pages: dict[int, str]) -> 
 # ---------------------------------------------------------------- postprocess
 
 
-def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str, Any]:
+def postprocess(markdown: str, layout: Any | None, source_name: str, text_layer: str | None = None) -> dict[str, Any]:
     """Clean MinerU Markdown; return the edition, the sidecar, and the notes text.
+
+    With `text_layer` (the PDF's pdftotext output), words the extractor ran together,
+    split, hyphenated, or garbled are restored from the layer before the edition and its
+    sidecar hashes are written; the notes list every change.
 
     A `<!-- extraction: ... -->` comment written by a fallback extractor is removed
     from the edition and copied to the top of the notes, so the scope record carries
@@ -384,11 +577,18 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
     kept = [segment for segment in segments if id(segment) not in dropped_ids]
     joined = sum(1 for s in kept if s.kind == "paragraph" and len(s.lines) > 1)
     bold_fixed = [s for s in kept if s.kind in ("paragraph", "heading", "list") and s.text() != " ".join(s.raw().split()) and "**" in s.raw()]
+    vocab = Vocabulary(text_layer) if text_layer is not None else None
+    word_repairs: list[tuple[int, str, str]] = []
+    unresolved: list[tuple[int, str]] = []
     rendered: list[str] = []
     paragraphs: list[dict[str, Any]] = []
     for ordinal, segment in enumerate(kept, 1):
         segment.ordinal = ordinal
         text = segment.text()
+        if vocab is not None and segment.kind in ("paragraph", "heading", "list"):
+            text, changes, left = repair_words(text, vocab)
+            word_repairs.extend((ordinal, before, after) for before, after in changes)
+            unresolved.extend((ordinal, token) for token in left)
         rendered.append(text)
         paragraphs.append({"ordinal": ordinal, "kind": segment.kind, "page": segment.page, "sha256": sha256_text(text)})
     edition = "\n\n".join(rendered) + "\n"
@@ -434,7 +634,18 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
     if layout_labels:
         notes.append("Layout labels these blocks as header/footer; they were kept unless they repeated across pages:")
         notes.extend("  - " + label for label in layout_labels[:40])
-    notes.append("Not checked here: reading order across columns, hyphenation at line ends, subscripts inside inline LaTeX, and figure content.")
+    if vocab is None:
+        notes.append("Word breaks were not checked against the PDF text layer (give postprocess --pdf or --text-layer); hyphenation at line ends and run-together words may remain.")
+    else:
+        notes.append(f"Checked words against the PDF text layer ({len(vocab.words)} distinct words): repaired {len(word_repairs)} extraction word break(s)"
+                     + ("; the sidecar hashes are of the repaired text:" if word_repairs else "."))
+        notes.extend(f"  - ordinal {ordinal}: {before!r} -> {after!r}" for ordinal, before, after in word_repairs[:60])
+        if len(word_repairs) > 60:
+            notes.append(f"  - ... and {len(word_repairs) - 60} more.")
+        if unresolved:
+            notes.append(f"Uncertain: {len(unresolved)} token(s) not found in the text layer were left unchanged: "
+                         + "; ".join(f"ordinal {ordinal}: {token!r}" for ordinal, token in unresolved[:20]) + ("; ..." if len(unresolved) > 20 else "") + ".")
+    notes.append("Not checked here: reading order across columns, " + ("" if vocab is not None else "hyphenation at line ends, ") + "subscripts inside inline LaTeX, and figure content.")
     return {
         "markdown": edition,
         "sidecar": sidecar,
@@ -442,6 +653,8 @@ def postprocess(markdown: str, layout: Any | None, source_name: str) -> dict[str
         "dropped": len(dropped),
         "markers": markers,
         "fidelity": "low" if extraction_warnings else "standard",
+        "word_repairs": [{"ordinal": o, "before": b, "after": a} for o, b, a in word_repairs],
+        "unresolved_tokens": len(unresolved),
     }
 
 
@@ -776,6 +989,10 @@ def _parser() -> argparse.ArgumentParser:
     post.add_argument("--out", required=True, help="Cleaned Markdown path (new file).")
     post.add_argument("--pages-out", help="Page sidecar path (default: <out>.pages.json).")
     post.add_argument("--notes-out", help="Extraction notes path (default: <out>.extraction-notes.txt).")
+    post.add_argument("--pdf", help="The source PDF: its pdftotext text layer is used to repair words the extractor ran together, split, hyphenated, or garbled; the layer is saved as <out>.text-layer.txt.")
+    post.add_argument("--text-layer", help="An already extracted text layer (pdftotext output) to use instead of --pdf.")
+    post.add_argument("--pdftotext", help="pdftotext executable for --pdf (default: pdftotext on PATH).")
+    post.add_argument("--timeout", type=float, default=600.0, help="Seconds allowed for pdftotext (default 600).")
     case = commands.add_parser("case", help="Build a masked_reader case.json from an index and the page sidecar.")
     case.add_argument("--index", required=True)
     case.add_argument("--pages", required=True, help="Page sidecar from postprocess.")
@@ -802,14 +1019,33 @@ def main(argv: list[str] | None = None) -> int:
             with source.open("r", encoding="utf-8") as handle:
                 markdown = handle.read()
             layout = load_json(Path(args.layout)) if args.layout else None
-            result = postprocess(markdown, layout, source.name)
             out = Path(args.out)
+            text_layer, layer_source, layer_out = None, None, None
+            if args.pdf and args.text_layer:
+                raise ExtractError("Give --pdf or --text-layer, not both.")
+            if args.text_layer:
+                text_layer, layer_source = Path(args.text_layer).read_text(encoding="utf-8", errors="replace"), "file"
+            elif args.pdf:
+                pdf = Path(args.pdf)
+                if pdf.suffix.lower() != ".pdf" or not pdf.is_file():
+                    raise ExtractError("--pdf must be an existing .pdf file.")
+                if not (args.pdftotext or shutil.which("pdftotext")):
+                    raise ExtractError("pdftotext not found: install poppler (brew install poppler), pass --pdftotext, or omit --pdf to skip word repair.")
+                pages, _command, _stderr = pdftotext_pages(pdf, args.pdftotext, args.timeout)
+                text_layer, layer_source = "\f".join(pages), "pdftotext"
+                layer_out = out.with_name(out.name + ".text-layer.txt")
+            result = postprocess(markdown, layout, source.name, text_layer)
             pages_out = Path(args.pages_out) if args.pages_out else out.with_name(out.name + ".pages.json")
             notes_out = Path(args.notes_out) if args.notes_out else out.with_name(out.name + ".extraction-notes.txt")
             write_new(out, result["markdown"])
             write_new(pages_out, json.dumps(result["sidecar"], ensure_ascii=False, indent=2) + "\n")
             write_new(notes_out, result["notes"])
-            response = {"ok": True, "command": "postprocess", "output": str(out), "pages": str(pages_out), "notes": str(notes_out), "paragraphs": len(result["sidecar"]["paragraphs"]), "page_source": result["sidecar"]["page_source"], "dropped_headers": result["dropped"], "fidelity": result["fidelity"]}
+            if layer_out is not None:
+                write_new(layer_out, text_layer)
+            response = {"ok": True, "command": "postprocess", "output": str(out), "pages": str(pages_out), "notes": str(notes_out), "paragraphs": len(result["sidecar"]["paragraphs"]), "page_source": result["sidecar"]["page_source"], "dropped_headers": result["dropped"], "fidelity": result["fidelity"],
+                        "text_layer": layer_source, "word_repairs": len(result["word_repairs"]), "unresolved_tokens": result["unresolved_tokens"]}
+            if layer_out is not None:
+                response["text_layer_file"] = str(layer_out)
         else:
             index = load_json(Path(args.index))
             sidecar = load_json(Path(args.pages))

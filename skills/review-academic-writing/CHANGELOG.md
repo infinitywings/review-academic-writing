@@ -1,5 +1,20 @@
 # 变更说明
 
+## 0.17.0（2026-10-27）
+
+同一稿件、同一技能的两套运行（Claude：11 个短前缀读者加遮罩阅读，侧重首读阻碍和术语；Codex：4 个长前缀读者，侧重主张强度、公式反例和引文核对）出入很大，原因是技能没有规定检查阶段的最低清单、阅读笔记里的问题可以无声丢失、接受项不带措辞没有后果、读者设计没有最低要求、抽取断字没有复原、引文核查没有触发条件。这一版把这六处写进校验或文档。日志 schema 升到 4：checks 笔记多了必填字段，repairs 笔记多了条件必填字段，0.16 的日志用 0.16.3 的脚本重放。
+
+- checks 阶段：每个纳入块的 passage 新增必填 `claim_check`，是三个非空字符串的对象——`claim_strength`（绝对或比较性主张的强度与依据）、`counterexample`（对该块每个公式、指标、判定规则的一次反例尝试）、`citation_check`（承担比较或新颖性的引文是否需要查原文）；没有可查内容时也要写明"本块无"及理由。`record` 和 `check-final`（经 `load_run` 重放各阶段）都校验字段存在且非空。`references/review-rubric.md` 新增 4b 节说明三类检查，`staged-review.md` 第 3 节写入字段要求，服务器 checks 提示词引用该节并要求返回该字段。
+- 阅读→检查的账目：`record --stage checks` 校验 reading 笔记里每条 `open_questions` 都被某个候选引用（候选的 `question` 原样包含该问题，或候选可选的 `open_questions` 数组按 `block_id`、`question` 列出），否则必须出现在 checks 笔记新增的必填 `no_candidate` 数组里（`block_id`、`question`、`reason`）。没列、列了阅读没提的问题、同一问题列两次、候选已引用又列进 `no_candidate`，都拒绝。编排器按批把本批块的 open questions 交给编辑并逐批做同样的账目，合并后写进 `no_candidate`。
+- repairs 阶段：`kind` 为 `edit` 而 `proposed_wording` 为 null 的修改必须给非空的 `wording_withheld_reason`；带措辞的修改、`move`、`author_question` 不得带这个字段。`ready` 和 `check-final` 重放时同样校验。编排器预检时对待审计的 edit 填临时理由，审计两次不过转为作者问题时清掉该字段，repairs 提示词写明规则。
+- `references/workflow.md` 新增"检查点设计的最低要求"：至少一个引言内的短前缀、至少一个节末的长前缀；记录读者模型、effort 和作答语言；写明不同模型的提问倾向不同（一个只问逻辑，一个只问首读阻碍），某个检查点"没提问"只是弱证据；遮罩阅读对约 13,000 词以下的稿件可选。SKILL.md 第 3 节加同样的最低要求。
+- `extract_pdf.py postprocess` 新增 `--pdf`（用 `pdftotext` 取文字层，另存为 `<out>.text-layer.txt`）或 `--text-layer`（现成文件）：以文字层的词为词表，只处理不在词表里的 token，且只改成文字层确有的文本——连写拆开（两半都是词且在文字层里相邻）、断开合上（合并后是词）、多余连字符去掉（文字层里有不带连字符的整词）、缺的连字符补回（文字层里另有带连字符的写法）、多了或错了一两个字母的词按前后各两个已知词在文字层里定位改回；行尾连字符两种读法都可能时不动；行内公式、行内代码、URL、LaTeX 命令、链接不碰；表格、公式块、代码块不碰。每处改动写进抽取说明（`ordinal N: 'blie' -> 'lie'`），未能确认的 token 列为 Uncertain，page sidecar 的 sha256 按改后的段落计算。没给文字层时说明里写明未检查断字。`postprocess` 新增 `--pdftotext`、`--timeout`。
+- 引文抽查：`workflow.md` 新增"Citation spot-check"一节，定义承担比较或新颖性的引文要核对原文摘要或引言，记录到运行目录的 `citation-checks.json`（字段 `citation`、`claim`、`source_checked`、`verdict`、`note`；模板 `assets/notes/citation-checks.json`）；SKILL.md 规定研究提案默认做，稿件审稿按需做。
+- 最终报告：`assets/review-report.md` 的验证一节加候选计数（接受、作者问题、合并、驳回），0 驳回要写一句解释；`staged-review.md` 第 7 节、SKILL.md 第 7 节和服务器 report 提示词同样要求，编排器把 `decision_counts` 交给报告步骤。
+- `scripts/setup_mineru.sh`：先 `mineru server start`（服务未运行时）再 `telemetry disable` 和 `config set parse_server.local.mode managed`，改了模式后 `server restart`；之前这两条在服务未启动时都报 `Local mineru server is not running`。`--check` 行为不变。两份 README 的手动命令顺序同步。
+- 小修：SKILL.md 的 `extract` 命令写出 `--timeout`（传给 `mineru parse --wait`），`postprocess` 命令带 `--pdf`；`staged-review.md` 末尾新增"Field vocabularies"表，列出 `scope.task`、checkpoint 的 `mode` 和 `figure_policy`、`record_sequence` 的取值范围、`observation.classification`、`decision.status`、`category`、`severity`、`confidence`、`repair.kind`、audit 的 verdict 和 checks 取值；`masked-reading.md` 第 2 节说明 `case` 按纳入块过滤后资产的 `encountered_by` 和 `referenced_by` 必须指向案例里的块。
+- 测试：三个已有文件的夹具按新字段更新（checks 的 `claim_check` 与 `no_candidate`、repairs 的 `wording_withheld_reason`、schema 4、安装脚本的新顺序），新加 23 个（claim_check 缺失、缺键、空值与非对象；open question 的覆盖、`no_candidate` 的各种拒绝；edit 无措辞无理由、理由为空、措辞与理由并存；schema 3 拒绝；断字复原的每条规则、保护区、sidecar 哈希、说明文本、命令行；安装脚本先启动服务再改遥测与配置），共 190 个。
+
 ## 0.16.3（2026-10-26）
 
 一键安装本地 MinerU，让只有 Claude Code 的使用者把 GitHub 链接交给宿主就能装完整套环境。已有脚本的命令行、文件格式不变。
