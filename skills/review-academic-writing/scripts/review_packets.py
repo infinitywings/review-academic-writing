@@ -427,24 +427,39 @@ def check_observation(packet: Any, observation: Any) -> dict[str, Any]:
     observation = _object(observation, "observation")
     _keys(observation, {
         "snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256", "understanding", "issues",
-    }, set(), "observation")
+    }, {"cannot_place"}, "observation")
     for field in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256"):
         if observation[field] != packet[field]:
             raise ReviewDataError(f"Observation {field} does not match the supplied packet; it may be stale.")
     _nonempty_string(observation["understanding"], "observation.understanding")
     blocks = {block["block_id"]: block for block in packet["blocks"]}
     count = _issues(observation["issues"], blocks, final=False)
+    unplaced = _cannot_place(observation.get("cannot_place", []), blocks)
     return {
         "ok": True,
         "command": "check-observation",
         "snapshot_id": packet["snapshot_id"],
         "checkpoint_id": packet["checkpoint_id"],
         "issue_count": count,
+        "cannot_place_count": unplaced,
         "scope": {
-            "verified": ["internal packet hashes and ranges", "matching observation identifiers and exact packet checksum (including profile)", "required fields and enums", "exact anchors within visible blocks"],
+            "verified": ["internal packet hashes and ranges", "matching observation identifiers and exact packet checksum (including profile)", "required fields and enums", "exact anchors within visible blocks", "cannot_place entries quote visible text"],
             "not_verified": ["source authenticity", "profile provenance", "runtime isolation or transport", "semantic correctness", "human comprehension"],
         },
     }
+
+
+def _cannot_place(value: Any, blocks: dict[str, dict[str, Any]]) -> int:
+    """Optional list of nouns or references the reader could not place: an exact visible anchor and a note; not issues."""
+    if not isinstance(value, list):
+        raise ReviewDataError("cannot_place must be an array; use [] when everything could be placed.")
+    for number, item_value in enumerate(value):
+        label = f"cannot_place[{number}]"
+        item = _object(item_value, label)
+        _keys(item, {"anchor", "note"}, set(), label)
+        _anchor(item["anchor"], blocks, label + ".anchor")
+        _nonempty_string(item["note"], label + ".note")
+    return len(value)
 
 
 def _concept_ledger(value: Any, blocks: dict[str, dict[str, Any]]) -> None:

@@ -56,13 +56,17 @@ Send the following generic instructions followed by the packet JSON. The same te
 >
 > For every issue, quote the exact visible words at the difficulty and state the reader's question, the consequence, severity, and confidence. If evidence is included, cite exact text from a visible block. Describe missing meaning as a question; do not invent the later definition or call it a “late” definition when you have not seen one. If the text is adequate, return an empty issues list and explain the current understanding.
 >
+> Separately, list under cannot_place the nouns, abbreviations, and references (this, the X, such cases) that you read here but cannot yet place, each with the exact visible words and a short note of what is unplaced. These are not issues: a term you cannot place is an issue only when it also blocks understanding or forces a retrieval. Saying that you cannot place something is preferred over inferring what it must mean. An empty list is valid.
+>
 > Return only valid JSON using this shape:
 >
-> {"snapshot_id":"copy from packet","checkpoint_id":"copy from packet","prefix_sha256":"copy from packet","packet_sha256":"copy from packet","understanding":"what the current claim means, or what remains indeterminate","issues":[{"id":"R1","category":"unavailable_prerequisite","anchor":{"block_id":"B0001","quote":"exact visible text"},"reader_question":"what must I understand here?","consequence":"what interpretation or inference is impeded?","severity":"major","confidence":"high","evidence":[{"block_id":"B0001","quote":"exact visible supporting text"}]}]}
+> {"snapshot_id":"copy from packet","checkpoint_id":"copy from packet","prefix_sha256":"copy from packet","packet_sha256":"copy from packet","understanding":"what the current claim means, or what remains indeterminate","issues":[{"id":"R1","category":"unavailable_prerequisite","anchor":{"block_id":"B0001","quote":"exact visible text"},"reader_question":"what must I understand here?","consequence":"what interpretation or inference is impeded?","severity":"major","confidence":"high","evidence":[{"block_id":"B0001","quote":"exact visible supporting text"}]}],"cannot_place":[{"anchor":{"block_id":"B0001","quote":"exact visible words"},"note":"what you cannot place about them"}]}
 >
 > Choose category from unavailable_prerequisite, ambiguous_reference, missing_relation, retrieval_burden, scope_ambiguity, other; severity from critical, major, minor, optional; confidence from high, medium, low. Omit evidence when no useful visible support is available. Do not assert that runtime isolation has been verified; that is the controller's responsibility.
 
 Supply an actual packet in place of the illustrative values above. Keep the response's original bytes/text before any editor normalization. Save parsed JSON separately if necessary; do not edit the original question to fit the editor's interpretation.
+
+The `cannot_place` list is the reader's way of saying "I do not know" without raising an issue: a simulated reader otherwise tends to infer an answer and report no problem (the hyper-accuracy that a memory bottleneck and an explicit don't-know option reduce; evidence-and-tools.md, KnowledgeGain). `check-observation` accepts the list, requires each entry's quote to be visible text, and reports `cannot_place_count`; the editor reads the entries in the reconcile stage as leads (a term that several readers could not place at the same point is a concept-map question), not as findings.
 
 ## Controller records and diagnosis
 

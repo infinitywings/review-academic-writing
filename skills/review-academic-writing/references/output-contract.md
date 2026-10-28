@@ -35,7 +35,7 @@ For every issue, require `id`, `category`, `anchor`, `reader_question`, `consequ
 
 Use these categories: `unavailable_prerequisite`, `ambiguous_reference`, `missing_relation`, `retrieval_burden`, `scope_ambiguity`, `other`. Do not label a missing prerequisite as late before seeing later text. Use `critical`, `major`, `minor`, or `optional` for severity and `high`, `medium`, or `low` for confidence. An empty issues list is valid.
 
-Run `check-observation --packet PACKET --observation OBSERVATION`. The packet checksum binds the response to the exact reader profile as well as the text. Keep the actual input/context provenance in a controller record, not in the worker's self-description.
+An observation may add `cannot_place`, an array of `{"anchor": {"block_id", "quote"}, "note"}` entries for nouns or references the reader could not place at that point; each quote must be visible text, and the entries are not issues. Run `check-observation --packet PACKET --observation OBSERVATION`. The packet checksum binds the response to the exact reader profile as well as the text. Keep the actual input/context provenance in a controller record, not in the worker's self-description.
 
 ## Final review
 

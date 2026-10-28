@@ -28,6 +28,7 @@
       "limitation": "",
       "run_path": "",
       "record_sequence": 0,
+      "recall_sequences": [],
       "figure_policy": ""
     }
   ],

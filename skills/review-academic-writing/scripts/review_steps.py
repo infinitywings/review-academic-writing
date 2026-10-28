@@ -246,6 +246,17 @@ def masked_checkpoint(point: dict, index: dict, blocks: dict) -> list[dict]:
     if not any(quote in text[i] and seen_within_anchor(text[i]) for i in reachable if i in text):
         raise Error("Checkpoint anchor is not text the masked reader had seen by that display event.")
     files = [run / "manifest.json"] + [record / name for name in ("packet.json", "response.json", "receipt.json")]
+    if point.get("recall_sequences") is not None:
+        wanted = array(point["recall_sequences"], "checkpoint.recall_sequences")
+        try:
+            recalls = mr.load_recalls(run, _manifest, _profile, _state)
+        except (mr.Invalid, KeyError, TypeError) as exc:
+            raise Error(f"Masked run recalls do not validate: {exc}") from exc
+        for n, rseq in enumerate(wanted):
+            rp._integer(rseq, f"checkpoint.recall_sequences[{n}]")
+            if not 1 <= rseq <= len(recalls) or wanted.count(rseq) > 1:
+                raise Error(f"checkpoint.recall_sequences must name recorded recall events once each, 1 to {len(recalls)}.")
+            files.extend(run / "recalls" / f"{rseq:06d}" / name for name in ("packet.json", "response.json", "questions.json", "receipt.json"))
     return [{"path": str(path), "sha256": digest(read_raw(path))} for path in files]
 
 
@@ -386,6 +397,13 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             scoped_anchor(row["anchor"], blocks, included, "checkpoint_plan.anchor")
             rp._enum(row["mode"], CHECKPOINT_MODES, "checkpoint_plan.mode")
             string(row["reason"], "checkpoint_plan.reason")
+            if row.get("recall_questions") is not None:
+                if row["mode"] != "masked-sequential":
+                    raise Error(f"checkpoint_plan {row['id']}: recall_questions belong to a masked-sequential plan entry only.")
+                try:
+                    mr.validate_recall_questions(row["recall_questions"], included, f"checkpoint_plan {row['id']}.recall_questions")
+                except mr.Invalid as exc:
+                    raise Error(str(exc)) from exc
         candidates = validate_candidates(value, blocks, included, "checks")
         # Recording always has the reading notes. A caller pre-checking one batch without
         # them (server/orchestrator.py) does the accounting itself per batch.
@@ -667,6 +685,7 @@ def load_run(journal: Path, index: Any) -> tuple[dict, dict, str]:
     validate_scope(start["scope"], index)
     if rp._canonical_hash(start["profile"]) != start["profile_sha256"] or rp._canonical_hash(start["scope"]) != start["scope_sha256"]:
         raise Error("Reader profile or scope checksum changed.")
+    load_supersedes(journal)
     notes = {}
     previous_hash = start["receipt_sha256"]
     gap = False
@@ -725,6 +744,62 @@ def verify_ready(journal: Path, start: dict, notes: dict, previous_hash: str) ->
     return ready
 
 
+SUPERSEDES = "supersedes.json"
+
+
+def load_supersedes(journal: Path) -> dict | None:
+    """The corrected-run record of a journal that was started from an earlier one, or None."""
+    path = journal / SUPERSEDES
+    if not os.path.lexists(path):
+        return None
+    record = verify_receipt(parse(read_raw(path)), "supersedes record")
+    fields(record, {"artifact_type", "supersedes", "restart_at", "copied_stages", "copied_receipts", "recorded_at"}, "supersedes record")
+    if record["artifact_type"] != "corrected_run" or record["restart_at"] not in STAGES:
+        raise Error("supersedes.json is not a corrected-run record written by this helper.")
+    return record
+
+
+def corrected_run(source: Path, index: Any, out: Path, restart_at: str, reason: str | None) -> dict:
+    """Start a corrected run: copy the stages before `restart_at` from a verified journal, record what it supersedes.
+
+    The start receipt and the copied notes and receipts are byte-for-byte the originals, so the
+    new journal's receipt chain is the old one up to the restart point; the stages from
+    `restart_at` on are recorded afresh. The old journal is left untouched.
+    """
+    if restart_at not in STAGES:
+        raise Error("--restart-at must be one of: " + ", ".join(STAGES) + ".")
+    if os.path.lexists(out):
+        raise Error(f"Output already exists: {out}; choose a new directory for the corrected run.", "output_exists")
+    if out.resolve() == source.resolve():
+        raise Error("--out must be a new directory, not the journal being corrected.")
+    start, notes, _ = load_run(source, index)
+    copied = list(STAGES[:STAGES.index(restart_at)])
+    missing = [stage for stage in copied if stage not in notes]
+    if missing:
+        raise Error(f"Cannot restart at {restart_at}: the source journal has no recorded {missing[0]} stage to carry forward.")
+    if reason is not None:
+        string(reason, "--reason")
+    earlier = load_supersedes(source)
+    out.mkdir(parents=True, exist_ok=False)
+    write_raw(out / "00-start.json", read_raw(source / "00-start.json"))
+    copied_receipts = {}
+    for stage in copied:
+        note_path, receipt_path = stage_paths(source, stage)
+        write_raw(stage_paths(out, stage)[0], read_raw(note_path))
+        receipt_raw = read_raw(receipt_path)
+        write_raw(stage_paths(out, stage)[1], receipt_raw)
+        copied_receipts[stage] = parse(receipt_raw)["receipt_sha256"]
+    record = sealed({"artifact_type": "corrected_run", "snapshot_id": start["snapshot_id"], "supersedes": str(source.resolve()),
+                     "supersedes_chain": ([earlier["supersedes"], *earlier.get("supersedes_chain", [])] if earlier else []),
+                     "restart_at": restart_at, "copied_stages": copied, "copied_receipts": copied_receipts,
+                     "source_recorded_stages": [s for s in STAGES if s in notes], "source_ready": os.path.lexists(source / READY),
+                     "reason": reason, "recorded_at": datetime.now(timezone.utc).isoformat()})
+    rp.write_json_atomic(out / SUPERSEDES, record)
+    load_run(out, index)
+    return {"ok": True, "command": "corrected-run", "journal": str(out), "supersedes": record["supersedes"], "copied_stages": copied,
+            "next_stage": restart_at, "note": "Record the stages from next_stage on afresh; rechecked earlier stages are the copied originals, not new observations."}
+
+
 def ready_run(journal: Path, index: Any) -> dict:
     with locked(journal):
         start, notes, previous_hash = load_run(journal, index)
@@ -735,8 +810,10 @@ def ready_run(journal: Path, index: Any) -> dict:
         if os.path.lexists(path):
             receipt = verify_ready(journal, start, notes, previous_hash)
         else:
+            supersedes = load_supersedes(journal)
             receipt = sealed({"snapshot_id": start["snapshot_id"], "last_receipt_sha256": previous_hash,
-                              "recorded_at": datetime.now(timezone.utc).isoformat(), "ready_to_draft": True})
+                              "recorded_at": datetime.now(timezone.utc).isoformat(), "ready_to_draft": True,
+                              **({"supersedes": supersedes["supersedes"], "restart_at": supersedes["restart_at"], "supersedes_sha256": supersedes["receipt_sha256"]} if supersedes else {})})
             rp.write_json_atomic(path, receipt)
     return {"ok": True, "command": "ready", "ready_to_draft": True, "receipt_sha256": receipt["receipt_sha256"],
             "verified": ["saved stages in permitted order", "source/profile/scope and file consistency", "declared passage coverage", "exact anchors and candidate decisions"], "not_verified": LIMITS}
@@ -801,6 +878,12 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--notes", required=True)
         elif name == "check-final":
             command.add_argument("--review", required=True)
+    corrected = commands.add_parser("corrected-run", help="Start a corrected run: copy the stages before --restart-at from a verified journal into a new one that records what it supersedes.")
+    corrected.add_argument("--from", dest="source", required=True, help="The journal being corrected; it is left untouched.")
+    corrected.add_argument("--index", required=True)
+    corrected.add_argument("--out", required=True, help="New journal directory (for example run/journal-2).")
+    corrected.add_argument("--restart-at", required=True, choices=STAGES, help="The first stage to record afresh; the stages before it are copied byte for byte.")
+    corrected.add_argument("--reason", help="Why the earlier run is superseded (recorded in supersedes.json).")
     return p
 
 
@@ -814,6 +897,8 @@ def main(argv: list[str] | None = None) -> int:
             result = record_stage(Path(args.journal), index, args.stage, Path(args.notes).read_bytes())
         elif args.command == "ready":
             result = ready_run(Path(args.journal), index)
+        elif args.command == "corrected-run":
+            result = corrected_run(Path(args.source), index, Path(args.out), args.restart_at, args.reason)
         else:
             result = check_final(Path(args.journal), index, rp.load_json(args.review))
         print(json.dumps(result, ensure_ascii=True, allow_nan=False))

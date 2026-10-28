@@ -1,6 +1,8 @@
+import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import re
@@ -376,6 +378,198 @@ class ReviewStepsTests(unittest.TestCase):
         response = run / "records" / "000002" / "response.json"
         response.write_bytes(response.read_bytes() + b" ")
         self.assertRefused("Masked run does not validate: Recorded input or response changed", self.record, "decisions")
+
+    # ------------------------------------------------------------ recall questions and recall events
+
+    def recall_question(self, qid="Q1", after="B0003", **change):
+        return {"id": qid, "after_block": after, "question": "What threshold did the window carry?", "options": ["two seconds", "five seconds", mr.RECALL_IDK], "answer": "two seconds", **change}
+
+    def checks_with_plan(self, plan_id="M1", mode="masked-sequential", questions=None):
+        checks = self.notes("checks")
+        entry = {"id": plan_id, "anchor": CRITICAL, "mode": mode, "reason": "carry the threshold across windows"}
+        if questions is not None:
+            entry["recall_questions"] = questions
+        checks["checkpoint_plan"].append(entry)
+        return checks
+
+    def test_checks_plan_recall_questions(self):
+        self.record("reading")
+        idk = mr.RECALL_IDK
+        cases = (
+            (self.checks_with_plan(questions=[self.recall_question(after="B0001")]), "checkpoint_plan M1\\.recall_questions\\[0\\]\\.after_block names a block that is not in the case: B0001"),
+            (self.checks_with_plan(questions=[self.recall_question(options=["two seconds", "five seconds"])]), f"checkpoint_plan M1\\.recall_questions\\[0\\]\\.options must include exactly one {re.escape(repr(idk))} option"),
+            (self.checks_with_plan(questions=[self.recall_question(options=["two seconds", idk, "five seconds", idk])]), "checkpoint_plan M1\\.recall_questions\\[0\\]\\.options must be at least two distinct nonempty strings"),
+            (self.checks_with_plan(questions=[self.recall_question(answer=idk)]), f"checkpoint_plan M1\\.recall_questions\\[0\\]\\.answer must be one of the options other than {re.escape(repr(idk))}"),
+            (self.checks_with_plan(questions=[self.recall_question(answer="three seconds")]), "checkpoint_plan M1\\.recall_questions\\[0\\]\\.answer must be one of the options"),
+            (self.checks_with_plan(questions=[self.recall_question(), self.recall_question(after="B0004")]), "checkpoint_plan M1\\.recall_questions\\[1\\]\\.id must be a nonempty string, unique in the list"),
+            (self.checks_with_plan(questions=[]), "checkpoint_plan M1\\.recall_questions must be a nonempty list of questions"),
+            (self.checks_with_plan("P2", "fresh-prefix", [self.recall_question()]), "checkpoint_plan P2: recall_questions belong to a masked-sequential plan entry only\\."),
+            (self.checks_with_plan("F1", "full-context", [self.recall_question()]), "checkpoint_plan F1: recall_questions belong to a masked-sequential plan entry only\\."),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "checks", value)
+        questions = [self.recall_question(), self.recall_question("Q2", "B0005", question="How many pairs were kept?", options=["412", "91", mr.RECALL_IDK], answer="412")]
+        self.assertEqual(self.record("checks", self.checks_with_plan(questions=questions))["next_stage"], "reconcile")
+        saved = json.loads((self.journal / "02-checks.notes.json").read_text())
+        self.assertEqual(saved["checkpoint_plan"][1]["recall_questions"], questions)
+        # A masked-sequential plan entry without recall_questions, or with null, is still accepted.
+        other = self.root / "no-questions"
+        rs.start_run(self.index, PROFILE, self.scope(), other)
+        self.record("reading", journal=other)
+        self.assertEqual(self.record("checks", self.checks_with_plan(questions=None), other)["next_stage"], "reconcile")
+        third = self.root / "null-questions"
+        rs.start_run(self.index, PROFILE, self.scope(), third)
+        self.record("reading", journal=third)
+        checks = self.checks_with_plan()
+        checks["checkpoint_plan"][1]["recall_questions"] = None
+        self.assertEqual(self.record("checks", checks, third)["next_stage"], "reconcile")
+
+    def recall_in(self, run, name="mrun", questions=None):
+        """Issue and record one recall after the run's last display event; returns the recall packet path."""
+        questions = questions or [{"id": "Q1", "after_block": "M2", "question": "Who produced each record?", "options": ["one observer", "two observers", mr.RECALL_IDK], "answer": "one observer"}]
+        packet = self.root / f"{name}-recall-packet.json"
+        mr.recall(run, questions, packet)
+        response = self.root / f"{name}-recall-response.json"
+        response.write_bytes(mr.encoded({"answers": [{"question_id": "Q1", "choice": mr.RECALL_IDK, "note_ids": []}], "source_recognition": {"recognized": False, "description": ""}}))
+        result = mr.recall_record(run, packet, response, "r1")
+        self.assertEqual((result["recall_sequence"], result["after_sequence"], result["idk"]), (1, 2, ["Q1"]))
+        return packet
+
+    def test_masked_checkpoint_binds_recall_sequences(self):
+        run = self.masked_run()
+        self.recall_in(run)
+        self.record_through("checks")
+        for value, message in ((self.masked_reconcile(run, recall_sequences=[2]), "checkpoint\\.recall_sequences must name recorded recall events once each, 1 to 1\\."),
+                               (self.masked_reconcile(run, recall_sequences=[1, 1]), "checkpoint\\.recall_sequences must name recorded recall events once each, 1 to 1\\."),
+                               (self.masked_reconcile(run, recall_sequences=[0]), "checkpoint\\.recall_sequences must name recorded recall events once each, 1 to 1\\."),
+                               (self.masked_reconcile(run, recall_sequences=["1"]), "checkpoint\\.recall_sequences\\[0\\] must be an integer"),
+                               (self.masked_reconcile(run, recall_sequences=1), "checkpoint\\.recall_sequences must be an array")):
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "reconcile", value)
+        reconcile = self.masked_reconcile(run, recall_sequences=[1])
+        reconcile["observations"] = [{"id": "O1", "source_id": "K2", "reader_question": "Who produced each record?", "classification": "lost_in_notes",
+                                      "editor_check": "B0002 names a separate observer; the notes did not carry it.", "evidence": [A("B0002", "a separate observer")], "candidate_id": "C03"}]
+        self.assertEqual(self.record("reconcile", reconcile)["next_stage"], "decisions")
+        receipt = json.loads((self.journal / "03-reconcile.receipt.json").read_text())
+        files = [run / "manifest.json"] + [run / "records" / "000002" / n for n in ("packet.json", "response.json", "receipt.json")] + [run / "recalls" / "000001" / n for n in ("packet.json", "response.json", "questions.json", "receipt.json")]
+        self.assertEqual(receipt["attachments"], [{"path": str(p), "sha256": sha(p)} for p in files])
+        saved = json.loads((self.journal / "03-reconcile.notes.json").read_text())
+        self.assertEqual((saved["checkpoints"][0]["recall_sequences"], saved["observations"][0]["classification"]), ([1], "lost_in_notes"))
+        questions = run / "recalls" / "000001" / "questions.json"
+        questions.write_bytes(questions.read_bytes() + b" ")
+        self.assertRefused("Masked run recalls do not validate: Recall record changed", self.record, "decisions")
+        # A checkpoint that lists no recall_sequences attaches the display event only, even when recalls exist.
+        other = self.root / "plain"
+        rs.start_run(self.index, PROFILE, self.scope(), other)
+        self.record_through("checks", other)
+        questions.write_bytes(questions.read_bytes()[:-1])
+        self.record("reconcile", self.masked_reconcile(run), other)
+        self.assertEqual(len(json.loads((other / "03-reconcile.receipt.json").read_text())["attachments"]), 4)
+        third = self.root / "tampered"
+        rs.start_run(self.index, PROFILE, self.scope(), third)
+        self.record_through("checks", third)
+        questions.write_bytes(questions.read_bytes() + b" ")
+        self.assertRefused("Masked run recalls do not validate: Recall record changed", self.record, "reconcile", self.masked_reconcile(run, recall_sequences=[1]), third)
+        self.assertEqual(self.names(third)[-1], "02-checks.receipt.json")
+
+    # ------------------------------------------------------------ corrected runs
+
+    def test_corrected_run_copies_the_stages_before_the_restart(self):
+        self.record_through("decisions")
+        before = {name: (self.journal / name).read_bytes() for name in self.names()}
+        out = self.root / "journal-2"
+        result = rs.corrected_run(self.journal, self.index, out, "decisions", "reason text")
+        self.assertEqual({k: result[k] for k in ("ok", "command", "journal", "supersedes", "copied_stages", "next_stage")},
+                         {"ok": True, "command": "corrected-run", "journal": str(out), "supersedes": str(self.journal.resolve()), "copied_stages": ["reading", "checks", "reconcile"], "next_stage": "decisions"})
+        self.assertEqual({name: (self.journal / name).read_bytes() for name in self.names()}, before, "the source journal is untouched")
+        copied = ["00-start.json"] + sorted(STAGE_FILES["reading"] + STAGE_FILES["checks"] + STAGE_FILES["reconcile"])
+        self.assertEqual(self.names(out), sorted(copied + ["supersedes.json"]))
+        for name in copied:
+            self.assertEqual((out / name).read_bytes(), before[name], name)
+        record = json.loads((out / "supersedes.json").read_text())
+        self.assertEqual({k: record[k] for k in ("artifact_type", "supersedes", "restart_at", "copied_stages", "supersedes_chain", "reason", "snapshot_id", "source_recorded_stages", "source_ready")},
+                         {"artifact_type": "corrected_run", "supersedes": str(self.journal.resolve()), "restart_at": "decisions", "copied_stages": ["reading", "checks", "reconcile"], "supersedes_chain": [],
+                          "reason": "reason text", "snapshot_id": self.sid, "source_recorded_stages": ["reading", "checks", "reconcile", "decisions"], "source_ready": False})
+        self.assertEqual(record["copied_receipts"], {stage: json.loads((out / STAGE_FILES[stage][1]).read_text())["receipt_sha256"] for stage in ("reading", "checks", "reconcile")})
+        self.assertEqual(rs.load_supersedes(out), record)
+        self.assertIsNone(rs.load_supersedes(self.journal))
+        self.assertRefused("Next operation is decisions; cannot record repairs now.", self.record, "repairs", None, out)
+        self.record("decisions", journal=out)
+        self.record("repairs", journal=out)
+        ready = rs.ready_run(out, self.index)
+        self.assertTrue(ready["ready_to_draft"])
+        receipt = json.loads((out / "06-ready.json").read_text())
+        self.assertEqual((receipt["supersedes"], receipt["restart_at"], receipt["supersedes_sha256"]), (str(self.journal.resolve()), "decisions", record["receipt_sha256"]))
+        self.assertEqual(receipt["last_receipt_sha256"], json.loads((out / "05-repairs.receipt.json").read_text())["receipt_sha256"])
+        self.assertEqual(rs.check_final(out, self.index, self.final_review())["issue_count"], 3)
+        plain = json.loads((self.journal / "00-start.json").read_text())
+        self.assertNotIn("supersedes", plain)
+        # A ready receipt of an ordinary journal carries no supersedes fields.
+        self.record("repairs")
+        rs.ready_run(self.journal, self.index)
+        self.assertNotIn("supersedes", json.loads((self.journal / "06-ready.json").read_text()))
+        # A second correction chains back to the first journal.
+        third = self.root / "journal-3"
+        rs.corrected_run(out, self.index, third, "repairs", None)
+        chained = json.loads((third / "supersedes.json").read_text())
+        self.assertEqual((chained["supersedes"], chained["supersedes_chain"], chained["copied_stages"], chained["reason"], chained["source_ready"]), (str(out.resolve()), [str(self.journal.resolve())], ["reading", "checks", "reconcile", "decisions"], None, True))
+        self.assertEqual((third / "04-decisions.notes.json").read_bytes(), (out / "04-decisions.notes.json").read_bytes())
+        self.assertFalse((third / "05-repairs.notes.json").exists())
+
+    def test_corrected_run_refusals_and_tamper_detection(self):
+        self.record("reading")
+        with self.assertRaisesRegex(rp.ReviewDataError, "already exists|not the journal being corrected"):
+            rs.corrected_run(self.journal, self.index, self.journal, "reading", None)
+        existing = self.root / "existing"
+        existing.mkdir()
+        with self.assertRaises(rp.ReviewDataError) as caught:
+            rs.corrected_run(self.journal, self.index, existing, "reading", None)
+        self.assertEqual(caught.exception.code, "output_exists")
+        self.assertIn("Output already exists", str(caught.exception))
+        with self.assertRaisesRegex(rp.ReviewDataError, "Cannot restart at repairs: the source journal has no recorded checks stage to carry forward\\."):
+            rs.corrected_run(self.journal, self.index, self.root / "too-far", "repairs", None)
+        self.assertFalse((self.root / "too-far").exists())
+        with self.assertRaisesRegex(rp.ReviewDataError, "--restart-at must be one of: reading, checks, reconcile, decisions, repairs\\."):
+            rs.corrected_run(self.journal, self.index, self.root / "bad-stage", "ready", None)
+        with self.assertRaisesRegex(rp.ReviewDataError, "--reason must be a nonempty string"):
+            rs.corrected_run(self.journal, self.index, self.root / "blank-reason", "checks", " ")
+        self.assertFalse((self.root / "blank-reason").exists())
+        self.assertEqual(self.names(), ["00-start.json", "01-reading.notes.json", "01-reading.receipt.json"])
+        out = self.root / "journal-2"
+        rs.corrected_run(self.journal, self.index, out, "checks", "redo the checks")
+        self.assertEqual(self.names(out), ["00-start.json", "01-reading.notes.json", "01-reading.receipt.json", "supersedes.json"])
+        path = out / "supersedes.json"
+        record = json.loads(path.read_text())
+        path.write_text(json.dumps({**record, "reason": "rewritten"}))
+        with self.assertRaisesRegex(rp.ReviewDataError, "supersedes record checksum mismatch"):
+            rs.load_run(out, self.index)
+        self.assertRefused("supersedes record checksum mismatch", self.record, "checks", None, out)
+        path.write_text(json.dumps(rs.sealed({**{k: v for k, v in record.items() if k != "receipt_sha256"}, "artifact_type": "review_run"})))
+        with self.assertRaisesRegex(rp.ReviewDataError, "supersedes.json is not a corrected-run record written by this helper"):
+            rs.load_run(out, self.index)
+        path.write_text(json.dumps(record))
+        self.assertEqual(self.record("checks", journal=out)["next_stage"], "reconcile")
+
+    def test_corrected_run_through_the_cli(self):
+        self.record_through("checks")
+        index_path = self.root / "index.json"
+        index_path.write_text(json.dumps(self.index), encoding="utf-8")
+        out = self.root / "cli-journal-2"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = rs.main(["corrected-run", "--from", str(self.journal), "--index", str(index_path), "--out", str(out), "--restart-at", "reading"])
+        self.assertEqual(code, 0)
+        printed = json.loads(stdout.getvalue())
+        self.assertEqual((printed["ok"], printed["command"], printed["journal"], printed["copied_stages"], printed["next_stage"]), (True, "corrected-run", str(out), [], "reading"))
+        self.assertEqual(self.names(out), ["00-start.json", "supersedes.json"])
+        self.assertEqual((out / "00-start.json").read_bytes(), (self.journal / "00-start.json").read_bytes())
+        record = json.loads((out / "supersedes.json").read_text())
+        self.assertEqual((record["copied_stages"], record["copied_receipts"], record["restart_at"], record["reason"]), ([], {}, "reading", None))
+        self.assertEqual(self.record("reading", journal=out)["next_stage"], "checks")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            code = rs.main(["corrected-run", "--from", str(self.journal), "--index", str(index_path), "--out", str(out), "--restart-at", "reading"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(stderr.getvalue())["error"]["code"], "output_exists")
 
     def test_checkpoint_figure_policy_matches_what_the_reader_could_see(self):
         run = self.masked_run()

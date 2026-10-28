@@ -52,6 +52,8 @@ Identify unnecessary names that can become ordinary descriptions. Explain why an
 
 Record source-anchor validation, independent rechecks actually run, claim-preservation checks, sampled coverage, and unresolved scientific questions. Distinguish model predictions from observed human reading results.
 
+- Reader model and its questioning tendency: the model, runtime, and effort setting of the prefix and masked readers (from `summary.json` and the provenance files), and one sentence on what kind of question that reader tended to ask in this run (for example first-reading obstacles and undefined terms; or claim strength, formula edge cases, and citations). State it as the tendency observed in this run, so that a run with another reader model can be compared; it is not a property of the model.
+- Recall events, when the masked run had them: how many were issued, how many questions were answered wrong or with I don't know, and which of those became `lost_in_notes` observations; a wrong answer shows what the notes did not carry, not what a human would forget.
 - Candidates: N accepted, N author questions, N merged, N rejected (from the decisions record). If none was rejected, say in one sentence why the counterchecks rejected nothing.
 - Citations checked against their sources, with verdicts, when the citation spot-check was run; otherwise say it was not run.
 - Pairwise judgments (which of two readings, passages, or wordings), if any were made: state that each was run in both orders and list the ones that disagreed as undetermined. Nowhere in the report is one version called better than another; the report names the describable difference.

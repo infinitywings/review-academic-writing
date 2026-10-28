@@ -82,6 +82,27 @@ CASE = {
 MASKED_PROFILE = {"task": "Read the text in order and explain it.", "memory_limit": 20, "memory_unit": "words"}
 N1 = {"id": "n1", "kind": "established", "text": "Counts are reported.", "sources": ["B1"], "since": 1}
 N2 = {"id": "n2", "kind": "established", "text": "Limits are reported.", "sources": ["B2"], "since": 2}
+CASE3 = {
+    "id": "three-windows",
+    "asset_policy": "strict-prefix",
+    "blocks": [
+        {"id": "B1", "text": "First window text about counts.", "page": 1, "kind": "text"},
+        {"id": "B2", "text": "Second window text about limits.", "page": 2, "kind": "text"},
+        {"id": "B3", "text": "Third window text about methods.", "page": 3, "kind": "text"},
+    ],
+    "windows": [["B1"], ["B2"], ["B3"]],
+    "assets": [],
+}
+RECALL_QUESTIONS = [
+    {"id": "Q1", "after_block": "B2", "question": "What does the second window report?", "options": ["limits", "weights", mr.RECALL_IDK], "answer": "limits"},
+    {"id": "Q2", "after_block": "B3", "question": "What does the third window report?", "options": ["methods", "prices", mr.RECALL_IDK], "answer": "methods"},
+]
+RECOGNITION = {"recognized": False, "description": ""}
+
+
+def recall_response(*answers):
+    """answers: (question_id, choice, note_ids) triples."""
+    return json.dumps({"answers": [{"question_id": q, "choice": c, "note_ids": list(n)} for q, c, n in answers], "source_recognition": RECOGNITION})
 HEDGED_REQUEST = {"candidate_id": "C06", "original": [{"block_id": "B0002", "quote": "Counts may rise under these conditions."}],
                   "proposed_wording": "Counts might rise under these conditions.", "basis": []}
 KEPT_MAY = {"term": "may", "status": "kept"}
@@ -314,6 +335,256 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertTrue(provenance["started_at"].endswith("+00:00"))
         cli = json.loads((self.events / "E01.cli.json").read_text())
         self.assertEqual(cli["session_id"], "sess0001-0000-0000")
+
+    # ------------------------------------------------------------ masked recall events
+
+    def three_windows(self):
+        """The fake responses for the three windows of CASE3, as a list to splice recalls into."""
+        self.case_path.write_text(json.dumps(CASE3))
+        return [masked_response([N1]), masked_response([N1, N2], claim_source="B2"), masked_response([N1, N2], claim_source="B3")]
+
+    def questions_file(self, questions=RECALL_QUESTIONS, name="q.json"):
+        path = self.root / name
+        path.write_text(json.dumps(questions))
+        return path
+
+    def summary(self, events=None):
+        return json.loads(((events or self.events) / "summary.json").read_text())
+
+    def test_recall_events_between_windows_and_at_the_end(self):
+        w1, w2, w3 = self.three_windows()
+        self.responses(w1, w2, recall_response(("Q1", mr.RECALL_IDK, [])), w3, recall_response(("Q2", "prices", ["n2"])))
+        code, out, err = self.masked("--recall-every", "2", "--recall-questions", str(self.questions_file()))
+        self.assertEqual(code, 0, err)
+        summary = self.summary()
+        self.assertTrue(summary["outcome"].startswith("Run complete after 3 recorded event(s)."), summary["outcome"])
+        self.assertEqual([e["mode"] for e in summary["loop"]], ["window", "window", "recall", "window", "recall"])
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "ok"), ("E02", "ok"), ("R01", "ok"), ("E03", "ok"), ("R02", "ok")])
+        self.assertEqual(summary["recalls"], [
+            {"recall_sequence": 1, "sequence": 2, "label": "R01", "status": "ok", "question_ids": ["Q1"], "wrong": [], "idk": ["Q1"]},
+            {"recall_sequence": 2, "sequence": 3, "label": "R02", "status": "ok", "question_ids": ["Q2"], "wrong": ["Q2"], "idk": []},
+        ])
+        self.assertEqual(summary["restarts"], 0)
+        self.assertEqual(summary["totals"]["calls"], 5)
+        prompt = self.prompt(3)
+        self.assertIn("Counts are reported.", prompt)
+        self.assertIn("Limits are reported.", prompt)
+        self.assertIn("What does the second window report?", prompt)
+        self.assertNotIn("What does the third window report?", prompt, "Q2 is not due until B3 has been seen")
+        for block in CASE3["blocks"]:
+            self.assertNotIn(block["text"], prompt)
+        self.assertNotIn('"answer"', prompt)
+        self.assertIn('"mode": "recall"', prompt)
+        packet = json.loads((self.run / "recalls" / "000001" / "packet.json").read_text())
+        self.assertEqual((packet["mode"], packet["materials"], packet["after_sequence"], packet["recall_sequence"]), ("recall", [], 2, 1))
+        self.assertEqual(packet["questions"], [{"id": "Q1", "question": "What does the second window report?", "options": ["limits", "weights", mr.RECALL_IDK]}])
+        self.assertTrue(all("answer" not in q for q in packet["questions"]))
+        self.assertEqual(packet["carry_memory"], {"gist": "Counts.", "notes": [N1, N2]})
+        self.assertEqual(json.loads((self.run / "recalls" / "000001" / "questions.json").read_text()), [RECALL_QUESTIONS[0]])
+        receipt = json.loads((self.run / "recalls" / "000001" / "receipt.json").read_text())
+        self.assertEqual((receipt["results"], receipt["wrong"], receipt["idk"]), ([{"question_id": "Q1", "choice": mr.RECALL_IDK, "outcome": "idk"}], [], ["Q1"]))
+        self.assertEqual(receipt["event_receipt_sha256"], mr.digest((self.run / "records" / "000002" / "receipt.json").read_bytes()))
+        self.assertEqual(receipt["agent_id"], "sess0003-0000-0000")
+        second = json.loads((self.run / "recalls" / "000002" / "receipt.json").read_text())
+        self.assertEqual((second["after_sequence"], second["wrong"], second["event_receipt_sha256"]), (3, ["Q2"], mr.digest((self.run / "records" / "000003" / "receipt.json").read_bytes())))
+        run, manifest, _case, profile, state, _seq, _ = mr.load_run(self.run)
+        recalls = mr.load_recalls(run, manifest, profile, state)
+        self.assertEqual([(r["sequence"], r["after_sequence"], [q["id"] for q in r["questions"]]) for r in recalls], [(1, 2, ["Q1"]), (2, 3, ["Q2"])])
+        self.assertEqual(json.loads((self.run / "records" / "000003" / "packet.json").read_text())["carry_memory"], {"gist": "Counts.", "notes": [N1, N2]})
+        self.assertEqual(sorted(p.name for p in (self.run / "records").iterdir()), ["000001", "000002", "000003"])
+        for suffix in ("packet.json", "prompt.txt", "cli.json", "response.raw", "response.json", "provenance.json"):
+            self.assertTrue((self.events / f"R01.{suffix}").exists(), suffix)
+        self.assertEqual((self.events / "R01.packet.json").read_bytes(), (self.run / "recall-packets" / "000001.json").read_bytes())
+        self.assertIn("R01", out)
+
+    def test_recall_flags_must_come_together_and_questions_must_fit_the_case(self):
+        w1, w2, w3 = self.three_windows()
+        self.responses(w1, w2, w3)
+        code, out, err = self.masked("--recall-every", "2")
+        self.assertEqual(code, 2)
+        error = json.loads(err)
+        self.assertEqual(error["error"]["code"], "dispatch_error")
+        self.assertIn("--recall-every needs --recall-questions", error["error"]["message"])
+        code, out, err = self.masked("--recall-questions", str(self.questions_file()))
+        self.assertEqual(code, 2)
+        self.assertIn("--recall-questions needs --recall-every N", json.loads(err)["error"]["message"])
+        outside = [dict(RECALL_QUESTIONS[0], after_block="B9")]
+        code, out, err = self.masked("--recall-every", "2", "--recall-questions", str(self.questions_file(outside, "outside.json")))
+        self.assertEqual(code, 2)
+        self.assertIn("--recall-questions: recall_questions[0].after_block names a block that is not in the case: B9", json.loads(err)["error"]["message"])
+        code, out, err = self.masked("--recall-every", "-1", "--recall-questions", str(self.questions_file()))
+        self.assertEqual(code, 2)
+        self.assertIn("--recall-every must be 0 (off) or a positive number of windows.", json.loads(err)["error"]["message"])
+        self.assertFalse((self.fake / "counter.txt").exists(), "no model call was made")
+        self.assertFalse((self.events / "summary.json").exists())
+
+    def test_recall_questions_from_a_checks_notes_file(self):
+        w1, w2, w3 = self.three_windows()
+        plan = {"snapshot_id": "sha256:x", "checkpoint_plan": [
+            {"id": "M1", "mode": "masked-sequential", "anchor": {"block_id": "B0002", "quote": "limits"}, "reason": "carry the limits", "recall_questions": RECALL_QUESTIONS},
+            {"id": "P1", "mode": "fresh-prefix", "anchor": {"block_id": "B0002", "quote": "limits"}, "reason": "first use"},
+        ]}
+        checks = self.root / "checks.json"
+        checks.write_text(json.dumps(plan))
+        self.responses(w1, w2, recall_response(("Q1", "limits", ["n2"])), w3, recall_response(("Q2", "methods", [])))
+        code, out, err = self.masked("--recall-every", "2", "--recall-questions", str(checks), "--recall-plan-id", "M1")
+        self.assertEqual(code, 0, err)
+        summary = self.summary()
+        self.assertEqual([e["mode"] for e in summary["loop"]], ["window", "window", "recall", "window", "recall"])
+        self.assertEqual([(r["question_ids"], r["wrong"], r["idk"]) for r in summary["recalls"]], [(["Q1"], [], []), (["Q2"], [], [])])
+        self.assertEqual(json.loads((self.run / "recalls" / "000001" / "receipt.json").read_text())["results"], [{"question_id": "Q1", "choice": "limits", "outcome": "correct"}])
+        self.assertEqual(dr.load_recall_questions(str(checks), None, {"B1", "B2", "B3"}), RECALL_QUESTIONS)
+        for plan_id, message in (("P1", "--recall-plan-id P1: no checkpoint_plan entry with that id carries recall_questions."),
+                                 ("M9", "--recall-plan-id M9: no checkpoint_plan entry with that id carries recall_questions.")):
+            with self.subTest(plan_id=plan_id):
+                code, out, err = self.main(["masked", "--events", str(self.root / f"events-{plan_id}"), "--run", str(self.root / f"run-{plan_id}"), "--case", str(self.case_path), "--profile", str(self.profile_path),
+                                            "--recall-every", "2", "--recall-questions", str(checks), "--recall-plan-id", plan_id])
+                self.assertEqual(code, 2)
+                self.assertEqual(json.loads(err)["error"]["message"], message)
+        with self.assertRaisesRegex(dr.DispatchError, "--recall-plan-id applies only when --recall-questions is a checks notes file."):
+            dr.load_recall_questions(str(self.questions_file()), "M1", {"B1", "B2", "B3"})
+        no_questions = self.root / "no-questions.json"
+        no_questions.write_text(json.dumps({"checkpoint_plan": [plan["checkpoint_plan"][1]]}))
+        with self.assertRaisesRegex(dr.DispatchError, "checkpoint_plan has no entry with recall_questions"):
+            dr.load_recall_questions(str(no_questions), None, {"B1", "B2", "B3"})
+        neither = self.root / "neither.json"
+        neither.write_text(json.dumps({"summary": "x"}))
+        with self.assertRaisesRegex(dr.DispatchError, "--recall-questions must be a JSON array of questions or a checks notes file with a checkpoint_plan."):
+            dr.load_recall_questions(str(neither), None, {"B1", "B2", "B3"})
+        self.assertEqual(dr.load_recall_questions(None, None, {"B1"}), [])
+        self.assertEqual((self.fake / "counter.txt").read_text(), "5")
+
+    def test_recall_choice_outside_the_options_is_corrected(self):
+        w1, w2, w3 = self.three_windows()
+        self.responses(w1, w2, recall_response(("Q1", "bounds", [])), recall_response(("Q1", "limits", ["n2"])), w3, recall_response(("Q2", mr.RECALL_IDK, [])))
+        code, out, err = self.masked("--recall-every", "2", "--recall-questions", str(self.questions_file()))
+        self.assertEqual(code, 0, err)
+        summary = self.summary()
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "ok"), ("E02", "ok"), ("R01", "invalid_format"), ("R01b", "ok"), ("E03", "ok"), ("R02", "ok")])
+        reason = (self.events / "R01.invalid-reason.txt").read_text()
+        self.assertIn("R01 not accepted (format): answers[0].choice must be one of the question's options, copied verbatim.", reason)
+        self.assertIn("R01b", reason)
+        correction = self.prompt(4)
+        self.assertIn("Format note from the controller", correction)
+        self.assertIn("answers[0].choice must be one of the question's options", correction)
+        self.assertFalse((self.events / "R01b.packet.json").exists(), "the correction reuses the R01 packet")
+        self.assertEqual((self.events / "R01b.prompt-source.txt").read_text().count("Format note"), 1)
+        provenance = json.loads((self.events / "R01b.provenance.json").read_text())
+        self.assertEqual((provenance["corrects"], provenance["packet_file"]), ("R01", str(self.events / "R01.packet.json")))
+        self.assertEqual([e["mode"] for e in summary["loop"]], ["window", "window", "recall", "window", "recall"])
+        self.assertEqual(summary["loop"][2]["label"], "R01b")
+        self.assertEqual(sorted(p.name for p in (self.run / "recalls").iterdir()), ["000001", "000002"])
+
+    # ------------------------------------------------------------ masked --until-complete and the pid file
+
+    def masked_at(self, run, events, *extra):
+        (self.fake / "counter.txt").unlink(missing_ok=True)
+        return self.main(["masked", "--events", str(events), "--run", str(run), "--case", str(self.case_path), "--profile", str(self.profile_path), *extra])
+
+    def test_until_complete_restarts_after_exhausted_corrections(self):
+        w1, w2, w3 = self.three_windows()
+        self.responses(w1, "not json", "still not json", "{broken", w2, w3)
+        code, out, err = self.masked("--until-complete", "--max-restarts", "2")
+        self.assertEqual(code, 0, err)
+        summary = self.summary()
+        self.assertTrue(summary["outcome"].startswith("Run complete after 3 recorded event(s)."), summary["outcome"])
+        self.assertEqual(summary["restarts"], 1)
+        labels = [r["label"] for r in summary["calls"]]
+        self.assertEqual(labels, ["E01", "E02", "E02b", "E02c", "E02r1", "E03"])
+        self.assertEqual([r["status"] for r in summary["calls"]], ["ok", "invalid_format", "invalid_format", "invalid_format", "ok", "ok"])
+        restart = [e for e in summary["loop"] if e["mode"] == "restart"]
+        self.assertEqual(len(restart), 1)
+        self.assertEqual(restart[0]["restart"], 1)
+        self.assertIn("E02: two corrections were requested", restart[0]["after"])
+        self.assertEqual([e["mode"] for e in summary["loop"]], ["window", "window", "restart", "window", "window"])
+        self.assertEqual((self.events / "E02r1.packet.json").read_bytes(), (self.events / "E02.packet.json").read_bytes())
+        self.assertFalse((self.run / "dispatch.pid").exists())
+        self.assertEqual(sorted(p.name for p in (self.run / "records").iterdir()), ["000001", "000002", "000003"])
+        self.assertEqual(len(list(self.events.glob("summary*.json"))), 1, "one invocation, one summary")
+        # Without --until-complete the same responses stop after E02c, and the pid file is gone as well.
+        run2, events2 = self.root / "run2", self.root / "events2"
+        code, out, err = self.masked_at(run2, events2)
+        self.assertEqual(code, 1, err)
+        summary = self.summary(events2)
+        self.assertIn("Stopped after attempts E02, E02b, E02c", summary["outcome"])
+        self.assertNotIn("--max-restarts", summary["outcome"])
+        self.assertEqual((summary["restarts"], [r["label"] for r in summary["calls"]]), (0, ["E01", "E02", "E02b", "E02c"]))
+        self.assertFalse((run2 / "dispatch.pid").exists())
+        self.assertEqual(sorted(p.name for p in (run2 / "records").iterdir()), ["000001"])
+
+    def test_until_complete_stops_at_max_restarts(self):
+        w1, w2, w3 = self.three_windows()
+        self.responses(w1, *(["not json"] * 6), w2, w3)
+        code, out, err = self.masked("--until-complete", "--max-restarts", "1")
+        self.assertEqual(code, 1, err)
+        summary = self.summary()
+        self.assertEqual(summary["restarts"], 1)
+        self.assertIn("Stopped after attempts E02r1, E02r1b, E02r1c.", summary["outcome"])
+        self.assertIn("Stopped after 1 automatic restart(s) (--max-restarts 1).", summary["outcome"])
+        self.assertEqual([r["label"] for r in summary["calls"]], ["E01", "E02", "E02b", "E02c", "E02r1", "E02r1b", "E02r1c"])
+        self.assertEqual(len([e for e in summary["loop"] if e["mode"] == "restart"]), 1)
+        self.assertFalse((self.run / "dispatch.pid").exists())
+        self.assertEqual(sorted(p.name for p in (self.run / "records").iterdir()), ["000001"])
+        self.assertEqual(dr.MASKED_DEFAULT_RESTARTS, 5)
+        code, out, err = self.masked_at(self.root / "run-neg", self.root / "events-neg", "--until-complete", "--max-restarts", "-1")
+        self.assertEqual(code, 2)
+        self.assertIn("--max-restarts must be a non-negative integer.", json.loads(err)["error"]["message"])
+
+    def test_helper_rejection_is_not_restarted(self):
+        unseen = dict(N2, sources=["B2"])
+        self.responses(masked_response([N1, unseen]), masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
+        code, out, err = self.masked("--until-complete")
+        self.assertEqual(code, 1, err)
+        summary = self.summary()
+        self.assertEqual(summary["restarts"], 0)
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "rejected")])
+        self.assertIn("the helper rejected the response and no correction applies", summary["outcome"])
+        self.assertNotIn("--max-restarts", summary["outcome"])
+        self.assertEqual([e["mode"] for e in summary["loop"]], ["window"])
+        self.assertFalse((self.events / "E01r1.packet.json").exists())
+        self.assertFalse((self.run / "dispatch.pid").exists())
+
+    @staticmethod
+    def stale_pid():
+        pid = 2 ** 22 + 7
+        while dr.process_alive(pid):
+            pid += 1
+        return pid
+
+    def test_pid_file_refuses_a_live_holder_and_replaces_a_stale_one(self):
+        self.responses(masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
+        mr.start(self.case_path, self.profile_path, self.run)
+        pid_file = self.run / dr.PID_FILE
+        self.assertEqual(pid_file.name, "dispatch.pid")
+        live = os.getppid()
+        self.assertTrue(dr.process_alive(live))
+        pid_file.write_text(json.dumps({"pid": live, "started_at": "2026-01-01T00:00:00+00:00", "events_dir": "elsewhere"}) + "\n")
+        code, out, err = self.masked()
+        self.assertEqual(code, 2)
+        error = json.loads(err)
+        self.assertEqual(error["error"]["code"], "dispatch_error")
+        self.assertIn(f"Another dispatch is driving this run (pid {live}, see {pid_file})", error["error"]["message"])
+        self.assertEqual(json.loads(pid_file.read_text())["pid"], live, "the live holder's file is left in place")
+        self.assertFalse((self.fake / "counter.txt").exists(), "no model call was made")
+        stale = self.stale_pid()
+        self.assertFalse(dr.process_alive(stale))
+        pid_file.write_text(json.dumps({"pid": stale, "started_at": "2026-01-01T00:00:00+00:00", "events_dir": "elsewhere"}) + "\n")
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.summary()["outcome"].startswith("Run complete"))
+        self.assertEqual(sorted(p.name for p in (self.run / "records").iterdir()), ["000001", "000002"])
+        self.assertFalse(pid_file.exists(), "the stale file was replaced for the run and removed at its end")
+        # While a run is in progress the file names this process; claim_run itself shows the written shape.
+        held = dr.claim_run(self.run, self.events)
+        self.assertEqual(held, pid_file)
+        holder = json.loads(pid_file.read_text())
+        self.assertEqual((holder["pid"], holder["events_dir"]), (os.getpid(), str(self.events)))
+        self.assertTrue(holder["started_at"].endswith("+00:00"))
+        self.assertEqual(dr.claim_run(self.run, self.events), pid_file, "the current process may reclaim its own run")
+        pid_file.write_text("not json\n")
+        self.assertEqual(dr.claim_run(self.run, self.events), pid_file, "an unreadable pid file is replaced")
+        self.assertEqual(json.loads(pid_file.read_text())["pid"], os.getpid())
+        pid_file.unlink()
 
     # ------------------------------------------------------------ branch
 

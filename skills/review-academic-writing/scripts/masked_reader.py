@@ -126,6 +126,16 @@ BRANCH_RESPONSE_FORMAT = {
     "undetermined": "the condition or relation the visible text leaves open; required when support is undetermined, else empty",
     "source_recognition": RECOGNITION_FORMAT,
 }
+# A recall event shows the reader its carry_memory and a few closed questions, no manuscript
+# text. Every question offers this option verbatim; choosing it is the expected answer when the
+# notes do not settle the question. The answer key never enters the packet.
+RECALL_IDK = "I don't know"
+RECALL_QUESTION_KEYS = {"id", "after_block", "question", "options", "answer"}
+RECALL_RESPONSE_FORMAT = {
+    "answers": [{"question_id": "copied from the question", "choice": "exactly one of that question's options, copied verbatim; the I don't know option whenever carry_memory does not settle it", "note_ids": ["ids of carried notes the choice rests on; empty for I don't know"]}],
+    "source_recognition": RECOGNITION_FORMAT,
+}
+RECALL_OUTCOMES = ("correct", "wrong", "idk")
 
 
 def empty_memory():
@@ -353,7 +363,7 @@ def verify_visible_assets(packet):
             require(digest(Path(item["path"]).read_bytes()) == item["sha256"], "Visible asset changed")
 
 
-def publish(run, target, raw_packet, raw_response, receipt):
+def publish(run, target, raw_packet, raw_response, receipt, extra=None):
     """Construct a complete record off to the side, then publish it by rename."""
     require(not target.exists(), "Record already exists; refusing overwrite")
     temporary = run / f"pending-record-{uuid.uuid4().hex}"
@@ -362,6 +372,8 @@ def publish(run, target, raw_packet, raw_response, receipt):
         write_new(temporary / "packet.json", raw_packet)
         write_new(temporary / "response.json", raw_response)
         write_new(temporary / "receipt.json", encoded(receipt))
+        for name, raw in (extra or {}).items():
+            write_new(temporary / name, raw)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary.rename(target)
     finally:
@@ -540,6 +552,157 @@ def branch_record(run_path, packet_path, response_path, agent_id=None):
     return {"ok": True, "branch_sequence": bseq, "branched_from_sequence": origin, "support": response["support"]}
 
 
+# ---------------------------------------------------------------- recall events
+
+
+def validate_recall_questions(questions, block_ids=None, label="recall_questions"):
+    """Closed questions an editor prepared with the full text: id, after_block, question, options, answer.
+
+    `options` hold at least two distinct strings, exactly one of them RECALL_IDK; `answer` is one
+    of the others. With `block_ids`, every `after_block` must be one of them.
+    """
+    require(isinstance(questions, list) and questions, f"{label} must be a nonempty list of questions")
+    seen = set()
+    for n, question in enumerate(questions):
+        item = f"{label}[{n}]"
+        require(isinstance(question, dict) and set(question) == RECALL_QUESTION_KEYS, f"{item} requires exactly id, after_block, question, options, answer")
+        require(nonempty(question["id"]) and question["id"] not in seen, f"{item}.id must be a nonempty string, unique in the list")
+        seen.add(question["id"])
+        require(nonempty(question["after_block"]), f"{item}.after_block must be a block id")
+        require(block_ids is None or question["after_block"] in block_ids, f"{item}.after_block names a block that is not in the case: {question['after_block']}")
+        require(nonempty(question["question"]), f"{item}.question must be a nonempty string")
+        options = question["options"]
+        require(isinstance(options, list) and len(options) >= 2 and all(nonempty(o) for o in options) and len(set(options)) == len(options), f"{item}.options must be at least two distinct nonempty strings")
+        require(options.count(RECALL_IDK) == 1, f"{item}.options must include exactly one {RECALL_IDK!r} option")
+        require(question["answer"] in options and question["answer"] != RECALL_IDK, f"{item}.answer must be one of the options other than {RECALL_IDK!r}")
+
+
+def memory_after(state, sequence):
+    """The carry_memory the reader held after display event `sequence` (the next packet's memory, or the current one)."""
+    events = state["events"]
+    require(isinstance(sequence, int) and not isinstance(sequence, bool) and 1 <= sequence <= len(events), "A recall must follow a recorded display event")
+    if sequence < len(events):
+        return events[sequence]["packet"]["carry_memory"]
+    return state["memory"]
+
+
+def recall_value(manifest, profile, state, questions, recall_seq, after):
+    """A packet with the reader's notes after event `after` and the questions, with no materials and no answers."""
+    validate_recall_questions(questions)
+    return {
+        "packet_id": f"{manifest['run_id']}:recall:{recall_seq}",
+        "mode": "recall",
+        "recall_sequence": recall_seq,
+        "after_sequence": after,
+        "reader_profile": profile,
+        "carry_memory": memory_after(state, after),
+        "materials": [],
+        "questions": [{"id": q["id"], "question": q["question"], "options": list(q["options"])} for q in questions],
+        "response_format": RECALL_RESPONSE_FORMAT,
+        "instructions": (
+            "Use a new context. This packet holds no manuscript text: answer each question from carry_memory alone. "
+            f"Copy exactly one of the question's options into choice; choose {RECALL_IDK!r} whenever the notes do not settle the question, "
+            "and do not reconstruct an answer from background knowledge or from what a text of this kind usually says. "
+            "List the ids of the carried notes a choice rests on. Nothing from this event is passed to the main reading."
+        ),
+    }
+
+
+def validate_recall_response(response, packet):
+    keys = {"answers", "source_recognition"}
+    require(isinstance(response, dict) and set(response) == keys, "Recall response requires exactly answers, source_recognition")
+    answers = response["answers"]
+    require(isinstance(answers, list), "answers must be a list")
+    expected = {q["id"]: q for q in packet["questions"]}
+    note_ids = {note["id"] for note in packet["carry_memory"]["notes"]}
+    seen = set()
+    for n, answer in enumerate(answers):
+        require(isinstance(answer, dict) and set(answer) == {"question_id", "choice", "note_ids"}, f"answers[{n}] requires exactly question_id, choice, note_ids")
+        require(answer["question_id"] in expected and answer["question_id"] not in seen, f"answers[{n}].question_id must name one packet question, once")
+        seen.add(answer["question_id"])
+        require(answer["choice"] in expected[answer["question_id"]]["options"], f"answers[{n}].choice must be one of the question's options, copied verbatim")
+        require(isinstance(answer["note_ids"], list) and all(isinstance(i, str) and i in note_ids for i in answer["note_ids"]), f"answers[{n}].note_ids must name carried notes")
+    missing = [q for q in expected if q not in seen]
+    require(not missing, "Every question needs an answer; missing: " + ", ".join(missing))
+    validate_recognition(response["source_recognition"])
+
+
+def recall_results(response, questions):
+    """Compare each choice with the answer key: correct, wrong, or idk."""
+    key = {q["id"]: q["answer"] for q in questions}
+    results = []
+    for answer in response["answers"]:
+        choice = answer["choice"]
+        outcome = "idk" if choice == RECALL_IDK else ("correct" if choice == key[answer["question_id"]] else "wrong")
+        results.append({"question_id": answer["question_id"], "choice": choice, "outcome": outcome})
+    return results
+
+
+def load_recalls(run, manifest, profile, state):
+    """Replay recall records against the frozen main events; the main path never reads them."""
+    root = run / "recalls"
+    entries = sorted(root.iterdir()) if root.is_dir() else []
+    recalls = []
+    for rseq, entry in enumerate(entries, 1):
+        require(entry.is_dir() and entry.name == f"{rseq:06d}", "Recall records are incomplete or out of order")
+        raw_packet = (entry / "packet.json").read_bytes()
+        raw_response = (entry / "response.json").read_bytes()
+        raw_questions = (entry / "questions.json").read_bytes()
+        receipt = decode((entry / "receipt.json").read_bytes())
+        packet = decode(raw_packet)
+        questions = decode(raw_questions)
+        require(receipt["recall_sequence"] == rseq and receipt["packet_sha256"] == digest(raw_packet) and receipt["response_sha256"] == digest(raw_response) and receipt["questions_sha256"] == digest(raw_questions), "Recall record changed")
+        require((run / "recall-packets" / f"{rseq:06d}.json").read_bytes() == raw_packet, "Issued recall packet changed")
+        after = packet["after_sequence"]
+        require(packet == recall_value(manifest, profile, state, questions, rseq, after), "Recall packet does not match the reader's notes after its display event")
+        require(receipt["event_receipt_sha256"] == digest((run / "records" / f"{after:06d}" / "receipt.json").read_bytes()), "Recall is not bound to its display event")
+        response = decode(raw_response)
+        validate_recall_response(response, packet)
+        require(receipt["results"] == recall_results(response, questions), "Recall results changed")
+        recalls.append({"sequence": rseq, "after_sequence": after, "packet": packet, "questions": questions, "receipt": receipt})
+    return recalls
+
+
+def recall(run_path, questions, out):
+    """Issue a recall packet after the last recorded display event; `questions` carry the answer key, the packet does not."""
+    run, manifest, _case, profile, state, _, _ = load_run(run_path)
+    rseq = len(load_recalls(run, manifest, profile, state)) + 1
+    after = len(state["events"])
+    value = recall_value(manifest, profile, state, questions, rseq, after)
+    raw = encoded(value)
+    questions_path = run / "recall-questions" / f"{rseq:06d}.json"
+    raw_questions = encoded(questions)
+    if questions_path.exists():
+        require(questions_path.read_bytes() == raw_questions, "A different recall is pending; record it before issuing another")
+    else:
+        write_new(questions_path, raw_questions)
+    out = export_packet(run, run / "recall-packets" / f"{rseq:06d}.json", out, raw, "A different recall packet is pending; record it before issuing another")
+    return {"ok": True, "packet": str(out), "recall_sequence": rseq, "after_sequence": after, "sha256": digest(raw)}
+
+
+def recall_record(run_path, packet_path, response_path, agent_id=None):
+    run, manifest, _case, profile, state, _, _ = load_run(run_path)
+    rseq = len(load_recalls(run, manifest, profile, state)) + 1
+    issued = run / "recall-packets" / f"{rseq:06d}.json"
+    require(issued.is_file(), "No recall packet has been issued for the next recall record")
+    raw_packet = Path(packet_path).read_bytes()
+    require(raw_packet == issued.read_bytes(), "Recall packet is stale, changed, or out of order")
+    raw_questions = (run / "recall-questions" / f"{rseq:06d}.json").read_bytes()
+    questions = decode(raw_questions)
+    value = decode(raw_packet)
+    after = value["after_sequence"]
+    require(value == recall_value(manifest, profile, state, questions, rseq, after), "Recall packet does not match the reader's notes after its display event")
+    raw_response = Path(response_path).read_bytes()
+    response = decode(raw_response)
+    validate_recall_response(response, value)
+    results = recall_results(response, questions)
+    receipt = {"recall_sequence": rseq, "packet_id": value["packet_id"], "after_sequence": after, "packet_sha256": digest(raw_packet), "response_sha256": digest(raw_response), "questions_sha256": digest(raw_questions),
+               "event_receipt_sha256": digest((run / "records" / f"{after:06d}" / "receipt.json").read_bytes()), "created_after_sequence": len(state["events"]), "agent_id": agent_id,
+               "results": results, "wrong": [r["question_id"] for r in results if r["outcome"] == "wrong"], "idk": [r["question_id"] for r in results if r["outcome"] == "idk"]}
+    publish(run, run / "recalls" / f"{rseq:06d}", raw_packet, raw_response, receipt, {"questions.json": raw_questions})
+    return {"ok": True, "recall_sequence": rseq, "after_sequence": after, "results": results, "wrong": receipt["wrong"], "idk": receipt["idk"]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -566,6 +729,15 @@ def main():
     p.add_argument("--packet", required=True)
     p.add_argument("--response", required=True)
     p.add_argument("--agent-id")
+    p = commands.add_parser("recall", help="Issue a notes-only recall packet after the last recorded display event.")
+    p.add_argument("--run", required=True)
+    p.add_argument("--questions", required=True, help="JSON array of {id, after_block, question, options, answer}; the answers stay out of the packet.")
+    p.add_argument("--out", required=True)
+    p = commands.add_parser("recall-record", help="Save a recall answer with its correct/wrong/idk results; it never enters the main reading path.")
+    p.add_argument("--run", required=True)
+    p.add_argument("--packet", required=True)
+    p.add_argument("--response", required=True)
+    p.add_argument("--agent-id")
     args = parser.parse_args()
     try:
         if args.command == "start":
@@ -576,8 +748,12 @@ def main():
             result = record(args.run, args.packet, args.response, args.agent_id)
         elif args.command == "branch":
             result = branch(args.run, args.from_sequence, args.question, args.out)
-        else:
+        elif args.command == "branch-record":
             result = branch_record(args.run, args.packet, args.response, args.agent_id)
+        elif args.command == "recall":
+            result = recall(args.run, decode(Path(args.questions).read_bytes()), args.out)
+        else:
+            result = recall_record(args.run, args.packet, args.response, args.agent_id)
     except (Invalid, OSError, KeyError, TypeError) as exc:
         parser.exit(2, f"masked_reader: {exc}\n")
     print(json.dumps(result, ensure_ascii=False))

@@ -2,4 +2,6 @@ You are a fresh reader with no earlier conversation. The JSON below is one readi
 
 Follow the packet's instructions field exactly and return only one JSON object in the shape of its response_format. For each anchor, quote exact text from the exposed source. In carry_memory, keep every carried note under its id with its original since value, or list it under dropped with a reason; give each new note since equal to the packet's sequence and cite only sources you have seen.
 
+A packet whose mode is recall holds no manuscript text. Answer each of its questions from carry_memory alone: copy exactly one of the question's options into choice, name the ids of the carried notes the choice rests on, and choose the "I don't know" option whenever the notes do not settle the question. Do not reconstruct an answer from background knowledge or from what a text of this kind usually says. Return only one JSON object in the shape of the recall packet's response_format.
+
 The packet follows.

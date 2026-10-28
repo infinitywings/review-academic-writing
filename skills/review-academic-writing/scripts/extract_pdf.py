@@ -11,7 +11,9 @@ Python standard library only. Three subcommands:
                page sidecar plus extraction notes; with --pdf, repair words the extractor
                broke, using the PDF's pdftotext text layer.
   case         build a masked_reader case.json from an index.json, the page sidecar,
-               a word budget, and a user-supplied asset list.
+               a word budget, and a user-supplied asset list; --include restricts it to
+               the included blocks, and a paragraph the page break split stays in one
+               window.
 
 The cleaned Markdown has exactly one blank line between paragraphs and none inside a
 paragraph, so each paragraph becomes one review_packets block. The sidecar lists those
@@ -253,16 +255,18 @@ def drop_line_number_gutters(segments: list[Segment]) -> list[tuple[Segment, str
     """Remove lines that are only a run of consecutive line numbers.
 
     Submission templates (ACL, NeurIPS) print a line-number gutter down the margin;
-    layout parsers capture it as a paragraph of 3- or 4-digit integers rising by one.
-    Such a line is dropped when it holds at least GUTTER_MIN_NUMBERS integers and every
-    integer is the previous one plus one. The caller removes the returned segments.
+    layout parsers capture it as a paragraph of integers rising by one: 3- or 4-digit
+    numbers on most pages, 1- or 2-digit numbers on the first pages (ACL's gutter starts
+    at 1 and is not zero-padded on every template). Such a line is dropped when it holds
+    at least GUTTER_MIN_NUMBERS integers of up to four digits and every integer is the
+    previous one plus one. The caller removes the returned segments.
     """
     dropped: list[tuple[Segment, str]] = []
     for segment in segments:
         if segment.kind not in ("paragraph", "heading", "list"):
             continue
         tokens = segment.text().split()
-        if len(tokens) < GUTTER_MIN_NUMBERS or not all(re.fullmatch(r"\d{3,4}", t) for t in tokens):
+        if len(tokens) < GUTTER_MIN_NUMBERS or not all(re.fullmatch(r"\d{1,4}", t) for t in tokens):
             continue
         numbers = [int(t) for t in tokens]
         if all(b == a + 1 for a, b in zip(numbers, numbers[1:])):
@@ -677,8 +681,12 @@ def find_asset_references(blocks: list[dict[str, Any]]) -> dict[str, list[str]]:
     return references
 
 
-def build_windows(blocks: list[dict[str, Any]], budget: int) -> list[list[str]]:
-    """Group consecutive blocks into windows of about `budget` words; a heading always opens a window."""
+def build_windows(blocks: list[dict[str, Any]], budget: int, glued: set[str] | frozenset[str] = frozenset()) -> list[list[str]]:
+    """Group consecutive blocks into windows of about `budget` words; a heading always opens a window.
+
+    A block id in `glued` continues the previous block (a paragraph the page break split),
+    so a window never ends between the two.
+    """
     if budget <= 0:
         raise ExtractError("--budget must be a positive number of words.")
     windows: list[list[str]] = []
@@ -686,7 +694,7 @@ def build_windows(blocks: list[dict[str, Any]], budget: int) -> list[list[str]]:
     words = 0
     for block in blocks:
         count = len(block["text"].split())
-        starts_new = block["kind"] == "heading" or (current and words + count > budget and words >= budget / 2)
+        starts_new = block["kind"] == "heading" or (current and words + count > budget and words >= budget / 2 and block["id"] not in glued)
         if starts_new and current:
             windows.append(current)
             current, words = [], 0
@@ -697,7 +705,42 @@ def build_windows(blocks: list[dict[str, Any]], budget: int) -> list[list[str]]:
     return windows
 
 
-def build_case(index: dict[str, Any], sidecar: dict[str, Any], budget: int, asset_policy: str, assets: list[dict[str, Any]], case_id: str) -> dict[str, Any]:
+SENTENCE_END = re.compile(r"[.!?:;…。！？][\"'”’)\]]*\s*$")
+
+
+def page_broken_pairs(blocks: list[dict[str, Any]], kinds: dict[str, str]) -> list[tuple[str, str]]:
+    """Adjacent paragraphs on consecutive pages where the first does not end a sentence: one paragraph the page break split.
+
+    `kinds` are the sidecar kinds (paragraph, heading, list, ...), which tell a paragraph from
+    a list, table, or image line that the index classifies as text.
+    """
+    pairs: list[tuple[str, str]] = []
+    for first, second in zip(blocks, blocks[1:]):
+        if kinds.get(first["id"]) != "paragraph" or kinds.get(second["id"]) != "paragraph":
+            continue
+        if not isinstance(first["page"], int) or not isinstance(second["page"], int) or second["page"] <= first["page"]:
+            continue
+        if SENTENCE_END.search(first["text"]):
+            continue
+        pairs.append((first["id"], second["id"]))
+    return pairs
+
+
+def load_include(path: Path) -> list[str]:
+    """Block ids to include: a scope.json (its included_block_ids), a JSON array, or one id per line."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if isinstance(value, dict):
+        value = value.get("included_block_ids")
+    if not isinstance(value, list) or not value or not all(isinstance(i, str) and i.strip() for i in value):
+        raise ExtractError("--include must be a scope.json with included_block_ids, a JSON array of block ids, or a text file with one block id per line.")
+    return value
+
+
+def build_case(index: dict[str, Any], sidecar: dict[str, Any], budget: int, asset_policy: str, assets: list[dict[str, Any]], case_id: str, include: list[str] | None = None) -> dict[str, Any]:
     blocks_in = index.get("blocks")
     if not isinstance(blocks_in, list) or not blocks_in:
         raise ExtractError("index.json has no blocks.")
@@ -706,16 +749,37 @@ def build_case(index: dict[str, Any], sidecar: dict[str, Any], budget: int, asse
         raise ExtractError("--pages must be the page sidecar written by postprocess.")
     if len(paragraphs) != len(blocks_in):
         raise ExtractError(f"Sidecar lists {len(paragraphs)} paragraphs but the index has {len(blocks_in)} blocks; re-run postprocess and index on the same edition.")
-    blocks: list[dict[str, Any]] = []
+    all_blocks: list[dict[str, Any]] = []
+    sidecar_kinds: dict[str, str] = {}
     for block, para in zip(blocks_in, paragraphs):
         if sha256_text(block["text"]) != para.get("sha256"):
             raise ExtractError(f"Sidecar paragraph {para.get('ordinal')} does not match index block {block['block_id']}; re-run postprocess and index on the same edition.")
-        blocks.append({"id": block["block_id"], "text": block["text"], "page": para.get("page"), "kind": block["kind"]})
-    references = find_asset_references(blocks)
-    first_block_on_page: dict[int, str] = {}
-    for block in blocks:
-        if isinstance(block["page"], int) and block["page"] not in first_block_on_page:
-            first_block_on_page[block["page"]] = block["id"]
+        all_blocks.append({"id": block["block_id"], "text": block["text"], "page": para.get("page"), "kind": block["kind"]})
+        sidecar_kinds[block["block_id"]] = str(para.get("kind", ""))
+    if include is None:
+        blocks = all_blocks
+    else:
+        wanted = set(include)
+        unknown = sorted(wanted - {b["id"] for b in all_blocks})
+        if unknown:
+            raise ExtractError("--include names block ids that are not in the index: " + ", ".join(unknown[:10]) + (", ..." if len(unknown) > 10 else "") + ".")
+        blocks = [b for b in all_blocks if b["id"] in wanted]
+    included_ids = {b["id"] for b in blocks}
+    excluded = len(all_blocks) - len(blocks)
+    references_all = find_asset_references(all_blocks)
+    references = {asset: [bid for bid in ids if bid in included_ids] for asset, ids in references_all.items()}
+    references = {asset: ids for asset, ids in references.items() if ids}
+    paged = [b for b in blocks if isinstance(b["page"], int)]
+    glued = {second for first, second in page_broken_pairs(all_blocks, sidecar_kinds) if first in included_ids and second in included_ids}
+
+    def encountered_by(page: int) -> list[str]:
+        """The first included block on the asset's page, else the first included block after it."""
+        on_page = [b["id"] for b in paged if b["page"] == page]
+        if on_page:
+            return [on_page[0]]
+        later = [b["id"] for b in paged if b["page"] > page]
+        return [later[0]] if later else []
+
     case_assets: list[dict[str, Any]] = []
     listed: set[str] = set()
     for number, entry in enumerate(assets):
@@ -732,26 +796,28 @@ def build_case(index: dict[str, Any], sidecar: dict[str, Any], budget: int, asse
         page = entry.get("page")
         if not isinstance(page, int) or isinstance(page, bool):
             raise ExtractError(f"{label}.page must be an integer page number.")
-        encountered = [first_block_on_page[page]] if page in first_block_on_page else []
         case_assets.append({
             "id": asset_id,
             "path": entry["path"],
             "caption": entry.get("caption", "") if isinstance(entry.get("caption"), str) else "",
             "page": page,
             "referenced_by": references.get(asset_id, []),
-            "encountered_by": encountered,
+            "encountered_by": encountered_by(page),
         })
     case = {
         "id": case_id,
         "asset_policy": asset_policy,
         "blocks": blocks,
-        "windows": build_windows(blocks, budget),
+        "windows": build_windows(blocks, budget, glued),
         "assets": case_assets,
     }
     report = {
         "unlisted_references": sorted(a for a in references if a not in listed),
         "assets_without_references": sorted(a["id"] for a in case_assets if not a["referenced_by"]),
         "assets_off_page": sorted(a["id"] for a in case_assets if not a["encountered_by"]),
+        "excluded_blocks": excluded,
+        "references_only_from_excluded_blocks": sorted(a for a in references_all if a not in references),
+        "page_joined_pairs": [[first, second] for first, second in page_broken_pairs(all_blocks, sidecar_kinds) if second in glued],
     }
     return {"case": case, "report": report}
 
@@ -999,6 +1065,7 @@ def _parser() -> argparse.ArgumentParser:
     case.add_argument("--budget", required=True, type=int, help="Approximate words per window.")
     case.add_argument("--asset-policy", required=True, choices=["strict-prefix", "reference-jump"])
     case.add_argument("--assets", help="JSON list of {id: Figure1|Table2, page, path, caption}.")
+    case.add_argument("--include", help="Only these blocks: a scope.json (its included_block_ids), a JSON array of block ids, or a text file with one id per line. Windows and asset referenced_by/encountered_by are filtered with them.")
     case.add_argument("--id", help="Case id (default: the index snapshot id).")
     case.add_argument("--out", required=True)
     return parser
@@ -1052,7 +1119,8 @@ def main(argv: list[str] | None = None) -> int:
             assets = load_json(Path(args.assets)) if args.assets else []
             if not isinstance(assets, list):
                 raise ExtractError("--assets must be a JSON array.")
-            built = build_case(index, sidecar, args.budget, args.asset_policy, assets, args.id or index.get("snapshot_id", "case"))
+            include = load_include(Path(args.include)) if args.include else None
+            built = build_case(index, sidecar, args.budget, args.asset_policy, assets, args.id or index.get("snapshot_id", "case"), include)
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             import masked_reader  # noqa: E402  (same directory; validates the case shape)
             masked_reader.validate_case(built["case"])

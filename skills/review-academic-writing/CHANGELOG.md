@@ -1,5 +1,20 @@
 # 变更说明
 
+## 0.19.0（2026-10-27）
+
+读者设计的三项（计划第三节 #12–#14）和三次完整运行记下的运行层待改项（第四节 #15–#19）。依据是 KnowledgeGain（预印本，有受控人类实验）：模拟读者只凭自己的笔记作答并给"不知道"选项时，答题分布更接近真人；本版把这个记忆瓶颈做成可记录的 recall 事件，并给前缀读者一个"说不出来"的出口。命令行只增不改；运行格式 5 和日志 schema 5 不变（recall 记录是运行目录下的新子目录，主路径从不读取；`recall_questions`、`recall_sequences`、`cannot_place` 都是可选字段）。
+
+- 遮罩阅读的 recall 事件：`dispatch_reader.py masked --recall-every N --recall-questions FILE`（默认 0 关闭；FILE 是题目数组，或 checks 笔记文件，取其 `checkpoint_plan` 里带 `recall_questions` 的 masked-sequential 条目，`--recall-plan-id` 可指定一条）。每记录 N 个窗口（查阅不计），把 `after_block` 已显示且未问过的题连同 carry_memory 发给一个新上下文，包里没有任何窗口文本，也没有答案；运行结束时补问剩下的题。每题 `id`、`after_block`、`question`、`options`（至少两项，恰好一个逐字的 `I don't know`）、`answer`。读者逐题抄一个选项进 `choice` 并列出依据的笔记 id；`masked_reader.py` 新增 `recall`/`recall-record`，把包、回答、带答案的题目和回执写到 `<run>/recalls/NNNNNN/`，回执记每题 `correct`/`wrong`/`idk` 并绑定到它跟随的显示事件回执；`load_recalls` 重放校验，主路径的下一个包有无 recall 都一样。summary 多 `recalls`（每次的 wrong 和 idk 题号）。`assets/prompts/masked.txt` 加 recall 包的作答要求（只凭笔记、不会就选不知道、不从背景知识重建）；`review_steps.py` 在 checks 阶段校验计划项的 `recall_questions`（块在纳入范围、选项与答案的形状），reconcile 阶段的 masked 检查点可带 `recall_sequences` 绑定 recall 记录文件；`references/masked-reading.md` 新增 5b 节写依据和限制（题目是编辑看着全文选的；答错只说明笔记没带上，不说明人会忘；按回执里的 `notes_dropped`、`since`、`sources` 判定后才记 `lost_in_notes`），`staged-review.md` 第 3、4 节和词表写明怎么记。
+- 前缀读者的 `cannot_place`：`assets/prompts/prefix.txt`（和 workflow.md 里的同一段）要求读者把读到这里安放不了的名词、缩写和指代单独列出（`anchor` 为可见原文，`note` 一句），不要求成为 issue，宁可说不知道也不要推出答案；`review_packets.py check-observation` 接受该可选字段，校验引文为可见文本，返回 `cannot_place_count`；`output-contract.md` 写明。
+- 报告模板的"验证"一节加两条：读者模型及其在本次运行中的提问倾向（为换模型比较而记，不是模型属性）；recall 事件的数量、答错和答不知道的题数及其中成为 `lost_in_notes` 的项。
+- `review_steps.py corrected-run --from <journal> --index <index> --out <journal-2> --restart-at <stage> [--reason]`：把源日志的 00-start 和 `--restart-at` 之前各阶段的笔记与回执逐字节复制到新目录（链两端都重放校验），写封印的 `supersedes.json`（被取代的日志、重录起点、复制的回执哈希、源日志已记录的阶段、源是否已 ready、理由，连带更早的 supersedes 链），从该阶段起重新记录；`ready` 回执带 `supersedes`、`restart_at`、`supersedes_sha256`，`load_run` 遇到被改动的 `supersedes.json` 拒绝。`staged-review.md` 的"Correct"一条改为引用该命令，并说明换读者画像、版本或范围仍要 `start` 新运行。之前只能手工开 journal-2。
+- `dispatch_reader.py masked --until-complete [--max-restarts N]`（默认 5）：格式、预算或引文更正用尽后的停止在同一进程内自动续跑（重试事件标 `E06r1`、`E06r2`），直到 `Run complete`、`--max-events` 或重启次数用尽；助手直接拒绝的回答不续跑。summary 多 `restarts`，loop 里记每次 restart。运行目录写 `dispatch.pid`（进程号、开始时间、events 目录），另一个活着的进程持有时拒绝启动，陈旧文件覆盖，结束时删除；完成与否看 summary 的 outcome 和 pid 文件是否还在，不再用 `pgrep -f`。
+- `extract_pdf.py case --include FILE`：只含纳入块（FILE 是 scope.json、块 id 的 JSON 数组或每行一个 id 的文本），窗口按纳入块划分，资产的 `referenced_by` 去掉被排除的块，`encountered_by` 落到被排除块时改为同页最近的纳入块，同页没有则取后面第一个纳入块；报告多 `excluded_blocks` 和 `references_only_from_excluded_blocks`。
+- `case` 把被页断开的段落并入同一窗口：sidecar 里相邻、都是 paragraph、后块页码更大、前块不以句末标点（`.!?:;…。！？` 及其后的引号或括号）结尾的两块不再被窗口边界分开；报告多 `page_joined_pairs` 供编辑核对。
+- `postprocess` 的行号栏删除扩展到 1–2 位数字：至少 5 个逐一递增的整数（1–4 位）组成的行整行丢弃（ACL 前几页的 `1 2 3 …`）；三个数的行和非连续的数列仍保留。
+- 模板：`assets/notes/checks.json` 的计划项加 `recall_questions`，`reconcile.json` 的 masked 检查点加 `recall_sequences`。SKILL.md、两份 README 和 evidence-and-tools.md 的 KnowledgeGain 一行同步。
+- 测试：新加 25 个（dispatch_reader 8、review_steps 5、extract_pdf 7、masked_reader 4、review_packets 1），共 254 个。#12 用假读者跑 3 窗 + 2 次 recall 的端到端用例，#16 用失败三次再成功的假 `claude`。测试里只用编造的句子。
+
 ## 0.18.0（2026-10-27）
 
 依据 2026-10-27 的文献梳理把保真审计和改写规则收紧：改写模型把"可能"改成"是"的概率是反向的 1.5–2 倍且多轮累积（Nature Human Behaviour 2026；arXiv 2606.07951），被要求"检查主张"时又会加无依据的限定语（arXiv 2610.11355），自评自改没有外部信号时更差（Huang 等 ICLR 2024；Kamoi 等 TACL 2024），LLM 判官的偏好判断一致性低且受顺序影响（Jourdan 等），通用模型过度编辑（CoEdIT、FineEdit），超额词表只给下界（Kobak 等 Science Advances 2025）。日志 schema 升到 5：新字段对新日志必填，0.17 的 schema 4 日志仍可用本版脚本重放（审计文件可以没有 `hedges`、`added_qualification`、`audit_round`，repairs 可以没有 `edit_scope`，action 和作者问题不查格式）。

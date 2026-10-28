@@ -114,11 +114,11 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 	```bash
 	python3 <skill-dir>/scripts/dispatch_reader.py prefix --events run/events --packet run/checkpoint-01.json --label P01
 	python3 <skill-dir>/scripts/extract_pdf.py case --index run/index.json --pages run/manuscript.md.pages.json --budget 250 --asset-policy strict-prefix --assets run/assets.json --out run/case.json
-	python3 <skill-dir>/scripts/dispatch_reader.py masked --events run/events --run run/reader --case run/case.json --profile run/profile.json --max-events 40
+	python3 <skill-dir>/scripts/dispatch_reader.py masked --events run/events --run run/reader --case run/case.json --profile run/profile.json --max-events 40 --until-complete --recall-every 8 --recall-questions run/checks.json
 	python3 <skill-dir>/scripts/dispatch_reader.py branch --events run/events --run run/reader --from-sequence 3 --question run/q1.json
 	```
 
-	`--model` 和 `--effort` 原样传给 `claude`；不给 `--model` 时默认 `claude-opus-5-5`（读者和审计者用最强的订阅模型，出处记录的 `command` 里可见）。笔记超出预算或返回内容不是可解析 JSON 时，原文件保留，写 `<label>.invalid-reason.txt`，再用同一 packet 加一句说明（限额、计数方法、目标为限额的 85%）重发，标为 b、c；两次更正后仍不通过就停止。遮罩循环在连续三次查阅没有带来新来源时停止。不用脚本时，前缀读者用 `review_packets.py packet` 和 `check-observation`，遮罩读者用 `masked_reader.py start`、`packet`、`record`，追问用 `branch` 和 `branch-record`。
+	`--model` 和 `--effort` 原样传给 `claude`；不给 `--model` 时默认 `claude-opus-5-5`（读者和审计者用最强的订阅模型，出处记录的 `command` 里可见）。笔记超出预算或返回内容不是可解析 JSON 时，原文件保留，写 `<label>.invalid-reason.txt`，再用同一 packet 加一句说明（限额、计数方法、目标为限额的 85%）重发，标为 b、c；两次更正后仍不通过就停止；`masked --until-complete` 在这种格式、预算或引文更正用尽后的停止之后自动在同一进程里续跑（重试事件标 `E06r1`），直到 `Run complete`、`--max-events` 或 `--max-restarts`（默认 5）为止，助手直接拒绝的回答不续跑；运行期间 `<run>/dispatch.pid` 记录进程号，跑完即删，不要再用 `pgrep` 判断。`--recall-every N --recall-questions run/checks.json` 每 N 窗插入一次 recall 事件：读者只拿到 carry_memory 和 checks 阶段 `checkpoint_plan` 里预设的选择题（每题含一个 `I don't know`），没有任何窗口文本，答错或答 IDK 的题记在 `<run>/recalls/` 和 summary 的 `recalls` 里，reconcile 阶段按 `lost_in_notes` 处理（见 masked-reading.md 5b）。`extract_pdf.py case --include run/scope.json` 只把纳入块做成 case（窗口与资产引用一并过滤），被页断开的段落并入同一窗口。遮罩循环在连续三次查阅没有带来新来源时停止。不用脚本时，前缀读者用 `review_packets.py packet` 和 `check-observation`，遮罩读者用 `masked_reader.py start`、`packet`、`record`，追问用 `branch` 和 `branch-record`，recall 用 `recall` 和 `recall-record`。
 
 5. 每条带替换句的修改先做独立保真审计，输入是 `candidate_id`、`original`、`proposed_wording`、`basis`；脚本从 `original` 抽出限定词和条件短语写成 `hedges_in_original` 一并送审（词表在 `review_packets.py` 的 `HEDGE_PATTERNS`，`--hedge-list` 可加本领域的写法），审计员逐个报 kept / strengthened / removed，并多审第十项 `added_qualification`（改写新增而原文没有的限定语）；`--round` 记录这是该候选的第几版措辞，每一版都对照原文审，不对照上一版。edit 项要写 `edit_scope`（pointer、apposition、term、reorder、split、sentence 之一），`action` 要含块 id，作者问题要是问句。同一个输入文件可以运行 `difficulty_features.py compare`（`--lexical-only` 不需要 spaCy）：
 
@@ -226,11 +226,12 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 229 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 254 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
 - `scripts/masked_reader.py` 只读写运行格式 5。格式 4 的运行用 0.9.0 的脚本重放，格式 2 用 `scripts/legacy/masked_reader_v2.py`。
+- `scripts/review_steps.py corrected-run --from run/journal --out run/journal-2 --restart-at decisions` 开更正运行：复制受影响阶段之前的笔记和回执（字节不变，链两端都校验），写 `supersedes.json`，ready 回执带 supersedes；更正运行里只重录从该阶段起的记录。
 - `scripts/review_steps.py` 写 `schema_version` 5 的日志（0.18.0 起；repairs 多了 `edit_scope`、`compare_path`、`heavy_edit_reason`，审计文件多了 `audit_round`、`added_qualification` 和 `checks.hedges`，action 要含块 id，作者问题要是问句），并仍可重放 0.17 的 schema 4 日志（新字段可缺）。0.16 的日志用 0.16.3 的脚本重放。
 - 每条带替换句的修改都要先通过独立保真审计（`assets/prompts/fidelity-audit.txt`），审计 JSON 的路径写在 repairs 笔记的 `audit_path` 里。
 - `SHA256SUMS` 覆盖包内除它自身以外的每个文件。在包目录运行 `shasum -a 256 -c SHA256SUMS` 可核对。

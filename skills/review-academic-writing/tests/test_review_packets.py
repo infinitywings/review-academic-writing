@@ -120,6 +120,28 @@ class ReviewPacketsTests(unittest.TestCase):
         with self.assertRaisesRegex(rp.ReviewDataError, "Observation packet_sha256 does not match"):
             rp.check_observation(packet, stale)
 
+    def test_observation_cannot_place_entries(self):
+        packet = self.packet(through_block="B0002")
+        observation = self.observation(packet)
+        observation["cannot_place"] = [{"anchor": anchor("B0002", "the MSW"), "note": "No earlier mention of MSW."}]
+        result = rp.check_observation(packet, observation)
+        self.assertEqual((result["ok"], result["issue_count"], result["cannot_place_count"]), (True, 1, 1))
+        self.assertIn("cannot_place entries quote visible text", result["scope"]["verified"])
+        without = rp.check_observation(packet, self.observation(packet))
+        self.assertEqual((without["issue_count"], without["cannot_place_count"]), (1, 0))
+        self.assertEqual(rp.check_observation(packet, {**self.observation(packet), "cannot_place": []})["cannot_place_count"], 0)
+        cases = [
+            ([{"anchor": anchor("B0002", "the measurement window"), "note": "n"}], "cannot_place\\[0\\].anchor.quote is not an exact substring"),
+            ([{"anchor": anchor("B0004", "We define"), "note": "n"}], "cannot_place\\[0\\].anchor.block_id is not present"),
+            ([{"anchor": anchor("B0002", "the MSW"), "note": ""}], "cannot_place\\[0\\].note must be a nonempty string"),
+            ([{"anchor": anchor("B0002", "the MSW"), "note": "n", "severity": "major"}], "cannot_place\\[0\\] has unsupported fields: severity"),
+            ([{"anchor": anchor("B0002", "the MSW")}], "cannot_place\\[0\\] is missing fields: note"),
+            ({"anchor": anchor("B0002", "the MSW"), "note": "n"}, "cannot_place must be an array"),
+        ]
+        for value, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(rp.ReviewDataError, message):
+                rp.check_observation(packet, {**self.observation(packet), "cannot_place": value})
+
     def test_review_checks(self):
         result = rp.check_review(self.index, self.review())
         self.assertEqual((result["ok"], result["issue_count"]), (True, 1))

@@ -387,6 +387,92 @@ class MaskedReaderTests(unittest.TestCase):
         result, _ = self.submit(pending, self.response(carry=memory("Counts.", [N1])))
         self.assertEqual((result["sequence"], result["complete"], result["next_mode"]), (3, False, "window"))
 
+    # ------------------------------------------------------------ recall events
+
+    def recall_question(self, qid="Q1", after="B1", **change):
+        return {"id": qid, "after_block": after, "question": "What does the opening report?", "options": ["counts", "weights", reader.RECALL_IDK], "answer": "counts", **change}
+
+    def recall_answer(self, choice="counts", qid="Q1", note_ids=(), **change):
+        return {"answers": [{"question_id": qid, "choice": choice, "note_ids": list(note_ids)}], "source_recognition": {"recognized": False, "description": ""}, **change}
+
+    def test_validate_recall_questions_refusals(self):
+        good = [self.recall_question()]
+        reader.validate_recall_questions(good)
+        reader.validate_recall_questions(good, {"B1", "B2"})
+        cases = [
+            ({"id": "Q1"}, "recall_questions must be a nonempty list of questions"),
+            ([], "recall_questions must be a nonempty list of questions"),
+            ([{k: v for k, v in self.recall_question().items() if k != "answer"}], "recall_questions\\[0\\] requires exactly id, after_block, question, options, answer"),
+            ([self.recall_question(), self.recall_question(after="B2")], "recall_questions\\[1\\].id must be a nonempty string, unique in the list"),
+            ([self.recall_question(options=["counts", reader.RECALL_IDK, "weights", reader.RECALL_IDK])], "recall_questions\\[0\\].options must be at least two distinct nonempty strings"),
+            ([self.recall_question(options=["counts", "weights"])], f"recall_questions\\[0\\].options must include exactly one {reader.RECALL_IDK!r} option"),
+            ([self.recall_question(answer=reader.RECALL_IDK)], f"recall_questions\\[0\\].answer must be one of the options other than {reader.RECALL_IDK!r}"),
+            ([self.recall_question(answer="volumes")], "recall_questions\\[0\\].answer must be one of the options"),
+            ([self.recall_question(after="B9")], "recall_questions\\[0\\].after_block names a block that is not in the case: B9"),
+        ]
+        for questions, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(reader.Invalid, message):
+                reader.validate_recall_questions(questions, {"B1", "B2"})
+        with self.assertRaisesRegex(reader.Invalid, "plan M1.recall_questions\\[0\\].question must be a nonempty string"):
+            reader.validate_recall_questions([self.recall_question(question="")], None, "plan M1.recall_questions")
+
+    def test_recall_results_outcomes(self):
+        questions = [self.recall_question(), self.recall_question("Q2", "B2", answer="weights")]
+        response = {"answers": [{"question_id": "Q1", "choice": "counts", "note_ids": []}, {"question_id": "Q2", "choice": "counts", "note_ids": []}], "source_recognition": {"recognized": False, "description": ""}}
+        self.assertEqual(reader.recall_results(response, questions), [{"question_id": "Q1", "choice": "counts", "outcome": "correct"}, {"question_id": "Q2", "choice": "counts", "outcome": "wrong"}])
+        idk = {"answers": [{"question_id": "Q2", "choice": reader.RECALL_IDK, "note_ids": []}], "source_recognition": {"recognized": False, "description": ""}}
+        self.assertEqual(reader.recall_results(idk, questions), [{"question_id": "Q2", "choice": reader.RECALL_IDK, "outcome": "idk"}])
+        self.assertEqual(reader.RECALL_OUTCOMES, ("correct", "wrong", "idk"))
+
+    def test_recall_cannot_be_issued_before_any_display_event(self):
+        with self.assertRaisesRegex(reader.Invalid, "A recall must follow a recorded display event"):
+            reader.recall(self.run, [self.recall_question()], self.root / "recall-0.json")
+        self.assertFalse((self.run / "recall-packets").exists())
+        self.assertFalse((self.run / "recall-questions").exists())
+        self.assertFalse((self.root / "recall-0.json").exists())
+
+    def test_recall_value_and_response_validation(self):
+        self.submit(self.issue(), self.response(carry=memory("Counts.", [N1])))
+        questions = [self.recall_question(), self.recall_question("Q2", "B1", answer="weights")]
+        out = self.root / "recall-1.json"
+        issued = reader.recall(self.run, questions, out)
+        self.assertEqual((issued["recall_sequence"], issued["after_sequence"]), (1, 1))
+        packet = json.loads(out.read_text())
+        self.assertEqual((packet["mode"], packet["materials"], packet["recall_sequence"], packet["after_sequence"]), ("recall", [], 1, 1))
+        self.assertEqual(packet["carry_memory"], {"gist": "Counts.", "notes": [N1]})
+        self.assertEqual(packet["questions"], [{"id": q["id"], "question": q["question"], "options": q["options"]} for q in questions])
+        self.assertNotIn('"answer"', out.read_text())
+        self.assertTrue(all("answer" not in q for q in packet["questions"]))
+        self.assertNotIn("Opening material", out.read_text())
+        self.assertEqual((self.run / "recall-packets/000001.json").read_bytes(), out.read_bytes())
+        self.assertEqual(json.loads((self.run / "recall-questions/000001.json").read_text()), questions)
+        # A second recall with other questions cannot be issued while this one is pending.
+        with self.assertRaisesRegex(reader.Invalid, "A different recall is pending"):
+            reader.recall(self.run, [self.recall_question("Q3")], self.root / "recall-other.json")
+        refusals = [
+            (self.recall_answer(), "Every question needs an answer; missing: Q2"),
+            ({**self.recall_answer(), "answers": self.recall_answer()["answers"] + [{"question_id": "Q9", "choice": "counts", "note_ids": []}]}, "answers\\[1\\].question_id must name one packet question, once"),
+            ({**self.recall_answer(), "answers": self.recall_answer()["answers"] + [{"question_id": "Q2", "choice": "weights", "note_ids": ["N7"]}]}, "answers\\[1\\].note_ids must name carried notes"),
+            ({**self.recall_answer(), "answers": self.recall_answer()["answers"] + [{"question_id": "Q2", "choice": "volumes", "note_ids": []}]}, "answers\\[1\\].choice must be one of the question's options, copied verbatim"),
+            ({**self.recall_answer(), "answers": self.recall_answer()["answers"] + [{"question_id": "Q2", "choice": "weights"}]}, "answers\\[1\\] requires exactly question_id, choice, note_ids"),
+            ({"answers": []}, "Recall response requires exactly answers, source_recognition"),
+        ]
+        for response, message in refusals:
+            with self.subTest(message=message), self.assertRaisesRegex(reader.Invalid, message):
+                reader.recall_record(self.run, out, self.write(response, "recall-response"))
+        self.assertFalse((self.run / "recalls").exists())
+        full = {**self.recall_answer(note_ids=["N1"]), "answers": self.recall_answer(note_ids=["N1"])["answers"] + [{"question_id": "Q2", "choice": reader.RECALL_IDK, "note_ids": []}]}
+        result = reader.recall_record(self.run, out, self.write(full, "recall-response"), "recall-agent")
+        self.assertEqual(result, {"ok": True, "recall_sequence": 1, "after_sequence": 1, "results": [{"question_id": "Q1", "choice": "counts", "outcome": "correct"}, {"question_id": "Q2", "choice": reader.RECALL_IDK, "outcome": "idk"}], "wrong": [], "idk": ["Q2"]})
+        receipt = json.loads((self.run / "recalls/000001/receipt.json").read_text())
+        self.assertEqual((receipt["agent_id"], receipt["event_receipt_sha256"]), ("recall-agent", hashlib.sha256((self.run / "records/000001/receipt.json").read_bytes()).hexdigest()))
+        self.assertEqual(json.loads((self.run / "recalls/000001/questions.json").read_text()), questions)
+        run, manifest, _case, profile, state, _seq, _ = reader.load_run(self.run)
+        recalls = reader.load_recalls(run, manifest, profile, state)
+        self.assertEqual([(r["sequence"], r["after_sequence"]) for r in recalls], [(1, 1)])
+        # The main path is untouched: the next window packet carries the same memory as before the recall.
+        self.assertEqual(json.loads(self.issue().read_text())["carry_memory"], {"gist": "Counts.", "notes": [N1]})
+
 
 if __name__ == "__main__":
     unittest.main()

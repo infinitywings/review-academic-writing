@@ -10,7 +10,12 @@ given as --config; the API key comes from the environment variable the file name
 Four subcommands:
 
   prefix   build or take a prefix packet, dispatch it, run review_packets check-observation.
-  masked   drive a masked_reader run to completion: packet, dispatch, record, repeat.
+  masked   drive a masked_reader run to completion: packet, dispatch, record, repeat. With
+           --recall-every N and --recall-questions, every N windows the reader also answers
+           closed questions from its notes alone (a recall event; wrong and "I don't know"
+           answers are recorded for the reconcile stage). With --until-complete the run is
+           resumed in this process after a correctable stop; <run>/dispatch.pid names the
+           process while it works.
   branch   issue one branch question from a recorded display event and record the answer.
   audit    run the independent fidelity audit for one proposed wording.
 
@@ -75,7 +80,10 @@ BUDGET_TARGET_FRACTION = 0.85
 MAX_CORRECTIONS = 2
 ATTEMPT_SUFFIXES = ("", "b", "c")
 LOOKUP_STALL_LIMIT = 3
-BUDGET_MESSAGE = re.compile(r"carry_memory has (\d+) (words|characters); limit is (\d+)")
+# masked --until-complete: automatic restarts after a stop whose cause was correctable (format,
+# budget, anchor) but exhausted its two corrections; a helper rejection never restarts.
+MASKED_DEFAULT_RESTARTS = 5
+BUDGET_MESSAGE =re.compile(r"carry_memory has (\d+) (words|characters); limit is (\d+)")
 ANCHOR_MESSAGE = re.compile(r"(?i)quote is not (?:exact text|an exact substring)")
 AUDIT_KEYS = {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}
 # Keys the controller fills in after the auditor answers; an auditor that echoes them is not refused.
@@ -795,24 +803,124 @@ def run_prefix(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
     return events.finish("prefix", f"{call['label']} passed check-observation with {check['issue_count']} issue(s).", True, {"label": call["label"], "checkpoint_id": packet["checkpoint_id"]})
 
 
-def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
-    run = Path(args.run).resolve()
-    if not run.exists():
-        if not args.case or not args.profile:
-            raise DispatchError("masked needs an existing --run, or --case and --profile to start one at --run.")
-        mr.start(args.case, args.profile, run)
-    generic = events.generic_prompt("masked")
-    loop: list[dict[str, Any]] = []
+def load_recall_questions(path: str | None, plan_id: str | None, block_ids: set[str]) -> list[dict[str, Any]]:
+    """Recall questions from a JSON array, or from the checkpoint_plan of a checks notes file.
+
+    With a checks file, the masked-sequential plan entries that carry recall_questions are
+    used (all of them, or the one named by plan_id). The answers travel with the controller
+    only; masked_reader keeps them out of every packet.
+    """
+    if path is None:
+        return []
+    value = rp.load_json(path)
+    if isinstance(value, dict) and isinstance(value.get("checkpoint_plan"), list):
+        entries = [e for e in value["checkpoint_plan"] if isinstance(e, dict) and e.get("recall_questions") is not None]
+        if plan_id is not None:
+            entries = [e for e in entries if e.get("id") == plan_id]
+            if not entries:
+                raise DispatchError(f"--recall-plan-id {plan_id}: no checkpoint_plan entry with that id carries recall_questions.")
+        if not entries:
+            raise DispatchError("--recall-questions names a checks file whose checkpoint_plan has no entry with recall_questions.")
+        questions: list[dict[str, Any]] = []
+        for entry in entries:
+            questions.extend(entry["recall_questions"] if isinstance(entry["recall_questions"], list) else [entry["recall_questions"]])
+    elif isinstance(value, list):
+        if plan_id is not None:
+            raise DispatchError("--recall-plan-id applies only when --recall-questions is a checks notes file.")
+        questions = value
+    else:
+        raise DispatchError("--recall-questions must be a JSON array of questions or a checks notes file with a checkpoint_plan.")
+    try:
+        mr.validate_recall_questions(questions, block_ids)
+    except mr.Invalid as exc:
+        raise DispatchError(f"--recall-questions: {exc}") from exc
+    return questions
+
+
+def recall_due(run: Path, every: int, questions: list[dict[str, Any]], case: dict[str, Any], state: dict[str, Any], manifest: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """The questions to ask now: not yet asked, their after_block seen, and `every` windows recorded since the last recall (or the run is complete)."""
+    if not every or not questions or not state["events"] or state["pending_lookup"] is not None:
+        return []
+    recalls = mr.load_recalls(run, manifest, profile, state)
+    asked = {q["id"] for r in recalls for q in r["questions"]}
+    last_after = max((r["after_sequence"] for r in recalls), default=0)
+    windows_since = sum(1 for e in state["events"] if e["sequence"] > last_after and e["packet"]["mode"] == "window")
+    complete = state["cursor"] >= len(case["windows"])
+    if windows_since < every and not complete:
+        return []
+    return [q for q in questions if q["id"] not in asked and q["after_block"] in state["seen"]]
+
+
+PID_FILE = "dispatch.pid"
+
+
+def claim_run(run: Path, events_dir: Path) -> Path:
+    """Write <run>/dispatch.pid for this process; refuse while another live process holds it."""
+    pid_file = run / PID_FILE
+    if pid_file.exists():
+        try:
+            holder = json.loads(pid_file.read_text(encoding="utf-8"))
+            pid = int(holder["pid"])
+        except (ValueError, KeyError, TypeError):
+            pid = None
+        if pid is not None and pid != os.getpid() and process_alive(pid):
+            raise DispatchError(f"Another dispatch is driving this run (pid {pid}, see {pid_file}); wait for it to finish or remove the pid file if that process is gone.")
+        pid_file.unlink()
+    pid_file.write_text(json.dumps({"pid": os.getpid(), "started_at": utc_now(), "events_dir": str(events_dir)}) + "\n", encoding="utf-8")
+    return pid_file
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def masked_segment(args: argparse.Namespace, events: Events, runtime: Runtime, run: Path, generic: str, questions: list[dict[str, Any]], loop: list[dict[str, Any]]) -> tuple[str, bool, Failure | None]:
+    """Drive the run until it completes or stops; returns (outcome, ok, the failure that stopped it or None)."""
     stall = 0
-    outcome, ok = "", False
+    every = getattr(args, "recall_every", 0) or 0
     while True:
-        _run, _manifest, case, _profile, state, seq, _previous = mr.load_run(run)
+        _run, manifest, case, profile, state, seq, _previous = mr.load_run(run)
+        due = recall_due(run, every, questions, case, state, manifest, profile)
+        if due:
+            if len(events.calls) >= args.max_events:
+                return f"Stopped: --max-events {args.max_events} reached with {len(state['events'])} recorded event(s) and a recall due.", False, None
+            rseq = len(mr.load_recalls(run, manifest, profile, state)) + 1
+            label = f"R{rseq:02d}"
+            if events.path(label, "packet.json").exists():
+                resume = 1
+                while events.path(f"{label}r{resume}", "packet.json").exists():
+                    resume += 1
+                label = f"{label}r{resume}"
+            packet_file = events.path(label, "packet.json")
+            issued = mr.recall(run, due, packet_file)
+
+            def accept_recall(call: dict[str, Any], packet_file: Path = packet_file) -> dict[str, Any]:
+                try:
+                    return mr.recall_record(run, packet_file, call["response_path"], agent_id=call["session_id"])
+                except (mr.Invalid, KeyError, TypeError, ValueError) as exc:
+                    raise Failure("format", str(exc)) from exc
+
+            call, record, failure = attempt_chain(events, runtime, "reader", label, generic, packet_file.read_bytes(), packet_file, accept_recall)
+            entry = {"sequence": issued["after_sequence"], "mode": "recall", "recall_sequence": issued["recall_sequence"], "label": call["label"], "status": call["status"], "question_ids": [q["id"] for q in due]}
+            if failure is not None:
+                entry["error"] = str(failure)
+                loop.append(entry)
+                return stop_message(label, failure), False, failure
+            entry["record"] = {k: v for k, v in record.items() if k != "ok"}
+            loop.append(entry)
+            continue
         if state["cursor"] >= len(case["windows"]):
-            outcome, ok = f"Run complete after {len(state['events'])} recorded event(s).", True
-            break
+            return f"Run complete after {len(state['events'])} recorded event(s).", True, None
         if len(events.calls) >= args.max_events:
-            outcome = f"Stopped: --max-events {args.max_events} reached with {len(state['events'])} recorded event(s)."
-            break
+            return f"Stopped: --max-events {args.max_events} reached with {len(state['events'])} recorded event(s).", False, None
         label = f"E{seq:02d}"
         if events.path(label, "packet.json").exists():
             # Resuming after a stop at this sequence: the earlier attempt's files stay; this attempt gets a resume label.
@@ -836,8 +944,7 @@ def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
         if failure is not None:
             entry["error"] = str(failure)
             loop.append(entry)
-            outcome = stop_message(label, failure)
-            break
+            return stop_message(label, failure), False, failure
         entry["record"] = {k: v for k, v in record.items() if k != "ok"}
         if packet["mode"] == "lookup":
             new_ids = sorted({m["id"] for m in packet["materials"]} - seen_before)
@@ -847,9 +954,48 @@ def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
             stall = 0
         loop.append(entry)
         if stall >= LOOKUP_STALL_LIMIT:
-            outcome = f"Stopped: {LOOKUP_STALL_LIMIT} consecutive lookups brought no new source ids (execution limit, not a reader defect)."
-            break
-    return events.finish("masked", outcome, ok, {"run": str(run), "loop": loop})
+            return f"Stopped: {LOOKUP_STALL_LIMIT} consecutive lookups brought no new source ids (execution limit, not a reader defect).", False, None
+
+
+def run_masked(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
+    run = Path(args.run).resolve()
+    if not run.exists():
+        if not args.case or not args.profile:
+            raise DispatchError("masked needs an existing --run, or --case and --profile to start one at --run.")
+        mr.start(args.case, args.profile, run)
+    every = getattr(args, "recall_every", 0) or 0
+    if not isinstance(every, int) or every < 0:
+        raise DispatchError("--recall-every must be 0 (off) or a positive number of windows.")
+    questions_file = getattr(args, "recall_questions", None)
+    if every and not questions_file:
+        raise DispatchError("--recall-every needs --recall-questions (a JSON array, or a checks notes file whose checkpoint_plan carries recall_questions).")
+    if questions_file and not every:
+        raise DispatchError("--recall-questions needs --recall-every N (how many windows between recall events).")
+    case = mr.decode((run / "case.snapshot.json").read_bytes())
+    questions = load_recall_questions(questions_file, getattr(args, "recall_plan_id", None), {b["id"] for b in case["blocks"]})
+    generic = events.generic_prompt("masked")
+    loop: list[dict[str, Any]] = []
+    until_complete = bool(getattr(args, "until_complete", False))
+    max_restarts = getattr(args, "max_restarts", None)
+    max_restarts = MASKED_DEFAULT_RESTARTS if max_restarts is None else max_restarts
+    if not isinstance(max_restarts, int) or max_restarts < 0:
+        raise DispatchError("--max-restarts must be a non-negative integer.")
+    restarts = 0
+    pid_file = claim_run(run, events.dir)
+    try:
+        while True:
+            outcome, ok, failure = masked_segment(args, events, runtime, run, generic, questions, loop)
+            if ok or not until_complete or failure is None or failure.kind == "rejected" or restarts >= max_restarts:
+                break
+            restarts += 1
+            loop.append({"mode": "restart", "restart": restarts, "after": outcome})
+    finally:
+        if pid_file.exists():
+            pid_file.unlink()
+    if until_complete and not ok and restarts >= max_restarts and failure is not None and failure.kind != "rejected":
+        outcome += f" Stopped after {restarts} automatic restart(s) (--max-restarts {max_restarts})."
+    recalls = [{k: e[k] for k in ("recall_sequence", "sequence", "label", "status", "question_ids")} | {"wrong": e["record"]["wrong"], "idk": e["record"]["idk"]} for e in loop if e.get("mode") == "recall" and "record" in e]
+    return events.finish("masked", outcome, ok, {"run": str(run), "loop": loop, "restarts": restarts, "recalls": recalls})
 
 
 def run_branch(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
@@ -1017,6 +1163,11 @@ def _parser() -> argparse.ArgumentParser:
     masked.add_argument("--case")
     masked.add_argument("--profile")
     masked.add_argument("--max-events", type=int, default=40, help="Maximum model calls in this invocation, corrections included (default 40).")
+    masked.add_argument("--until-complete", action="store_true", help="After a stop caused by a format, budget, or anchor failure that used up its corrections, resume the same run in this process (resume labels E06r1, ...) until it reports Run complete, --max-events, or --max-restarts. A helper rejection still stops.")
+    masked.add_argument("--max-restarts", type=int, default=MASKED_DEFAULT_RESTARTS, help=f"Automatic restarts allowed with --until-complete (default {MASKED_DEFAULT_RESTARTS}).")
+    masked.add_argument("--recall-every", type=int, default=0, help="Every N recorded windows, send the reader a recall packet: its carry_memory and the due questions, no manuscript text (default 0, off). Questions become due once their after_block has been seen; a final recall covers the rest when the run completes.")
+    masked.add_argument("--recall-questions", help="JSON array of {id, after_block, question, options, answer} (options include one 'I don't know'), or a checks notes file whose checkpoint_plan entries carry recall_questions. Answers never enter a packet.")
+    masked.add_argument("--recall-plan-id", help="With a checks notes file: use only the checkpoint_plan entry with this id.")
 
     branch = commands.add_parser("branch", help="Ask one question from a recorded display event and record the answer.")
     common(branch)

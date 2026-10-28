@@ -226,6 +226,122 @@ class CaseBuilderTests(unittest.TestCase):
         with self.assertRaises(ex.ExtractError):
             ex.build_case(other, self.sidecar, 40, "strict-prefix", [], "case-3")
 
+    def paged(self, markdown):
+        result = ex.postprocess(markdown, None, "paged.md")
+        return rp.build_index(result["markdown"]), result["sidecar"]
+
+    def test_include_filters_blocks_windows_and_asset_links(self):
+        index, sidecar = self.paged(INCLUDE_MD)
+        self.assertEqual([(b["block_id"], p["page"]) for b, p in zip(index["blocks"], sidecar["paragraphs"])], [("B0001", 1), ("B0002", 1), ("B0003", 1), ("B0004", 2), ("B0005", 3)])
+        assets = [{"id": "Figure1", "page": 2, "path": "f1.png", "caption": "The counts."}, {"id": "Table 1", "page": 1, "path": "t1.png"}]
+        built = ex.build_case(index, sidecar, 30, "strict-prefix", assets, "case-include", include=["B0001", "B0002", "B0005"])
+        case, report = built["case"], built["report"]
+        self.assertEqual([b["id"] for b in case["blocks"]], ["B0001", "B0002", "B0005"])
+        self.assertEqual([bid for w in case["windows"] for bid in w], ["B0001", "B0002", "B0005"])
+        self.assertNotIn("Page two text", json.dumps(case))
+        load("masked_reader").validate_case(case)
+        figure, table = case["assets"]
+        self.assertEqual((figure["id"], figure["referenced_by"], figure["encountered_by"]), ("Figure1", ["B0002"], ["B0005"]), "page 2 holds only excluded blocks: the first included block on a later page")
+        self.assertEqual((table["id"], table["referenced_by"], table["encountered_by"]), ("Table1", [], ["B0001"]), "B0003, the only block naming Table 1, is excluded")
+        self.assertEqual(report["excluded_blocks"], 2)
+        self.assertEqual(report["references_only_from_excluded_blocks"], ["Table1"])
+        self.assertEqual(report["unlisted_references"], ["Figure2"])
+        self.assertEqual(report["assets_without_references"], ["Table1"])
+        self.assertEqual(report["page_joined_pairs"], [])
+        everything = ex.build_case(index, sidecar, 30, "strict-prefix", assets, "case-all")
+        self.assertEqual((everything["report"]["excluded_blocks"], everything["report"]["references_only_from_excluded_blocks"]), (0, []))
+        self.assertEqual(everything["case"]["assets"][1]["referenced_by"], ["B0003"])
+        with self.assertRaisesRegex(ex.ExtractError, "--include names block ids that are not in the index: B0009, B0010\\."):
+            ex.build_case(index, sidecar, 30, "strict-prefix", assets, "case-x", include=["B0001", "B0010", "B0009"])
+
+    def test_load_include_accepts_scope_array_and_text_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scope = root / "scope.json"
+            scope.write_text(json.dumps({"task": "review", "included_block_ids": ["B0002", "B0003"], "omissions": []}), encoding="utf-8")
+            self.assertEqual(ex.load_include(scope), ["B0002", "B0003"])
+            array = root / "ids.json"
+            array.write_text(json.dumps(["B0001", "B0005"]), encoding="utf-8")
+            self.assertEqual(ex.load_include(array), ["B0001", "B0005"])
+            text = root / "ids.txt"
+            text.write_text("# blocks to read\nB0001\n\n  B0002  \n# B0009 is left out\nB0005\n", encoding="utf-8")
+            self.assertEqual(ex.load_include(text), ["B0001", "B0002", "B0005"])
+            message = "--include must be a scope.json with included_block_ids, a JSON array of block ids, or a text file with one block id per line."
+            for name, content in (("empty.json", "[]"), ("empty.txt", "# nothing\n\n"), ("no-ids.json", json.dumps({"task": "review"})), ("blank.json", json.dumps(["B0001", " "])), ("numbers.json", "[1, 2]")):
+                with self.subTest(name=name):
+                    path = root / name
+                    path.write_text(content, encoding="utf-8")
+                    with self.assertRaisesRegex(ex.ExtractError, message):
+                        ex.load_include(path)
+
+    def test_page_broken_paragraph_stays_in_one_window(self):
+        index, sidecar = self.paged(PAGE_BREAK_MD)
+        kinds = [(b["block_id"], p["page"], p["kind"]) for b, p in zip(index["blocks"], sidecar["paragraphs"])]
+        self.assertEqual(kinds, [("B0001", 1, "heading"), ("B0002", 1, "paragraph"), ("B0003", 2, "paragraph"), ("B0004", 2, "paragraph"), ("B0005", 2, "paragraph")])
+        blocks = [{"id": b["block_id"], "text": b["text"], "kind": b["kind"]} for b in index["blocks"]]
+        self.assertEqual(ex.build_windows(blocks, 12), [["B0001", "B0002"], ["B0003"], ["B0004"], ["B0005"]], "without gluing the budget splits the halves")
+        self.assertEqual(ex.build_windows(blocks, 12, {"B0003"}), [["B0001", "B0002", "B0003"], ["B0004"], ["B0005"]])
+        built = ex.build_case(index, sidecar, 12, "strict-prefix", [], "case-break")
+        windows = built["case"]["windows"]
+        joined = [w for w in windows if "B0002" in w]
+        self.assertEqual(len(joined), 1)
+        self.assertIn("B0003", joined[0])
+        self.assertEqual(built["report"]["page_joined_pairs"], [["B0002", "B0003"]])
+        self.assertEqual([bid for w in windows for bid in w], ["B0001", "B0002", "B0003", "B0004", "B0005"])
+        load("masked_reader").validate_case(built["case"])
+        # Excluding either half removes the pair; the report then lists no joined pair.
+        half = ex.build_case(index, sidecar, 12, "strict-prefix", [], "case-half", include=["B0001", "B0002", "B0004", "B0005"])
+        self.assertEqual(half["report"]["page_joined_pairs"], [])
+
+    def test_page_broken_pairs_need_an_unfinished_paragraph_across_a_page(self):
+        def block(bid, text, page):
+            return {"id": bid, "text": text, "page": page}
+        kinds = {f"P{n}": "paragraph" for n in range(1, 10)}
+        self.assertEqual(ex.page_broken_pairs([block("P1", "The counts rose because the", 1), block("P2", "window was short.", 2)], kinds), [("P1", "P2")])
+        for ending in ("The counts rose.", "The counts rose (see above.)", "The counts rose:", "We list the counts;", "Did counts rise?", "Counts rose!", "He said \"counts rose.\"", "计数上升。"):
+            with self.subTest(ending=ending):
+                self.assertEqual(ex.page_broken_pairs([block("P1", ending, 1), block("P2", "the window was short.", 2)], kinds), [])
+        self.assertEqual(ex.page_broken_pairs([block("P1", "The counts rose because the", 1), block("P2", "window was short.", 1)], kinds), [], "same page")
+        self.assertEqual(ex.page_broken_pairs([block("P1", "The counts rose because the", 2), block("P2", "window was short.", 1)], kinds), [], "page order")
+        self.assertEqual(ex.page_broken_pairs([block("P1", "The counts rose because the", None), block("P2", "window was short.", 2)], kinds), [], "unknown page")
+        self.assertEqual(ex.page_broken_pairs([block("P1", "The counts rose because the", 1), block("P2", "window was short.", 2)], {"P1": "paragraph", "P2": "list"}), [], "not a paragraph")
+        self.assertEqual(ex.page_broken_pairs([block("P1", "# The counts", 1), block("P2", "window was short.", 2)], {"P1": "heading", "P2": "paragraph"}), [])
+        three = [block("P1", "The counts rose because the", 1), block("P2", "window was short and the", 2), block("P3", "limit held.", 3)]
+        self.assertEqual(ex.page_broken_pairs(three, kinds), [("P1", "P2"), ("P2", "P3")])
+
+
+INCLUDE_MD = """<!-- page 1 of 3 -->
+
+# Counting study
+
+Intro text refers to Figure 1 for the counts.
+
+Second intro paragraph lists parts in Table 1.
+
+<!-- page 2 of 3 -->
+
+Page two text reports the limits of the counts.
+
+<!-- page 3 of 3 -->
+
+Page three text mentions Fig. 2 and closes.
+"""
+
+PAGE_BREAK_MD = """<!-- page 1 of 2 -->
+
+# Heading
+
+Alpha paragraph with words that run on and the sentence does not finish because the page
+
+<!-- page 2 of 2 -->
+
+ends here on the next page with more words to fill the line.
+
+Another paragraph follows with its own words here and there.
+
+Final paragraph closes the text with a few more words.
+"""
+
 
 FAKE_MINERU = """#!/bin/sh
 if [ "$1" = "server" ]; then
@@ -266,6 +382,23 @@ class GutterTests(unittest.TestCase):
         self.assertEqual(texts, ["# Title", "A real paragraph with 2024 and 1999 in it.", "12 13 14", "100 102 104 106 108", "Another paragraph."])
         self.assertIn("Dropped 2 line-number gutter line(s)", result["notes"])
         self.assertIn("line-number gutter 43-50", result["notes"])
+
+    def test_short_unpadded_gutters_are_dropped_too(self):
+        md = "<!-- page 1 of 2 -->\n\n1 2 3 4 5 6\n\n# Title\n\nA paragraph with 2024 and 1999 in it.\n\n12 13 14\n\n<!-- page 2 of 2 -->\n\n12 13 14 15 16\n\n100 102 104 106 108\n\n7 8 9 10 11 12 13\n\nAnother paragraph.\n"
+        result = ex.postprocess(md, None, "m.md")
+        texts = [line for line in result["markdown"].split("\n") if line.strip()]
+        self.assertEqual(texts, ["# Title", "A paragraph with 2024 and 1999 in it.", "12 13 14", "100 102 104 106 108", "Another paragraph."])
+        self.assertIn("Dropped 3 line-number gutter line(s)", result["notes"])
+        for note in ("line-number gutter 1-6", "line-number gutter 12-16", "line-number gutter 7-13"):
+            self.assertIn(note, result["notes"])
+        self.assertEqual(ex.GUTTER_MIN_NUMBERS, 5)
+        self.assertEqual([p["page"] for p in result["sidecar"]["paragraphs"]], [1, 1, 1, 2, 2])
+
+    def test_five_digit_runs_are_not_gutters(self):
+        md = "<!-- page 1 of 1 -->\n\n10001 10002 10003 10004 10005\n\nA paragraph.\n"
+        result = ex.postprocess(md, None, "m.md")
+        self.assertIn("10001 10002 10003 10004 10005", result["markdown"])
+        self.assertNotIn("line-number gutter", result["notes"])
 
 
 class ServerReadyTests(unittest.TestCase):
@@ -490,6 +623,36 @@ class ExtractCommandTests(unittest.TestCase):
         self.assertEqual(case["assets"][0]["id"], "Figure1")
         self.assertEqual([b for w in case["windows"] for b in w], [b["id"] for b in case["blocks"]])
         self.assertEqual(json.loads(out)["unlisted_references"], ["Figure2", "Table1"])
+
+    def test_case_include_through_the_cli(self):
+        source = self.root / "mineru.md"
+        source.write_text(INCLUDE_MD)
+        clean = self.root / "clean.md"
+        code, out, err = self.run_main(["postprocess", "--input", str(source), "--out", str(clean)])
+        self.assertEqual(code, 0, err)
+        pages = json.loads(out)["pages"]
+        index_path = self.root / "index.json"
+        rp.write_json_atomic(index_path, rp.build_index(clean.read_text()))
+        scope = self.root / "scope.json"
+        scope.write_text(json.dumps({"task": "review", "included_block_ids": ["B0001", "B0002", "B0005"], "reading_path": "linear", "extraction_notes": "plain", "omissions": [{"block_id": "B0003", "reason": "table talk"}, {"block_id": "B0004", "reason": "limits"}]}))
+        assets = self.root / "assets.json"
+        assets.write_text(json.dumps([{"id": "Figure1", "page": 2, "path": "fig1.png", "caption": "c"}]))
+        case_path = self.root / "case.json"
+        code, out, err = self.run_main(["case", "--index", str(index_path), "--pages", pages, "--budget", "30", "--asset-policy", "strict-prefix", "--assets", str(assets), "--include", str(scope), "--out", str(case_path)])
+        self.assertEqual(code, 0, err)
+        response = json.loads(out)
+        case = json.loads(case_path.read_text())
+        self.assertEqual([b["id"] for b in case["blocks"]], ["B0001", "B0002", "B0005"])
+        self.assertEqual([b for w in case["windows"] for b in w], ["B0001", "B0002", "B0005"])
+        self.assertEqual(case["assets"][0]["encountered_by"], ["B0005"])
+        self.assertEqual((response["blocks"], response["excluded_blocks"], response["references_only_from_excluded_blocks"], response["unlisted_references"]), (3, 2, ["Table1"], ["Figure2"]))
+        self.assertNotIn("Page two text", case_path.read_text())
+        missing = self.root / "missing.json"
+        missing.write_text(json.dumps(["B0001", "B0042"]))
+        code, out, err = self.run_main(["case", "--index", str(index_path), "--pages", pages, "--budget", "30", "--asset-policy", "strict-prefix", "--include", str(missing), "--out", str(self.root / "case2.json")])
+        self.assertEqual(code, 2)
+        self.assertIn("--include names block ids that are not in the index: B0042.", err)
+        self.assertFalse((self.root / "case2.json").exists())
 
     def test_help_runs_isolated_from_another_directory(self):
         result = subprocess.run([sys.executable, "-B", "-I", str(SCRIPTS / "extract_pdf.py"), "--help"], capture_output=True, text=True, cwd=self.root)

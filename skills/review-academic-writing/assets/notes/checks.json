@@ -47,7 +47,16 @@
         "quote": ""
       },
       "mode": "",
-      "reason": ""
+      "reason": "",
+      "recall_questions": [
+        {
+          "id": "",
+          "after_block": "",
+          "question": "",
+          "options": ["", "", "I don't know"],
+          "answer": ""
+        }
+      ]
     }
   ],
   "candidates": [
