@@ -1,5 +1,16 @@
 # 变更说明
 
+## 0.19.1（2026-10-27）
+
+计划第四节 #20：三次完整运行里每次都要重写一遍的 builder 脚本整理成 `scripts/notes_build.py`。标准库，不调用模型；命令行、运行格式和日志 schema 不变。
+
+- `notes_build.py reading|checks|reconcile|decisions|repairs|review --journal <日志> --index <index.json> --source <片段>… --out <文件> [--audits <目录>] [--compare <目录>]`：从片段生成六个记录。片段是一个 JSON 对象文件、定义 `FRAGMENT` 或 `build(ctx)` 的 Python 模块，或装着它们的目录（按文件名顺序读）；`--source` 可重复，按顺序合并——`paragraphs`、`passages`、`decisions`、`repairs` 按块 id 或候选 id 合并（同一 id 出现两次拒绝），`concepts`、`checkpoint_plan`、`candidates`、`no_candidate`、`checkpoints`、`branches`、`observations` 追加，`summary` 等标量后者覆盖。模块里 `ctx.q(block_id, quote)` 返回锚点并记下不精确的引文，`ctx.text`、`ctx.included`、`ctx.opening(block_id, n)` 可用。
+- 内置检查，写文件之前全部报告：输出里任何 `{block_id, quote}` 对象的引文按 index.json 逐字校验（列出路径和引文）；reading 和 checks 必须恰好覆盖每个纳入块（列出缺的和不在范围的 id）；记录再过一遍 `review_steps.validate_notes`（和 `record` 同一套：字段词表、候选与阅读问题账目、审计绑定），review 过 `check_review`；needs_author 的候选自动成为 `author_question` 且问句必须以问号结尾；edit 没给措辞时由 `--audits` 下该候选的审计决定——按 `audit_round` 取最新一轮，preserved 且无 changed 才把它的 `proposed_wording` 和路径写进修改，否则 `proposed_wording` 为 null、`wording_withheld_reason` 写明轮次、文件、结论和改变的属性（早先某轮 preserved 不能复活被后一轮替换的措辞）；给了措辞没给 `audit_path` 时绑定审计过同一措辞的那份，否则拒绝；`<cid>.features.json` 自动成为 `compare_path`。结果里 `audit_selection` 列出每条的选择。
+- 各阶段的填充：reading 缺 `anchor` 用块开头；checks 的 passage 没引自己块的 evidence 时补块开头，concepts、plan、candidates 缺 id 时按 `K01`、`P01`、`C01` 编号；reconcile 的前缀检查点可写成 `{id, plan_id, events_dir, limitation}`，由 `dispatch_reader.py` 的 `<label>.packet.json`、`<label>.observation.json` 展开（锚点和模式取自计划项，`result` 按 issue 数、`cannot_place` 数和 understanding 概括），观察按 `O01` 编号，新候选 id 不得重复 checks 的；decisions 每个候选恰好一条，accepted/needs_author 必须有 category、diagnosis、severity、confidence；review 的 issues 按候选顺序从已记录的 decisions 和 repairs 生成（证据合并候选与决定的锚点并去重，needs_author 带 `author_question`），概念表来自已记录的 concepts，片段只需给 `summary` 和 `coverage` 之类的额外顶层字段。
+- 日志门槛：生成某阶段要求之前的阶段都已记录、该阶段尚未记录；review 要求五个阶段齐全。输出路径已存在时拒绝（`output_exists`）。
+- 文档：`references/workflow.md` 新增"Building the stage notes with notes_build.py"一节；SKILL.md 第 7 节和包 README 提到该脚本。
+- 测试：新增 `tests/test_notes_build.py` 14 个，共 268 个；用编造的句子。
+
 ## 0.19.0（2026-10-27）
 
 读者设计的三项（计划第三节 #12–#14）和三次完整运行记下的运行层待改项（第四节 #15–#19）。依据是 KnowledgeGain（预印本，有受控人类实验）：模拟读者只凭自己的笔记作答并给"不知道"选项时，答题分布更接近真人；本版把这个记忆瓶颈做成可记录的 recall 事件，并给前缀读者一个"说不出来"的出口。命令行只增不改；运行格式 5 和日志 schema 5 不变（recall 记录是运行目录下的新子目录，主路径从不读取；`recall_questions`、`recall_sequences`、`cannot_place` 都是可选字段）。

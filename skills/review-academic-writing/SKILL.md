@@ -152,7 +152,7 @@ When asked to revise, re-index the edited text, check affected claims/definition
 
 ## 7. Deliver the review
 
-Run the stage readiness check before generating the final report. Use `assets/review-report.md` for the output shape and compile findings from the saved decisions and repairs. Do not add a new diagnosis during report drafting without returning to the relevant checks in a corrected run. Lead with the few most consequential findings and their proposed repairs. Include:
+Run the stage readiness check before generating the final report. Use `assets/review-report.md` for the output shape and compile findings from the saved decisions and repairs (`scripts/notes_build.py review` builds the structured review from the recorded stages, as it builds each stage's notes from fragments; workflow.md describes it). Do not add a new diagnosis during report drafting without returning to the relevant checks in a corrected run. Lead with the few most consequential findings and their proposed repairs. Include:
 
 - Source version, reader assumptions, actual execution mode, and coverage.
 - A prioritized issue table and detailed source-anchored recommendations.

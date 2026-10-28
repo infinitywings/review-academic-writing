@@ -84,7 +84,7 @@ mineru server status --json
 
 读者和审计默认走 `claude -p --model claude-opus-5-5`，即使用者自己的 Claude 订阅，工具、MCP 和设置全部禁用；有 Codex 订阅的人派发时加 `--runtime codex`；服务器上也可以用 OpenAI 兼容接口（`--runtime http`）。一篇 28 页稿件做完整流程（8 个前缀检查点、29 窗遮罩阅读、1 个分支、40 多次保真审计）读者侧调用约 70 次、墙钟约两小时，花费相当于几美元的 API 额度。只要快速审读或只审某一节，在请求里说明，流程会按比例缩小覆盖范围但保留阶段顺序。
 
-逐条命令、字段要求和降级说明见 `skills/review-academic-writing/README.md` 与 `references/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单；从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 254 个用例通过（没有 spaCy 时跳过 1 个）。
+逐条命令、字段要求和降级说明见 `skills/review-academic-writing/README.md` 与 `references/`。本地改动后在仓库根用 `claude --plugin-dir .` 试，`claude plugin validate .` 核对清单；从包目录运行 `python3 -I -m unittest discover -s tests`，应看到 268 个用例通过（没有 spaCy 时跳过 1 个）。
 
 ## 状态
 
