@@ -1,48 +1,50 @@
 # review-academic-writing
 
-这个 skill 审查学术稿件和研究计划：概念是否在首次关键使用前得到解释，段落之间的论证关系是否明确，用词句式是否清楚，建议的修改是否保持科学含义。审稿人把每一步工作存成带回执链的记录，再从记录写报告。可选的遮罩阅读让新上下文的读者逐窗阅读，只携带有限笔记，观察结果作为证据挂进记录。
+This skill reviews academic manuscripts and research proposals: whether concepts are explained before their first critical use, whether the argumentative links between paragraphs are explicit, whether words and sentences are clear, and whether each proposed edit preserves the scientific meaning. The reviewer saves every step as a receipt-chained record and writes the report from those records. Optional masked reading has fresh-context readers read one window at a time, carrying only bounded notes; their observations are attached to the record as evidence.
 
-## 安装
+This file is the command reference. For an overview with figures, see the [repository front page](../../README.md).
 
-这个目录既是 Claude Code 的 skill，也是仓库根 `.claude-plugin/` 清单所指的插件内容；Codex 通过仓库根的 `.agents/skills/review-academic-writing`（指向本目录的符号链接）发现它。三种装法任选。
+## Installation
 
-### Claude Code 和 Claude Desktop（Code 标签）
+This folder is both a Claude Code skill and the plugin content that the manifests in the repository root's `.claude-plugin/` point to. Codex discovers it through `.agents/skills/review-academic-writing` in the repository root, a symbolic link to this folder. Use any of the three methods below.
 
-在会话里先登记 marketplace（名字是 `infinitywings`），再安装插件：
+### Claude Code and Claude Desktop (Code tab)
+
+In a session, register the marketplace (named `infinitywings`) and install the plugin:
 
 ```
 /plugin marketplace add infinitywings/review-academic-writing
 /plugin install review-academic-writing@infinitywings
 ```
 
-Claude Code 2.1.275 以上可以一步完成：`/plugin install review-academic-writing --marketplace infinitywings/review-academic-writing`。命令行等价于 `claude plugin marketplace add infinitywings/review-academic-writing` 加 `claude plugin install review-academic-writing@infinitywings`。装好后 skill 名为 `review-academic-writing:review-academic-writing`；SKILL.md 里的 `${CLAUDE_SKILL_DIR}` 由 Claude Code 替换成本目录的实际路径。
+Claude Code 2.1.275 and later can do this in one step: `/plugin install review-academic-writing --marketplace infinitywings/review-academic-writing`. The command-line equivalent is `claude plugin marketplace add infinitywings/review-academic-writing` followed by `claude plugin install review-academic-writing@infinitywings`. Once installed, the skill is named `review-academic-writing:review-academic-writing`; Claude Code replaces `${CLAUDE_SKILL_DIR}` in SKILL.md with the actual path of this folder.
 
-本地改动后不经 marketplace 直接试：在仓库根运行 `claude --plugin-dir .` 启动会话，`claude plugin validate .` 核对两份清单，`claude --plugin-dir . plugin details review-academic-writing` 应列出一个 skill。
+To try local changes without the marketplace, run `claude --plugin-dir .` from the repository root to start a session; `claude plugin validate .` checks both manifests, and `claude --plugin-dir . plugin details review-academic-writing` should list one skill.
 
 ### OpenAI Codex
 
-Codex 扫描当前目录到仓库根每一级的 `.agents/skills/` 和用户目录的 `~/.agents/skills/`，并跟随符号链接。在本仓库里打开 Codex 就能用 `$review-academic-writing`；要装到用户目录，把本目录复制或链接到 `~/.agents/skills/review-academic-writing`，或在 Codex 里用 `$skill-installer` 从本仓库安装。`agents/openai.yaml` 给 Codex 和 ChatGPT 宿主提供显示名和调用策略，Claude Code 忽略它。Codex 不替换 `${CLAUDE_SKILL_DIR}`，SKILL.md 里有一句话让模型用包含 SKILL.md 的目录代替。Windows 上没有符号链接支持的检出会把 `.agents/skills/review-academic-writing` 变成一个文本文件，这时用复制安装。
+Codex scans `.agents/skills/` in every directory from the current one up to the repository root, and `~/.agents/skills/` in your home directory, and it follows symbolic links. Open Codex inside this repository and `$review-academic-writing` is available. To install it for your user, copy or link this folder to `~/.agents/skills/review-academic-writing`, or install it from this repository with `$skill-installer` in Codex. `agents/openai.yaml` gives Codex and ChatGPT hosts a display name and an invocation policy; Claude Code ignores it. Codex does not substitute `${CLAUDE_SKILL_DIR}`, so a sentence in SKILL.md tells the model to use the directory that contains SKILL.md instead. On Windows, a checkout without symbolic-link support turns `.agents/skills/review-academic-writing` into a text file; install by copying in that case.
 
-### 手动复制
+### Manual copy
 
 ```bash
 cp -R skills/review-academic-writing ~/.claude/skills/review-academic-writing
 ```
 
-Claude Code 读取 `SKILL.md` 并按需读取 `references/`，`${CLAUDE_SKILL_DIR}` 同样会被替换。
+Claude Code reads `SKILL.md` and reads `references/` as needed; `${CLAUDE_SKILL_DIR}` is substituted here too. Do not keep a manual copy alongside a plugin install, because the two would have the same name.
 
-## PDF 抽取环境（MinerU 4 本地模式）
+## PDF extraction (MinerU 4, local mode)
 
-稿件是 PDF 时，第 1 步用 `scripts/extract_pdf.py`，它调用本地 MinerU。2026-10-20 的对比里 MinerU 4.0.12 standard 层级在双栏、公式、表格上最好（见项目目录 `runs/2026-10-20/pdf2md-comparison.md`）。MinerU 不是语言模型：standard 层级是一组约 850 MB 的版面、公式、表格和 OCR 模型，在 M4 MacBook Air（32 GB）上用 CPU 解析一篇 12 页双栏论文约两分钟。编辑和读者角色仍由订阅的 Claude Code 或 Codex 担任（见"读者运行时"）。
+When the manuscript is a PDF, step 1 uses `scripts/extract_pdf.py`, which calls a local MinerU. In a comparison run on 2026-10-20 (not part of this repository), MinerU 4.0.12 at the standard tier handled two-column layout, formulas and tables best of the tools tried. MinerU is not a language model: the standard tier is a set of about 850 MB of layout, formula, table and OCR models. On an M4 MacBook Air (32 GB) it parses a 12-page two-column paper on the CPU in about two minutes. The editor and reader roles are still played by your Claude Code or Codex subscription (see "Reader runtime (Codex subscription)").
 
-MinerU 用 `uv tool` 装成独立环境，可执行文件进 `~/.local/bin`，不进 skill 目录，也不放在项目目录里（项目目录清理时容易一起删掉）。最简单的做法是运行包内的安装脚本，它幂等地完成下面的全部步骤（没装就装、模型缺了就下、服务没起就起，已就绪时什么都不改），需要 `uv` 已存在：
+MinerU is installed with `uv tool` as an isolated environment. Its executables go to `~/.local/bin`, not into the skill folder and not into a project folder, where a cleanup could easily delete them. The simplest route is the bundled setup script. It performs every step below idempotently: it installs what is missing, downloads missing models, starts the server if it is stopped, and changes nothing when everything is ready. It requires `uv`:
 
 ```bash
-bash <skill-dir>/scripts/setup_mineru.sh          # 安装、下载模型、启动并等到就绪
-bash <skill-dir>/scripts/setup_mineru.sh --check  # 只报告每一步的状态，不改任何东西
+bash <skill-dir>/scripts/setup_mineru.sh          # install, download models, start, and wait until ready
+bash <skill-dir>/scripts/setup_mineru.sh --check  # report the state of each step and change nothing
 ```
 
-退出码 0 表示本地解析服务已就绪，1 表示等待后仍未就绪，2 表示缺 `uv`。`--version`、`--tier`、`--python`、`--wait` 可改默认值（4.0.12、standard、3.12、180 秒）。脚本从不使用 `--remote`。`mineru telemetry` 和 `mineru config` 在服务未启动时都报 `Local mineru server is not running`，所以脚本先 `server start` 再关遥测、设 managed 模式，最后重启一次让模式生效。手动执行时等价于：
+Exit code 0 means the local parse server is ready, 1 that it is still not ready after waiting, and 2 that `uv` is missing. `--version`, `--tier`, `--python` and `--wait` change the defaults (4.0.12, standard, 3.12, 180 seconds). The script never uses `--remote`. Both `mineru telemetry` and `mineru config` fail with `Local mineru server is not running` while the server is stopped, so the script runs `server start` first, then disables telemetry and sets managed mode, and finally restarts once so the mode takes effect. The manual equivalent is:
 
 ```bash
 uv tool install "mineru==4.0.12" --python 3.12
@@ -54,13 +56,13 @@ mineru server restart
 mineru server status --json
 ```
 
-模型约 850 MB（standard 层级），下载到 `~/.mineru/models`；已有模型时跳过下载。`extract_pdf.py` 用 `mineru server status --json` 判断就绪：`running` 为 true，`parse_server.local.healthy` 为 true、`starting` 为 false、`mode` 不是 off。首次加载约一分钟；managed 模式下解析服务常驻，之后每篇只付解析时间。已解析过的同一文件（按内容哈希）会直接返回缓存结果。未发表稿件不要用 `--remote`（官方云服务）；`extract_pdf.py` 拒绝这个选项。注意 MinerU 服务会定期探测官方远程端点是否可达，这只是连通性探测，不发送文件。安装包名与附加依赖以 MinerU 官方安装说明为准，上面的版本号是本次实测的版本。
+The models (about 850 MB for the standard tier) are downloaded to `~/.mineru/models`; the download is skipped when they are already present. `extract_pdf.py` decides whether the server is ready from `mineru server status --json`: `running` must be true, and in `parse_server.local`, `healthy` must be true, `starting` false, and `mode` anything but off. The first load takes about a minute. In managed mode the parse server stays resident, so each later paper costs only its parse time, and a file parsed before (matched by content hash) returns the cached result. Do not use `--remote` (MinerU's cloud service) for unpublished manuscripts; `extract_pdf.py` refuses that option. Note that the MinerU server periodically checks whether the official remote endpoint is reachable; this is a connectivity probe and sends no files. Package names and extras follow MinerU's official installation guide; the version numbers above are the ones tested here.
 
-MinerU 不是必需的。找不到 `mineru` 可执行文件、无法运行，或解析服务没就绪时，`extract` 默认停下并打印上面的启动命令（退出码 2）。要在没有 MinerU 的机器上继续，显式加 `--fallback pdftotext`（poppler，`brew install poppler`，可用 `--pdftotext` 指定路径）或 `--fallback pdfplumber`（`pip install pdfplumber`）：得到的是纯文本稿件，双栏顺序、上下标、公式、表格、图注可能丢失或并入，没有 OCR（没有文字层的扫描件会被拒绝）。`extract.json` 记 `fidelity: low` 和降级原因；稿件首行的 `<!-- extraction: ... -->` 注释由 `postprocess` 移到抽取说明开头，所以 scope 记录的 `extraction_notes` 会写明这是低保真抽取。对这种稿件，凡是用于结论的段落都要回到 PDF 核对。MinerU 就绪时 `--fallback` 被忽略。
+MinerU is not required. When the `mineru` executable is missing or cannot run, or the parse server is not ready, `extract` stops by default and prints the start commands above (exit code 2). To continue on a machine without MinerU, add `--fallback pdftotext` explicitly (poppler: `brew install poppler`; `--pdftotext` sets the path) or `--fallback pdfplumber` (`pip install pdfplumber`). The result is a plain-text manuscript: two-column order, subscripts and superscripts, formulas, tables and captions may be lost or merged, and there is no OCR (scanned files without a text layer are refused). `extract.json` records `fidelity: low` and the reason for the fallback. `postprocess` moves the `<!-- extraction: ... -->` comment on the manuscript's first line to the start of the extraction notes, so the scope record's `extraction_notes` states that the extraction is low fidelity. For such a manuscript, check every passage used for a conclusion against the PDF. When MinerU is ready, `--fallback` is ignored.
 
-## 可选的句法特征环境（spaCy）
+## Optional syntactic-feature environment (spaCy)
 
-`scripts/difficulty_features.py` 用 spaCy 的依存分析数出 Clark、Martin 和 Mahowald（2026，arXiv:2610.29162，第 3.1 节）与人类加工困难相关的八个特征：带关系词的宾语关系从句、不带关系词的宾语关系从句、名词转动词、无生命主语配只接有生命主语的动词、按句长标准化的依存长度、名词堆叠（三个及以上）、参考语料中未见的词对、三元语法意外度。它只用于提名段落和核对替换句，输出里固定写明这是模型侧的候选提名启发式，不是发现。spaCy 不是标准库，和 MinerU 一样装在工作目录下的独立环境，不进 skill 目录：
+`scripts/difficulty_features.py` uses spaCy's dependency parse to count eight features that Clark, Martin and Mahowald (2026, arXiv:2610.29162, section 3.1) associate with human processing difficulty: object relative clauses with a relativizer, object relative clauses without one, denominal verbs, inanimate subjects of verbs that normally take animate subjects, dependency length standardized by sentence length, noun stacks of three or more, bigrams not attested in a reference corpus, and trigram surprisal. It is used only to nominate passages and to check replacement wording; its output always states that it is a model-side nomination heuristic, not a finding. spaCy is not part of the standard library. Like MinerU, it goes into a separate environment under the working directory, not into the skill folder:
 
 ```bash
 uv venv tools/nlp-env
@@ -68,86 +70,96 @@ uv pip install --python tools/nlp-env/bin/python spacy
 VIRTUAL_ENV="$PWD/tools/nlp-env" tools/nlp-env/bin/python -m spacy download en_core_web_sm
 ```
 
-没有 spaCy 时脚本以退出码 2 结束并打印上面的命令。`--model` 默认 `auto`：装了 `en_core_web_trf` 就用它，否则用 `en_core_web_sm`。两个子命令：
+Without spaCy the script exits with code 2 and prints the commands above. `--model` defaults to `auto`, which uses `en_core_web_trf` if it is installed and `en_core_web_sm` otherwise. There are two subcommands:
 
 ```bash
 tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py nominate --input run/index.json --reference run/reference.txt --top 10 --out run/features.json
 tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
 ```
 
-`nominate` 对每个块给出各特征的计数和每千词率，在文档内按 z 分数之和排名，打印前 N 个块和驱动排名的特征，供 checks 阶段的 `wording_check` 决定先看哪里。`--reference` 给一份参考语料（纯文本或 Markdown，例如同领域已发表论文的正文），未见词对、三元语法意外度和依存长度标准化都依赖它，没有时这三项为 null，依存长度退回原始均值加句长。`nominate` 还对每个块单独数一列 `assets/excess-vocabulary.json` 里的词（Kobak 等 2025 年 Science Advances 的 2024 年超额风格词，出处和筛选规则写在文件里；不进 z 分数排名；`--no-excess-vocabulary` 关闭）：只用来提名待查段落，词表是下界、会过时、分不清作者风格和机器风格，不作任何"这句是机器写的"判断。`compare` 把原句和替换句的各项计数并排列出，替换句任一特征更多就标记，另外不依赖 spaCy 地给出改动词数与原句词数之比（`edit_ratio`，0.2 以内 light、0.5 以内 medium、超过 0.5 heavy）、type-token 比和平均词长，替换句词汇更单一或词更长时给 advisory 标记；`--lexical-only` 只算这三项，没有 spaCy 也能跑。`--repairs run/repairs.json --checks run/checks.json` 对每条带替换句的修改做同样比较，原句取候选的 anchor 引文。除 heavy 之外的标记只是提醒，不是门槛，也不代替保真审计：`edit_scope` 为 `sentence` 的修改必须把 compare 结果写进 `compare_path`，heavy 的修改要写 `heavy_edit_reason` 或拆成几条。名词转动词和主语有生性两项用内置词表，输出里标为 heuristic。
+`nominate` gives every block its count and its rate per thousand words for each feature, ranks blocks within the document by the sum of their z-scores, and prints the top N blocks with the features driving each rank. The checks stage's `wording_check` uses this list to decide where to look first. `--reference` takes a reference corpus (plain text or Markdown, for example the body text of published papers in the same field). Unattested bigrams, trigram surprisal and the standardization of dependency length depend on it; without it those three are null, and dependency length falls back to the raw mean plus sentence length.
 
-## 一次审稿的命令顺序
+`nominate` also counts, per block, the words listed in `assets/excess-vocabulary.json`: the 2024 excess style words of Kobak et al. (Science Advances, 2025), with source and selection rules recorded in the file. This count is not part of the z-score ranking, and `--no-excess-vocabulary` turns it off. It only nominates passages to inspect: the list is a lower bound, it goes out of date, and it cannot tell an author's own style from a machine's, so it supports no judgment that a sentence was machine-written.
 
-下面的路径以 `run/` 为例。把 `<skill-dir>` 换成安装路径。每条命令的字段要求见 `references/staged-review.md` 和 `references/output-contract.md`。
+`compare` lists the feature counts for the original and the replacement side by side and flags any feature the replacement has more of. Independently of spaCy, it also reports the ratio of changed words to the original's word count (`edit_ratio`: up to 0.2 is light, up to 0.5 medium, above 0.5 heavy), the type-token ratio and the mean word length, with advisory flags when the replacement's vocabulary is less varied or its words are longer. `--lexical-only` computes only these three and runs without spaCy. `--repairs run/repairs.json --checks run/checks.json` runs the same comparison for every repair that has replacement wording, taking the candidate's anchor quote as the original. Except for heavy, the flags are reminders, not gates, and they never replace the fidelity audit. A repair whose `edit_scope` is `sentence` must record the compare result in `compare_path`, and a heavy repair must give a `heavy_edit_reason` or be split into several repairs. The denominal-verb and subject-animacy features rely on built-in word lists and are labeled heuristic in the output.
 
-0. 稿件是 PDF 时先抽取并清理。`extract` 在解析服务未就绪时以退出码 2 结束，并打印上面的启动命令；`--timeout`（秒，默认 3600）同时传给 `mineru parse --wait`。`postprocess` 合并碎片化粗体、规范段落空行、保留 HTML 表格和 LaTeX、删除重复页眉页脚和投稿行号栏，写出页码对照 `manuscript.md.pages.json` 和抽取说明 `manuscript.md.extraction-notes.txt`（抄进 scope 的 `extraction_notes`）。加 `--pdf manuscript.pdf` 时用 `pdftotext` 的文字层做词表，把版面解析连写、断开、多了连字符或多了字母的词改回文字层里的写法（只改成文字层确有的文本，改动逐条写进抽取说明，页码对照的哈希是改后的段落；文字层另存为 `manuscript.md.text-layer.txt`）；没有 poppler 时省略 `--pdf` 或用 `--text-layer` 给一个现成的文字层文件。Markdown 里没有页码注释时，用 `--layout` 给出 MinerU 的 `middle.json` 或 `content_list.json`：
+## Command sequence for one review
 
-	```bash
-	python3 <skill-dir>/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU" --timeout 3600
-	python3 <skill-dir>/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md --pdf manuscript.pdf
-	```
+The paths below use `run/` as an example. Replace `<skill-dir>` with the installation path. The field requirements for each command are in `references/staged-review.md` and `references/output-contract.md`.
 
-	MinerU 不可用而又要继续时，第一条命令加 `--fallback pdftotext`（或 `pdfplumber`），见上面的降级说明；插件安装后 `<skill-dir>` 就是 SKILL.md 里 `${CLAUDE_SKILL_DIR}` 展开的目录。
+0. For a PDF, extract and clean the text first. `extract` exits with code 2 when the parse server is not ready and prints the start commands above; `--timeout` (seconds, default 3600) is also passed to `mineru parse --wait`. `postprocess` merges fragmented bold text, normalizes paragraph spacing, keeps HTML tables and LaTeX, and removes repeated running headers and footers and submission line-number gutters. It writes a page map, `manuscript.md.pages.json`, and extraction notes, `manuscript.md.extraction-notes.txt`, which you copy into the scope record's `extraction_notes`. With `--pdf manuscript.pdf`, it uses the `pdftotext` text layer as a word list and restores words that layout parsing joined, split, hyphenated or garbled to the text layer's spelling. It changes text only to what the text layer actually contains, lists every change in the extraction notes, computes the page map's hashes from the corrected paragraphs, and saves the text layer as `manuscript.md.text-layer.txt`. Without poppler, omit `--pdf`, or supply a ready text-layer file with `--text-layer`. When the Markdown has no page comments, pass MinerU's `middle.json` or `content_list.json` with `--layout`:
 
-1. 建立索引：
+   ```bash
+   python3 <skill-dir>/scripts/extract_pdf.py extract --pdf manuscript.pdf --out-dir run/extract --mineru "$MINERU" --timeout 3600
+   python3 <skill-dir>/scripts/extract_pdf.py postprocess --input run/extract/manuscript.md --out run/manuscript.md --pdf manuscript.pdf
+   ```
 
-	```bash
-	python3 <skill-dir>/scripts/review_packets.py index --input manuscript.md --out run/index.json
-	```
+   If MinerU is unavailable and you need to continue, add `--fallback pdftotext` (or `pdfplumber`) to the first command; see the fallback notes above. After a plugin install, `<skill-dir>` is the directory that `${CLAUDE_SKILL_DIR}` expands to in SKILL.md.
 
-2. 用 `assets/reader-profile.json` 和 `assets/notes/scope.json` 写出读者画像和范围，然后开始日志：
+1. Build the index:
 
-	```bash
-	python3 <skill-dir>/scripts/review_steps.py start --index run/index.json --profile run/reader-profile.json --scope run/scope.json --out run/journal
-	```
+   ```bash
+   python3 <skill-dir>/scripts/review_packets.py index --input manuscript.md --out run/index.json
+   ```
 
-3. 依次记录 reading 和 checks 两个阶段。checks 阶段只放编辑自己的检查和 checkpoint 计划：每个纳入块除 `structure_check`、`wording_check` 外还要有 `claim_check`（主张强度、一次反例、承重引文三项），reading 里每条 `open_questions` 要么被某个候选引用，要么写进 `no_candidate` 并给理由；checkpoint 计划至少一个引言内的短前缀和一个节末的长前缀（见 `references/workflow.md`）。装了 spaCy 时可以先运行 `difficulty_features.py nominate`（见上一节），把排名靠前的块作为 `wording_check` 的待查段落：
+2. Write the reader profile and the scope from `assets/reader-profile.json` and `assets/notes/scope.json`, then start the journal:
 
-	```bash
-	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reading --notes run/reading.json
-	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage checks --notes run/checks.json
-	```
+   ```bash
+   python3 <skill-dir>/scripts/review_steps.py start --index run/index.json --profile run/reader-profile.json --scope run/scope.json --out run/journal
+   ```
 
-4. 记录 checks 之后再派发读者。读者只收到 `assets/prompts/` 里的通用提示和 packet。在 Claude Code 上用 `scripts/dispatch_reader.py`，它调用禁用工具、MCP 和设置的 `claude -p`（用 Codex 订阅时加 `--runtime codex`，在服务器上加 `--runtime http --config`，见后面两节），每次调用在 `--events` 目录下保存 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`，最后写 `summary.json`：
+3. Record the reading stage, then the checks stage. The checks stage holds only the editor's own checks and the checkpoint plan. Besides `structure_check` and `wording_check`, every included block needs a `claim_check` covering claim strength, one counterexample attempt, and load-bearing citations. Every entry in the reading notes' `open_questions` must either be cited by a candidate or be listed in `no_candidate` with a reason. The checkpoint plan needs at least one short prefix inside the introduction and one long prefix ending at the end of a section (see `references/workflow.md`). With spaCy installed, you can first run `difficulty_features.py nominate` (previous section) and treat the top-ranked blocks as the passages to inspect for `wording_check`:
 
-	```bash
-	python3 <skill-dir>/scripts/dispatch_reader.py prefix --events run/events --packet run/checkpoint-01.json --label P01
-	python3 <skill-dir>/scripts/extract_pdf.py case --index run/index.json --pages run/manuscript.md.pages.json --budget 250 --asset-policy strict-prefix --assets run/assets.json --out run/case.json
-	python3 <skill-dir>/scripts/dispatch_reader.py masked --events run/events --run run/reader --case run/case.json --profile run/profile.json --max-events 40 --until-complete --recall-every 8 --recall-questions run/checks.json
-	python3 <skill-dir>/scripts/dispatch_reader.py branch --events run/events --run run/reader --from-sequence 3 --question run/q1.json
-	```
+   ```bash
+   python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reading --notes run/reading.json
+   python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage checks --notes run/checks.json
+   ```
 
-	`--model` 和 `--effort` 原样传给 `claude`；不给 `--model` 时默认 `claude-opus-5-5`（读者和审计者用最强的订阅模型，出处记录的 `command` 里可见）。笔记超出预算或返回内容不是可解析 JSON 时，原文件保留，写 `<label>.invalid-reason.txt`，再用同一 packet 加一句说明（限额、计数方法、目标为限额的 85%）重发，标为 b、c；两次更正后仍不通过就停止；`masked --until-complete` 在这种格式、预算或引文更正用尽后的停止之后自动在同一进程里续跑（重试事件标 `E06r1`），直到 `Run complete`、`--max-events` 或 `--max-restarts`（默认 5）为止，助手直接拒绝的回答不续跑；运行期间 `<run>/dispatch.pid` 记录进程号，跑完即删，不要再用 `pgrep` 判断。`--recall-every N --recall-questions run/checks.json` 每 N 窗插入一次 recall 事件：读者只拿到 carry_memory 和 checks 阶段 `checkpoint_plan` 里预设的选择题（每题含一个 `I don't know`），没有任何窗口文本，答错或答 IDK 的题记在 `<run>/recalls/` 和 summary 的 `recalls` 里，reconcile 阶段按 `lost_in_notes` 处理（见 masked-reading.md 5b）。`extract_pdf.py case --include run/scope.json` 只把纳入块做成 case（窗口与资产引用一并过滤），被页断开的段落并入同一窗口。遮罩循环在连续三次查阅没有带来新来源时停止。不用脚本时，前缀读者用 `review_packets.py packet` 和 `check-observation`，遮罩读者用 `masked_reader.py start`、`packet`、`record`，追问用 `branch` 和 `branch-record`，recall 用 `recall` 和 `recall-record`。
+4. Dispatch readers only after the checks stage is recorded. Readers receive only the generic prompts in `assets/prompts/` and their packet. On Claude Code use `scripts/dispatch_reader.py`, which calls `claude -p` with tools, MCP servers and settings disabled (add `--runtime codex` for a Codex subscription, or `--runtime http --config` on a server; see the two runtime sections below). For every call it saves `<label>.prompt.txt`, `.cli.json`, `.response.raw`, `.response.json` and `.provenance.json` in the `--events` directory, and at the end it writes `summary.json`:
 
-5. 每条带替换句的修改先做独立保真审计，输入是 `candidate_id`、`original`、`proposed_wording`、`basis`；脚本从 `original` 抽出限定词和条件短语写成 `hedges_in_original` 一并送审（词表在 `review_packets.py` 的 `HEDGE_PATTERNS`，`--hedge-list` 可加本领域的写法），审计员逐个报 kept / strengthened / removed，并多审第十项 `added_qualification`（改写新增而原文没有的限定语）；`--round` 记录这是该候选的第几版措辞，每一版都对照原文审，不对照上一版。edit 项要写 `edit_scope`（pointer、apposition、term、reorder、split、sentence 之一），`action` 要含块 id，作者问题要是问句。同一个输入文件可以运行 `difficulty_features.py compare`（`--lexical-only` 不需要 spaCy）：
+   ```bash
+   python3 <skill-dir>/scripts/dispatch_reader.py prefix --events run/events --packet run/checkpoint-01.json --label P01
+   python3 <skill-dir>/scripts/extract_pdf.py case --index run/index.json --pages run/manuscript.md.pages.json --budget 250 --asset-policy strict-prefix --assets run/assets.json --out run/case.json
+   python3 <skill-dir>/scripts/dispatch_reader.py masked --events run/events --run run/reader --case run/case.json --profile run/profile.json --max-events 40 --until-complete --recall-every 8 --recall-questions run/checks.json
+   python3 <skill-dir>/scripts/dispatch_reader.py branch --events run/events --run run/reader --from-sequence 3 --question run/q1.json
+   ```
 
-	```bash
-	python3 <skill-dir>/scripts/dispatch_reader.py audit --events run/events --input run/C04.input.json --out run/C04.audit.json
-	tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
-	```
+   `--model` and `--effort` are passed to `claude` unchanged. Without `--model`, the default is `claude-opus-5-5`: readers and auditors use the strongest subscription model, and the model appears in the provenance record's `command`.
 
-	然后记录 reconcile、decisions、repairs 三个阶段，再检查就绪。repairs 里 `kind` 为 `edit` 而 `proposed_wording` 为 null 的条目必须给 `wording_withheld_reason`：
+   When notes exceed the budget or a reply is not parseable JSON, the original file is kept, `<label>.invalid-reason.txt` is written, and the same packet is sent again with one added note (the limit, how words are counted, and a target of 85% of the limit); the retries are labeled b and c. After two failed corrections the run stops. With `masked --until-complete`, the dispatcher resumes automatically in the same process after such a stop (format, budget or anchor corrections exhausted; retried events are labeled like `E06r1`) until the run reports `Run complete` or reaches `--max-events` or `--max-restarts` (default 5). A reply that the helper rejects outright is not resumed. While a run is active, `<run>/dispatch.pid` holds its process id and is deleted when it ends; do not use `pgrep` to judge whether a run is alive.
 
-	```bash
-	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reconcile --notes run/reconcile.json
-	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage decisions --notes run/decisions.json
-	python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage repairs --notes run/repairs.json
-	python3 <skill-dir>/scripts/review_steps.py ready --journal run/journal --index run/index.json
-	```
+   `--recall-every N --recall-questions run/checks.json` inserts a recall event every N windows. The reader gets only its carry_memory and the multiple-choice questions preset in the checks stage's `checkpoint_plan` (each with an `I don't know` option), and no window text. Questions answered wrongly or with I don't know are recorded under `<run>/recalls/` and in the summary's `recalls`, and the reconcile stage treats them as `lost_in_notes` (see section 5b of masked-reading.md).
 
-6. 从记录写出结构化终审，校验后再写用户可见的报告：
+   `extract_pdf.py case --include run/scope.json` builds the case from the included blocks only, filtering windows and asset references accordingly, and keeps paragraphs split by a page break in one window. The masked loop stops after three consecutive lookups that bring no new source. Without the dispatcher, prefix readers use `review_packets.py packet` and `check-observation`; masked readers use `masked_reader.py start`, `packet` and `record`; follow-up questions use `branch` and `branch-record`; and recall uses `recall` and `recall-record`.
 
-	```bash
-	python3 <skill-dir>/scripts/review_packets.py check-review --index run/index.json --review run/review.json
-	python3 <skill-dir>/scripts/review_steps.py check-final --journal run/journal --index run/index.json --review run/review.json
-	```
+5. Every repair with replacement wording first gets an independent fidelity audit. Its input has `candidate_id`, `original`, `proposed_wording` and `basis`. The script extracts the hedges and conditions in `original` as `hedges_in_original` and sends them along (the word list is `HEDGE_PATTERNS` in `review_packets.py`; `--hedge-list` adds a field's own phrasings). The auditor reports each hedge as kept, strengthened or removed, and also checks a tenth property, `added_qualification`: qualifiers the rewrite adds that the original lacks. `--round` records which version of the wording this is; every version is audited against the original, never against the previous version. An edit repair needs an `edit_scope` (one of pointer, apposition, term, reorder, split, sentence), each `action` must contain a block id, and each author question must end as a question. The same input file can be run through `difficulty_features.py compare` (`--lexical-only` needs no spaCy):
 
-助手只检查文件、顺序、覆盖和引文。它不能证明审稿质量、科学正确性或人类读者的理解。
+   ```bash
+   python3 <skill-dir>/scripts/dispatch_reader.py audit --events run/events --input run/C04.input.json --out run/C04.audit.json
+   tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
+   ```
 
-## 服务器运行时（OpenAI 兼容接口）
+   Then record the reconcile, decisions and repairs stages and check readiness. A repair whose `kind` is `edit` and whose `proposed_wording` is null must give a `wording_withheld_reason`:
 
-`dispatch_reader.py` 的四个子命令都接受 `--runtime http --config llm.json`，把同一份通用提示和 packet 发到一个 OpenAI 兼容的 `POST /v1/chat/completions` 端点，而不是本机的 `claude -p`。文件集（`.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`、`summary.json`）和更正协议与 claude 运行时相同。配置文件示例：
+   ```bash
+   python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage reconcile --notes run/reconcile.json
+   python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage decisions --notes run/decisions.json
+   python3 <skill-dir>/scripts/review_steps.py record --journal run/journal --index run/index.json --stage repairs --notes run/repairs.json
+   python3 <skill-dir>/scripts/review_steps.py ready --journal run/journal --index run/index.json
+   ```
+
+6. Build the structured final review from the records and validate it before writing the report the user reads:
+
+   ```bash
+   python3 <skill-dir>/scripts/review_packets.py check-review --index run/index.json --review run/review.json
+   python3 <skill-dir>/scripts/review_steps.py check-final --journal run/journal --index run/index.json --review run/review.json
+   ```
+
+The helpers check only files, order, coverage and quotations. They cannot prove the quality of a review, the scientific correctness of a diagnosis, or what a human reader understands.
+
+## Server runtime (OpenAI-compatible endpoint)
+
+All four `dispatch_reader.py` subcommands accept `--runtime http --config llm.json`. This sends the same generic prompt and packet to an OpenAI-compatible `POST /v1/chat/completions` endpoint instead of the local `claude -p`. The file set (`.prompt.txt`, `.cli.json`, `.response.raw`, `.response.json`, `.provenance.json`, `summary.json`) and the correction protocol are the same as for the claude runtime. An example configuration file:
 
 ```json
 {
@@ -168,31 +180,31 @@ python3 <skill-dir>/scripts/dispatch_reader.py prefix --runtime http --config ru
 python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime http --config run/llm.json --events run/events --input run/C04.input.json --out run/C04.audit.json
 ```
 
-- 密钥只从 `api_key_env` 指定的环境变量读取，不写在文件或命令行里；变量未设置时以退出码 2 结束并说明变量名。任何输出文件都不含密钥，`provenance.json` 只记录变量名。文件里出现 `api_key`，或 `extra_headers` 里出现 `Authorization`，都会被拒绝。没有 `api_key_env` 时不发 Authorization 头（无鉴权的内网服务）。
-- 请求：system 消息与 claude 运行时相同，user 消息是通用提示加 packet；`temperature`（默认 0）和 `max_tokens` 来自配置；`json_mode` 为 true 时带 `response_format: {"type": "json_object"}`，端点不支持时设为 false，返回的代码围栏会被剥掉。`--model` 覆盖配置里的 `model`，`--timeout` 覆盖 `timeout_seconds`（默认 300 秒）；`--effort` 不适用。可选键：`retry_backoff_seconds`（默认 1）、`price_per_token`、`ca_file`（自签证书的 CA 文件）。
-- HTTP 429、5xx 和连接失败在同一次调用内重试，最多三次，等待 1 秒、2 秒（`Retry-After` 优先，上限 60 秒）；每次尝试的状态码、错误和等待时间记录在 `provenance.json` 的 `attempts`。三次都失败，或 4xx，这一次调用算解析失败，进入与 claude 运行时相同的更正协议（b、c）。
-- `provenance.json` 写 `runtime: "http"`、`base_url`、`url`、`model`、`api_key_env`、`request`（温度、max_tokens、response_format、超时）、`http_status`、`attempt_count`、`attempts`、`response_id`、`response_model`、`finish_reason`、`usage`（响应的 usage 对象）、`input_tokens`、`output_tokens`；`session_id` 是响应的 id，也写进遮罩回执的 `agent_id`，审计文件的 `auditor.agent_id` 为 `http-` 加 id 的后半段。`cost_usd` 为 null，除非配置给出 `price_per_token: {"input": 每输入 token 美元, "output": 每输出 token 美元}`。
-- 重定向一律拒绝（3xx 算这一次调用失败，请求不会带着密钥发到别处）。`base_url` 用 `http://` 且主机不是本机回环时，密钥会明文传输：脚本在 stderr 打一行警告并写进 `provenance.json` 的 `transport_warning`，不阻止；内网之外请用 `https://`。
-- 隔离说明是 `bare chat-completions request with no tools; isolation by request content, not by sandbox`：读者和编辑可以是同一个端点，隔离靠请求内容，不靠进程或沙箱。仓库根目录的 `docs/server-deployment.md` 说明这一运行时在服务器部署里的位置。
+- The key is read only from the environment variable named in `api_key_env`; it is never written to a file or placed on the command line. If the variable is unset, the script exits with code 2 and names it. No output file contains the key; `provenance.json` records only the variable name. A configuration containing `api_key`, or an `Authorization` entry in `extra_headers`, is refused. Without `api_key_env`, no Authorization header is sent (for unauthenticated internal services).
+- Request: the system message is the same as for the claude runtime, and the user message is the generic prompt plus the packet. `temperature` (default 0) and `max_tokens` come from the configuration. When `json_mode` is true, the request carries `response_format: {"type": "json_object"}`; set it to false if the endpoint does not support that. Code fences in the reply are stripped. `--model` overrides the configured `model`, and `--timeout` overrides `timeout_seconds` (default 300 seconds); `--effort` does not apply. Optional keys: `retry_backoff_seconds` (default 1), `price_per_token`, and `ca_file` (a CA file for self-signed certificates).
+- HTTP 429, 5xx and connection failures are retried within the same call, up to three attempts, waiting 1 and then 2 seconds (`Retry-After` takes precedence, capped at 60 seconds). Each attempt's status code, error and wait time are recorded under `attempts` in `provenance.json`. If all three attempts fail, or the endpoint returns a 4xx, the call counts as a parse failure and enters the same correction protocol (b, c) as the claude runtime.
+- `provenance.json` records `runtime: "http"`, `base_url`, `url`, `model`, `api_key_env`, `request` (temperature, max_tokens, response_format, timeout), `http_status`, `attempt_count`, `attempts`, `response_id`, `response_model`, `finish_reason`, `usage` (the reply's usage object), `input_tokens` and `output_tokens`. `session_id` is the reply's id and is also written as the masked receipt's `agent_id`; the audit file's `auditor.agent_id` is `http-` followed by the second half of the id. `cost_usd` is null unless the configuration gives `price_per_token: {"input": USD per input token, "output": USD per output token}`.
+- Redirects are always refused: a 3xx fails the call, so a request carrying the key is never sent elsewhere. When `base_url` uses `http://` and the host is not a local loopback address, the key travels in clear text; the script prints a one-line warning to stderr and records it as `transport_warning` in `provenance.json`, without blocking the call. Outside an internal network, use `https://`.
+- The isolation statement is `bare chat-completions request with no tools; isolation by request content, not by sandbox`. The reader and the editor may use the same endpoint; isolation rests on what each request contains, not on a process or a sandbox. `docs/server-deployment.md` in the repository root describes where this runtime fits in a server deployment.
 
-## 读者运行时（Codex 订阅）
+## Reader runtime (Codex subscription)
 
-`dispatch_reader.py` 的四个子命令都接受 `--runtime codex`，用本机的 `codex exec` 派发同一份通用提示和 packet，走 ChatGPT 账号登录的 Codex 订阅，不需要 API 密钥。文件集和更正协议与 claude 运行时相同。
+All four `dispatch_reader.py` subcommands accept `--runtime codex`, which dispatches the same generic prompt and packet through the local `codex exec`, using the Codex subscription of the signed-in ChatGPT account; no API key is needed. The file set and the correction protocol are the same as for the claude runtime.
 
 ```bash
 python3 <skill-dir>/scripts/dispatch_reader.py audit --runtime codex --effort low --events run/events --input run/C04.input.json --out run/C04.audit.json
 python3 <skill-dir>/scripts/dispatch_reader.py masked --runtime codex --run run/masked --case run/case.json --profile <skill-dir>/assets/masked-reader-profile.json
 ```
 
-- 命令是 `codex exec --ignore-user-config --ephemeral --sandbox read-only --skip-git-repo-check --json -`：忽略 `~/.codex/config.toml`（MCP 服务器、插件、技能都不加载，2026-10-26 实测上下文从 24k 降到 18k token），不保存线程，提示从 stdin 读入。`--model` 透传为 `--model`，`--effort` 设为 `model_reasoning_effort`；`--codex` 指定可执行文件（默认 `$CODEX_BIN`，再查 PATH）；`--timeout` 默认 900 秒。
-- Codex 没有 system prompt 开关，角色句（与 claude 运行时的 `--system-prompt` 相同）前置在 stdin 提示的开头，隔一个空行；`provenance.json` 的 `system_prompt` 和 `system_prompt_delivery` 记录这一点。`<label>.prompt.txt` 仍只含通用提示加 packet。
-- `codex exec` 的 shell 工具无法关闭，只能限制为只读沙箱。脚本解析 `--json` 事件流：出现任何 `command_execution` 事件，这一次调用按"被拒绝"处理，不进入更正协议，退出码非零，事件记录在 `provenance.json` 的 `command_executions`。隔离说明写明这一点：读者不得查阅任何东西，这里靠事后核对事件流，不靠沙箱禁止。
-- `provenance.json` 写 `runtime: "codex"`、`command`、`thread_id`（也作 `session_id`，遮罩回执的 `agent_id` 为 `codex-exec-` 加前八位）、`usage`、`input_tokens`、`cached_input_tokens`、`output_tokens`、`reasoning_output_tokens`、`event_errors`；`cost_usd` 为 null（订阅计费）。`.cli.json` 保存完整事件流、无法解析的行和 stderr 尾部。
-- 订阅有速率上限：一篇稿件的遮罩阅读会发几十次调用，额度紧时分批跑，`masked` 的 `--max-events` 控制每次最多调用数。
+- The command is `codex exec --ignore-user-config --ephemeral --sandbox read-only --skip-git-repo-check --json -`. It ignores `~/.codex/config.toml`, so no MCP servers, plugins or skills are loaded (measured on 2026-10-26, this cut the context from 24k to 18k tokens); it saves no thread; and it reads the prompt from stdin. `--model` is passed through as `--model`, and `--effort` sets `model_reasoning_effort`. `--codex` names the executable (default `$CODEX_BIN`, then PATH); `--timeout` defaults to 900 seconds.
+- Codex has no switch for a system prompt, so the role sentence (the same one the claude runtime passes with `--system-prompt`) is placed at the start of the stdin prompt, followed by a blank line. `system_prompt` and `system_prompt_delivery` in `provenance.json` record this. `<label>.prompt.txt` still contains only the generic prompt plus the packet.
+- The shell tool of `codex exec` cannot be turned off, only restricted to a read-only sandbox. The script parses the `--json` event stream: any `command_execution` event makes the call count as rejected. A rejected call does not enter the correction protocol, the exit code is nonzero, and the events are recorded under `command_executions` in `provenance.json`. The isolation statement says so: readers must not consult anything, and this is enforced by checking the event stream afterwards, not by the sandbox.
+- `provenance.json` records `runtime: "codex"`, `command`, `thread_id` (also used as `session_id`; the masked receipt's `agent_id` is `codex-exec-` followed by its first eight characters), `usage`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens` and `event_errors`. `cost_usd` is null because usage is billed through the subscription. `.cli.json` keeps the full event stream, any lines that could not be parsed, and the tail of stderr.
+- Subscriptions have rate limits. Masked reading of one manuscript makes dozens of calls, so run it in batches when your quota is tight; `--max-events` on `masked` caps the number of calls per invocation.
 
-## 服务器全自动运行
+## Fully automatic server run
 
-`server/orchestrator.py` 在一台只有 OpenAI 兼容接口的服务器上跑完整个流程：编辑角色由同一类端点的模型按 `server/prompts/` 的八个模板一步步扮演，读者和审计仍由 `dispatch_reader.py --runtime http` 派发，五个阶段的笔记全部经 `review_steps.py` 记录和校验。三个核心脚本只作为库导入，行为不变。
+`server/orchestrator.py` runs the whole procedure on a server that has only an OpenAI-compatible endpoint. A model on that kind of endpoint plays the editor step by step, following the eight templates in `server/prompts/`. Readers and auditors are still dispatched by `dispatch_reader.py --runtime http`, and the notes of all five stages are recorded and validated by `review_steps.py`. The three core scripts are only imported as libraries; their behavior does not change.
 
 ```bash
 export LLM_API_KEY=...
@@ -201,48 +213,48 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
     [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt] [--language English]
 ```
 
-`--config` 的格式与上一节相同（编辑调用用它）；`--reader-config` 给读者和审计另一个端点或模型，不给时同 `--config`。`--out` 必须是不存在的目录。执行顺序：
+`--config` uses the format of the previous section and serves the editor calls; `--reader-config` gives readers and auditors a different endpoint or model and defaults to `--config`. `--out` must be a directory that does not yet exist. The orchestrator works in this order:
 
-1. `index`，写 `index.json` 和读者画像；scope 模板让模型分配每个块（纳入或给出理由省略），经 `validate_scope` 后 `start` 建日志。
-2. reading、checks 按 `--batch-blocks` 个块分批调用模板，每批只看本批全文加其余块的一行摘要（checks 还看全部段落的 paraphrase 和前几批已记录的概念、候选、计划），控制器合并数组、重编号（K01、P01、C01）后交 `record`；每批先用 `review_steps` 的校验函数预检，覆盖和锚点错误按批回传。
-3. `02-checks.receipt.json` 存在后才派发读者：按 checks 的 `checkpoint_plan` 建前缀包并跑 `prefix`（模式 `bounded-request`），把纳入块按 `--masked-budget` 词分窗、取前 `--masked-windows` 窗跑一次 `masked`（`--masked-windows 0` 关闭），checks 阶段可以给出一个 `branch_question`，遮罩跑完后在对应显示事件上跑一次 `branch`。
-4. reconcile 模板看冻结的观察（前缀观察原文、遮罩每个事件的材料与回答、分支回答），模型只填 `result`、`limitation`、分类和新候选；路径、模式、plan_id、figure_policy 由控制器绑定。decisions、repairs 同样记录。
-5. 每条带 `proposed_wording` 的修改先经 `dispatch_reader.py audit`（第二版用 `--round 2`），并在 `audits/<id>.features.json` 写词级比较；verdict 不是 `preserved` 或任一属性 `changed` 时，把审计意见作为 `audit_feedback` 回传 repairs 模板重写一次，再审一次（文件名加 `-2`），仍不通过就转成向作者的提问（`kind: author_question`，`proposed_wording: null`）；edit 的替换句换掉原句一半以上的词又没有 `heavy_edit_reason` 时，作为 `edit_feedback` 一起回传，重写后仍如此就撤回措辞（`proposed_wording: null`，`wording_withheld_reason` 写明比值），`summary.json` 的 `withheld_heavy_edits` 列出这些候选。
-6. `ready` 后 review 模板只给出总述和问题顺序，`review.json` 的每个字段由记录拷贝，过 `check-review` 和 `check-final`；report 模板按 `assets/review-report.md` 写 `report.md`；最后写 `summary.json`（各阶段状态、每次调用的秒数与用量、读者调用按类型计数、审计结果、重试次数）。
+1. `index` writes `index.json` and the reader profile. The scope template has the model assign every block (included, or omitted with a reason); after `validate_scope`, `start` creates the journal.
+2. The reading and checks templates are called in batches of `--batch-blocks` blocks. Each batch sees only its own full text plus a one-line summary of every other block; checks also sees every paragraph's paraphrase and the concepts, candidates and plan recorded by earlier batches. The controller merges the arrays and renumbers them (K01, P01, C01) before `record`. Each batch is first checked with `review_steps`'s validators, and coverage and anchor errors are returned per batch.
+3. Readers are dispatched only after `02-checks.receipt.json` exists. Prefix packets are built from the checks stage's `checkpoint_plan` and run with `prefix` (mode `bounded-request`). The included blocks are split into windows of `--masked-budget` words, and one `masked` run covers the first `--masked-windows` windows (`--masked-windows 0` turns it off). The checks stage may give one `branch_question`, which runs with `branch` on the matching display event after the masked run.
+4. The reconcile template sees the frozen observations: prefix observations verbatim, the materials and reply of every masked event, and the branch replies. The model fills in only `result`, `limitation`, the classifications and any new candidates; the controller binds paths, modes, `plan_id` and `figure_policy`. Decisions and repairs are recorded the same way.
+5. Every repair with `proposed_wording` first goes through `dispatch_reader.py audit` (a second version with `--round 2`), and a lexical comparison is written to `audits/<id>.features.json`. When the verdict is not `preserved`, or any property is `changed`, the audit comments go back to the repairs template as `audit_feedback` for one rewrite, which is audited again (file name suffixed `-2`). If it still fails, the repair becomes a question for the author (`kind: author_question`, `proposed_wording: null`). When an edit's replacement changes more than half of the original's words without a `heavy_edit_reason`, that also goes back, as `edit_feedback`; if the rewrite still does so, the wording is withdrawn (`proposed_wording: null`, with the ratio stated in `wording_withheld_reason`), and `withheld_heavy_edits` in `summary.json` lists these candidates.
+6. After `ready`, the review template gives only the overview and the order of the issues; every field in `review.json` is copied from the records and passes `check-review` and `check-final`. The report template writes `report.md` following `assets/review-report.md`. Finally `summary.json` is written: the status of each stage, the seconds and usage of each call, reader calls counted by type, audit results, and retry counts.
 
-助手拒绝某一步的回答时，同一步带着助手的原话重新提问（"Correction note from the controller: … The helper rejected it: …"），最多三次，仍失败就停下：日志保持原样，`summary.json` 的 `failure` 写明阶段、最后一条错误和该查看的文件，退出码 1。reconcile、decisions、repairs 三个模板只在 checks 回执存在后运行，代码在派发读者和这三步之前都断言这个文件。
+When the helper rejects the reply to a step, the same step is asked again with the helper's message ("Correction note from the controller: … The helper rejected it: …"), up to three times. If it still fails, the run stops: the journal is left as it is, `failure` in `summary.json` names the stage, the last error and the files to inspect, and the exit code is 1. The reconcile, decisions and repairs templates run only after the checks receipt exists; the code asserts that file before dispatching readers and before each of these three steps.
 
-目录 `--out` 下：`editor/` 每次编辑调用的 `<label>.prompt.txt`、`.cli.json`、`.response.raw`、`.response.json`、`.provenance.json`（label 如 `01-reading-batch01`、重试加 `-b`、`-c`、`-d`）；`readers/<P01>/`、`masked/`、`audits/` 下是 `dispatch_reader.py` 的文件集；`journal/` 是回执链；`scope.json`、`reading.json` 等是记录时的笔记副本；`log.jsonl` 按时间记录每个事件（`checks_frozen` 一定在第一个 `reader_dispatch` 之前）。密钥只从 `api_key_env` 指定的环境变量读，任何文件不含密钥。
+Under `--out`, `editor/` holds each editor call's `<label>.prompt.txt`, `.cli.json`, `.response.raw`, `.response.json` and `.provenance.json` (labels such as `01-reading-batch01`; retries add `-b`, `-c`, `-d`). `readers/<P01>/`, `masked/` and `audits/` hold the file sets written by `dispatch_reader.py`. `journal/` is the receipt chain, and `scope.json`, `reading.json` and the other notes files are copies of the notes as recorded. `log.jsonl` records every event in time order; `checks_frozen` always comes before the first `reader_dispatch`. The key is read only from the environment variable named by `api_key_env`, and no file contains it.
 
-`server/prompts/` 的模板用 `{{section:references/staged-review.md|## 2. Save reading notes}}` 和 `{{file:assets/notes/reading.json}}` 在渲染时把 references 的对应小节和笔记模板原文装进去，所以模板只写该步需要的规则，规则文件改了提示自动跟上；每次调用实际发出的全文在 `editor/<label>.prompt.txt`。
+The templates in `server/prompts/` use `{{section:references/staged-review.md|## 2. Save reading notes}}` and `{{file:assets/notes/reading.json}}` to insert the matching section of the references and the note template verbatim when they are rendered. A template therefore states only the rules for its own step and follows the rule files automatically when they change. The full text actually sent in each call is in `editor/<label>.prompt.txt`.
 
-假端点测试（`tests/test_orchestrator.py`）只能证明流程、顺序、合并、重试和审计门槛按设计运行；真实模型的 JSON 合规、长稿件的上下文长度、以及编辑判断的质量都要在服务器上用真实端点验证（`docs/server-deployment.md` 实施顺序第 3 步）。
+The fake-endpoint tests (`tests/test_orchestrator.py`) can only show that the flow, ordering, merging, retries and audit gate work as designed. Whether real models return compliant JSON, how context length behaves on long manuscripts, and the quality of the editor's judgment all have to be checked on a server with a real endpoint (step 3 of the implementation order in `docs/server-deployment.md`).
 
-## 运行测试
+## Running the tests
 
-从包目录运行：
+From this folder, run:
 
 ```bash
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 268 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+The output should begin with `Ran 268 tests` and end with `OK`, or `OK (skipped=1)` without spaCy. The skipped test is the `difficulty_features.py` integration test; `tools/nlp-env/bin/python -m unittest discover -s tests` runs it too. The tests never call MinerU or a real model: `claude`, `uv` and `mineru` are replaced by fake programs in a temporary directory, the http runtime by a standard-library `http.server` fake endpoint running in a thread, and in the orchestrator tests that fake endpoint plays the editor, the readers and the auditor according to the prompt it receives.
 
-## 兼容性
+## Compatibility
 
-- `scripts/masked_reader.py` 只读写运行格式 5。格式 4 的运行用 0.9.0 的脚本重放，格式 2 用 `scripts/legacy/masked_reader_v2.py`。
-- `scripts/notes_build.py <stage> --journal run/journal --index run/index.json --source <片段> --out <文件>` 从 JSON 片段或 Python 模块生成 reading、checks、reconcile、decisions、repairs、review 六个记录：逐字校验每条引文、检查纳入块覆盖、用 `review_steps.py record` 同一套校验查字段词表、needs_author 必须带问句、edit 的措辞取该候选最新一轮且 preserved 的审计（`--audits`），否则只记 `wording_withheld_reason`；用法见 `references/workflow.md`。
-- `scripts/review_steps.py corrected-run --from run/journal --out run/journal-2 --restart-at decisions` 开更正运行：复制受影响阶段之前的笔记和回执（字节不变，链两端都校验），写 `supersedes.json`，ready 回执带 supersedes；更正运行里只重录从该阶段起的记录。
-- `scripts/review_steps.py` 写 `schema_version` 5 的日志（0.18.0 起；repairs 多了 `edit_scope`、`compare_path`、`heavy_edit_reason`，审计文件多了 `audit_round`、`added_qualification` 和 `checks.hedges`，action 要含块 id，作者问题要是问句），并仍可重放 0.17 的 schema 4 日志（新字段可缺）。0.16 的日志用 0.16.3 的脚本重放。
-- 每条带替换句的修改都要先通过独立保真审计（`assets/prompts/fidelity-audit.txt`），审计 JSON 的路径写在 repairs 笔记的 `audit_path` 里。
-- `SHA256SUMS` 覆盖包内除它自身以外的每个文件。在包目录运行 `shasum -a 256 -c SHA256SUMS` 可核对。
+- `scripts/masked_reader.py` reads and writes run format 5 only. Replay format 4 runs with the 0.9.0 scripts, and format 2 runs with `scripts/legacy/masked_reader_v2.py`.
+- `scripts/notes_build.py <stage> --journal run/journal --index run/index.json --source <fragment> --out <file>` builds the six records (reading, checks, reconcile, decisions, repairs, review) from JSON fragments or Python modules. It checks every quotation verbatim against the index, checks that every included block is covered, applies the same field-vocabulary validation as `review_steps.py record`, requires each needs_author item to carry a question, and takes an edit's wording from the latest preserved audit round for that candidate (`--audits`), otherwise recording only a `wording_withheld_reason`. See `references/workflow.md` for usage.
+- `scripts/review_steps.py corrected-run --from run/journal --out run/journal-2 --restart-at decisions` opens a corrected run. It copies the notes and receipts of the stages before the affected one byte for byte (checking both ends of the chain), writes `supersedes.json`, and makes the ready receipt carry `supersedes`; in the corrected run, only the records from the named stage on are recorded again.
+- `scripts/review_steps.py` writes journals with `schema_version` 5 (since 0.18.0). Repairs gained `edit_scope`, `compare_path` and `heavy_edit_reason`; audit files gained `audit_round`, `added_qualification` and `checks.hedges`; each action must contain a block id; each author question must be a question. It still replays 0.17's schema 4 journals, in which the new fields may be absent. Replay 0.16 journals with the 0.16.3 scripts.
+- Every repair with replacement wording must first pass the independent fidelity audit (`assets/prompts/fidelity-audit.txt`); the path to the audit JSON goes in `audit_path` in the repairs notes.
+- `SHA256SUMS` covers every file in the package except itself. Run `shasum -a 256 -c SHA256SUMS` in this folder to verify.
 
-## 目录
+## Contents
 
-- `SKILL.md`：主流程。
-- `references/`：分阶段记录协议、遮罩阅读协议、执行流程、审稿规则、用词规则、输出契约、试验摘要、文献依据、插件化构想。
-- `assets/`：两种读者画像、阶段笔记模板（含引文抽查记录 `citation-checks.json`）、报告模板，`prompts/` 下四个通用提示（前缀、遮罩、分支、保真审计）。
-- `scripts/`：六个标准库 Python 助手（`review_packets.py`、`review_steps.py`、`masked_reader.py`、`extract_pdf.py`、`dispatch_reader.py`、`notes_build.py`）、MinerU 安装脚本 `setup_mineru.sh`、需要 spaCy 的可选助手 `difficulty_features.py`，和 `legacy/` 下的旧控制器。
-- `server/`：服务器全自动运行的编排器 `orchestrator.py`、编辑端 HTTP 客户端 `llm.py`，`prompts/` 下八个编辑步骤模板。
-- `tests/`：八个 unittest 文件。
-- `VERSION`、`CHANGELOG.md`：版本与变更。
+- `SKILL.md`: the main procedure.
+- `references/`: the staged-record protocol, masked-reading protocol, workflow, review rubric, wording rules, output contract, pilot summary, evidence base, and plugin design notes.
+- `assets/`: two reader profiles, the stage note templates (including the citation spot-check record `citation-checks.json`), the report template, the excess-vocabulary list, and four generic prompts in `prompts/` (prefix, masked, branch, fidelity audit).
+- `scripts/`: six standard-library Python helpers (`review_packets.py`, `review_steps.py`, `masked_reader.py`, `extract_pdf.py`, `dispatch_reader.py`, `notes_build.py`), the MinerU setup script `setup_mineru.sh`, the optional helper `difficulty_features.py` (needs spaCy except for its lexical comparison), and older controllers in `legacy/`.
+- `server/`: the orchestrator for fully automatic server runs (`orchestrator.py`), the editor's HTTP client (`llm.py`), and eight editor step templates in `prompts/`.
+- `tests/`: nine unittest files.
+- `VERSION` and `CHANGELOG.md`: the version and the change history (the changelog is written in Chinese).

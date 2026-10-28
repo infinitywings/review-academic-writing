@@ -84,7 +84,7 @@ Readers and auditors default to `claude -p --model claude-opus-5-5` with tools, 
 
 ## Status
 
-Experimental (version 0.19.1). In October 2026 the full procedure was run on three unpublished manuscripts:
+Experimental (version 0.19.2). In October 2026 the full procedure was run on three unpublished manuscripts:
 
 | | Paper A | Paper B | Proposal |
 | --- | --- | --- | --- |
