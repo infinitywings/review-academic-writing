@@ -117,8 +117,17 @@ class ReviewStepsTests(unittest.TestCase):
 
     def audit(self, **change):
         checks = {name: "same" for name in ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "numerical_values", "uncertainty", "causal_vs_associative", "added_qualification")}
-        return {"candidate_id": "C01", "proposed_wording": WORDING, "original": [ORIGINAL], "verdict": "preserved", "checks": {**checks, "time_horizon": "not_applicable", "hedges": []},
-                "notes": "Threshold and direction kept; MSW spelled out from B0004.", "audit_round": 1, "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"}, **change}
+        value = {"candidate_id": "C01", "proposed_wording": WORDING, "original": [ORIGINAL], "verdict": "preserved", "checks": {**checks, "time_horizon": "not_applicable", "hedges": []},
+                 "notes": "Threshold and direction kept; MSW spelled out from B0004.", "audit_round": 1, "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"},
+                 "hedges_in_original": [], "hedge_patterns": [], **change}
+        if "hedges_in_original" not in change and isinstance(value["original"], list) and all(isinstance(a, dict) and isinstance(a.get("quote"), str) for a in value["original"]):
+            value["hedges_in_original"] = rp.find_hedge_occurrences([a["quote"] for a in value["original"]])
+        return value
+
+    @staticmethod
+    def term_level(audit):
+        """The same audit as recorded before 0.20: hedges reported by term, without the occurrence list."""
+        return {k: v for k, v in audit.items() if k not in ("hedges_in_original", "hedge_patterns")}
 
     def write_audit(self, value, name="audit-C01.json"):
         path = self.root / name
@@ -172,8 +181,9 @@ class ReviewStepsTests(unittest.TestCase):
         receipts = [json.loads((self.journal / STAGE_FILES[s][1]).read_text()) for s in rs.STAGES]
         self.assertEqual([r["previous_receipt_sha256"] for r in receipts[1:]], [r["receipt_sha256"] for r in receipts[:-1]])
         self.assertEqual(receipts[4]["attachments"], [{"path": str(self.root / "audit-C01.json"), "sha256": sha(self.root / "audit-C01.json")}])
-        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 5)
-        self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
+        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 6)
+        ready = rs.ready_run(self.journal, self.index)
+        self.assertEqual((ready["ready_to_draft"], ready["overlapping_wordings"]), (True, []))
         self.assertEqual(self.names(), ["00-start.json", "01-reading.notes.json", "01-reading.receipt.json", "02-checks.notes.json", "02-checks.receipt.json",
                                         "03-reconcile.notes.json", "03-reconcile.receipt.json", "04-decisions.notes.json", "04-decisions.receipt.json",
                                         "05-repairs.notes.json", "05-repairs.receipt.json", "06-ready.json"])
@@ -696,6 +706,37 @@ class ReviewStepsTests(unittest.TestCase):
         self.assertEqual(self.names(out), ["00-start.json"])
         self.assertEqual(sorted(p.name for p in cwd.iterdir()), [])
 
+    def test_overlapping_wordings_name_blocks_two_wordings_touch(self):
+        rows = [{"candidate_id": "C01", "proposed_wording": "W1", "affected_block_ids": ["B0003", "B0004"]},
+                {"candidate_id": "C02", "proposed_wording": None, "affected_block_ids": ["B0004"]},
+                {"candidate_id": "C03", "proposed_wording": "W3", "affected_block_ids": ["B0004", "B0005"]},
+                {"candidate_id": "C04", "proposed_wording": "W4", "affected_block_ids": ["B0005"]}]
+        self.assertEqual(rs.overlapping_wordings(rows), [{"block_id": "B0004", "candidate_ids": ["C01", "C03"]}, {"block_id": "B0005", "candidate_ids": ["C03", "C04"]}])
+        self.assertEqual(rs.overlapping_wordings(rows[:2]), [])
+
+    def test_checks_passage_proposition_checks_are_optional_and_checked(self):
+        self.record("reading")
+        check = {"anchor": ORIGINAL, "proposition": "Agreement between records drops when the window is longer than two seconds.",
+                 "supplied_relations": "none; the threshold and the direction are in the sentence", "function": "fact",
+                 "needed_here": "yes: the restriction that follows depends on it"}
+        cases = []
+        for change, message in (({"function": "filler"}, "passage\\.proposition_checks\\[0\\]\\.function must be one of: comparison, definition, fact, navigation, other, premise, preview, reminder\\."),
+                                ({"anchor": DEFINITION}, "passage\\.proposition_checks\\[0\\]\\.anchor must quote the passage it belongs to \\(B0003\\)\\."),
+                                ({"anchor": A("B0003", "not in the block")}, "passage\\.proposition_checks\\[0\\]\\.anchor\\.quote is not an exact substring"),
+                                ({"supplied_relations": " "}, "passage\\.proposition_checks\\[0\\]\\.supplied_relations must be a nonempty string")):
+            value = self.notes("checks")
+            value["passages"][1]["proposition_checks"] = [{**check, **change}]
+            cases.append((value, message))
+        missing = self.notes("checks")
+        missing["passages"][1]["proposition_checks"] = [{k: v for k, v in check.items() if k != "needed_here"}]
+        cases.append((missing, "passage\\.proposition_checks\\[0\\] is missing fields: needed_here\\."))
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "checks", value)
+        accepted = self.notes("checks")
+        accepted["passages"][1]["proposition_checks"] = [check]
+        self.assertEqual(self.record("checks", accepted)["next_stage"], "reconcile")
+
     def test_checks_passages_require_a_claim_check(self):
         self.record("reading")
         missing = self.notes("checks")
@@ -892,12 +933,16 @@ class ReviewStepsTests(unittest.TestCase):
             (self.audit(checks={k: v for k, v in checks.items() if k != "hedges"}), "audit\\.checks is missing fields: hedges\\."),
             (self.audit(checks={k: v for k, v in checks.items() if k != "added_qualification"}), "audit\\.checks is missing fields: added_qualification\\."),
             (self.audit(checks={**checks, "added_qualification": "changed"}), "^Repair C01 cannot carry proposed wording: the fidelity audit verdict is preserved with changed added_qualification\\. Revise"),
-            (self.audit(checks={**checks, "hedges": {}}), "audit\\.checks\\.hedges must be an array\\."),
-            (self.audit(checks={**checks, "hedges": ["may"]}), "audit\\.checks\\.hedges\\[0\\] must be a JSON object with string keys\\."),
-            (self.audit(checks={**checks, "hedges": [{"term": "may"}]}), "audit\\.checks\\.hedges\\[0\\] is missing fields: status\\."),
-            (self.audit(checks={**checks, "hedges": [{"term": "may", "status": "kept", "note": "x"}]}), "audit\\.checks\\.hedges\\[0\\] has unsupported fields: note\\."),
-            (self.audit(checks={**checks, "hedges": [{"term": "", "status": "kept"}]}), "audit\\.checks\\.hedges\\[0\\]\\.term must be a nonempty string\\."),
-            (self.audit(checks={**checks, "hedges": [{"term": "may", "status": "weakened"}]}), "audit\\.checks\\.hedges\\[0\\]\\.status must be one of: kept, removed, strengthened\\."),
+            (self.audit(checks={**checks, "hedges": {}}), "audit\\.checks\\.hedges must be an array with one \\{id, term, status, kept_as\\} object per entry in hedges_in_original\\."),
+            (self.audit(checks={**checks, "hedges": ["may"]}), "audit\\.checks\\.hedges\\[0\\] must be an object with exactly id, term, status, and kept_as\\."),
+            (self.audit(checks={**checks, "hedges": [{"term": "may", "status": "kept"}]}), "audit\\.checks\\.hedges\\[0\\] must be an object with exactly id, term, status, and kept_as\\."),
+            (self.audit(checks={**checks, "hedges": [{"id": "H1", "term": "may", "status": "kept", "kept_as": "may", "note": "x"}]}), "audit\\.checks\\.hedges\\[0\\] must be an object with exactly"),
+            (self.audit(checks={**checks, "hedges": [{"id": "H1", "term": "may", "status": "kept", "kept_as": "may"}]}), "audit\\.checks\\.hedges\\[0\\] reports 'H1', which is not an id in hedges_in_original\\."),
+            (self.term_level(self.audit()), "fidelity audit is missing fields: hedge_patterns, hedges_in_original\\."),
+            (self.audit(hedges_in_original=[{"id": "H1", "term": "fell", "original_index": 0, "start": 10, "end": 14, "in_context": "Agreement [[fell]] sharply"}]),
+             "audit\\.hedges_in_original is not the list of hedge occurrences that review_packets finds in audit\\.original with audit\\.hedge_patterns"),
+            (self.audit(hedge_patterns=["("]), "audit\\.hedge_patterns do not compile"),
+            (self.audit(hedge_patterns=[r"\bsharply\b"]), "audit\\.hedges_in_original is not the list of hedge occurrences"),
         ]
         for n, (value, message) in enumerate(cases, 1):
             with self.subTest(message=message):
@@ -958,6 +1003,13 @@ class ReviewStepsTests(unittest.TestCase):
         value = json.loads(no_weight.read_text())
         value["comparisons"][0]["lexical"]["edit_weight"] = "huge"
         no_weight.write_text(json.dumps(value))
+        # The wording is the same; only the original differs from the text the audit quoted.
+        short = str(self.compare_file("compare-short-original.json", original=CRITICAL["quote"]))
+        proposed_as_original = str(self.compare_file("compare-proposed-original.json", original=WORDING))
+        relabeled = self.compare_file("compare-relabeled.json")
+        value = json.loads(relabeled.read_text())
+        value["comparisons"][0]["lexical"].update(edit_ratio=0.0, edit_weight="light")
+        relabeled.write_text(json.dumps(value))
         sentence = {"kind": "edit", "edit_scope": "sentence"}
         self.assertEqual(json.loads(Path(heavy).read_text())["comparisons"][0]["lexical"]["edit_weight"], "heavy")
         self.assertEqual(json.loads(Path(light).read_text())["comparisons"][0]["lexical"]["edit_weight"], "light")
@@ -971,6 +1023,9 @@ class ReviewStepsTests(unittest.TestCase):
             ({"C01": {"compare_path": skipped}}, "compare_path for C01 holds no comparison for that candidate\\."),
             ({"C01": {"compare_path": other}}, "compare_path for C01 compared different wording than the repair proposes\\."),
             ({"C01": {"compare_path": str(no_weight)}}, "comparison\\.lexical\\.edit_weight must be one of: heavy, light, medium\\."),
+            ({"C01": {**sentence, "compare_path": short}}, "compare_path for C01 compared a different original than the fidelity audit quoted"),
+            ({"C01": {**sentence, "compare_path": proposed_as_original}}, "compare_path for C01 compared a different original than the fidelity audit quoted"),
+            ({"C01": {**sentence, "compare_path": str(relabeled)}}, "compare_path for C01 reports edit ratio 0\\.0 \\(light\\), but its texts give 0\\.6667 \\(heavy\\)\\."),
             ({"C01": {**sentence, "compare_path": heavy}}, "Repair C01 replaces more than half of the original words \\(edit ratio 0\\.6667\\); give heavy_edit_reason, or split the change into smaller repairs\\."),
             ({"C01": {**sentence, "compare_path": heavy, "heavy_edit_reason": None}}, "Repair C01 replaces more than half of the original words"),
             ({"C01": {**sentence, "compare_path": heavy, "heavy_edit_reason": " "}}, "repair\\.heavy_edit_reason must be a nonempty string\\."),
@@ -993,6 +1048,10 @@ class ReviewStepsTests(unittest.TestCase):
                 receipt = json.loads((journal / "05-repairs.receipt.json").read_text())
                 self.assertEqual([a["path"] for a in receipt["attachments"]], [edits["C01"].get("audit_path", str(self.audit_path)), edits["C01"]["compare_path"]])
                 self.assertEqual(rs.ready_run(journal, self.index)["ready_to_draft"], True)
+        # A schema 5 journal predates the binding to the audited original; the recomputed ratio still applies.
+        older = self.fresh_journal("compare-schema5", schema=5)
+        self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"compare_path": short}}), older)["next_stage"], "ready")
+        self.assertRefused("reports edit ratio 0\\.0 \\(light\\), but its texts give", self.record, "repairs", self.repairs_with({"C01": {"compare_path": str(relabeled)}}), self.fresh_journal("compare-schema5-relabeled", schema=5))
         Path(heavy).write_text(json.dumps({**json.loads(Path(heavy).read_text()), "note": "edited after recording"}))
         self.assertRefused("A saved checkpoint attachment has changed\\.", rs.ready_run, self.root / "compare-move", self.index)
 
@@ -1018,7 +1077,7 @@ class ReviewStepsTests(unittest.TestCase):
         path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": version})))
 
     def legacy_audit(self):
-        audit = self.audit()
+        audit = self.term_level(self.audit())
         del audit["audit_round"]
         audit["checks"] = {k: v for k, v in audit["checks"].items() if k not in ("hedges", "added_qualification")}
         return audit
@@ -1044,7 +1103,7 @@ class ReviewStepsTests(unittest.TestCase):
         self.assertRefused("audit\\.checks is missing fields: uncertainty\\.", self.record, "repairs",
                            self.audited_repairs({**self.legacy_audit(), "checks": {k: v for k, v in self.legacy_audit()["checks"].items() if k != "uncertainty"}}, "audit-legacy-short.json"), other)
         self.assertRefused("audit\\.checks\\.hedges reports 'may' kept, but the proposed wording carries no hedge", self.record, "repairs",
-                           self.audited_repairs(self.audit(checks={**self.audit()["checks"], "hedges": [{"term": "may", "status": "kept"}]}), "audit-legacy-hedge.json"), other)
+                           self.audited_repairs(self.term_level(self.audit(checks={**self.audit()["checks"], "hedges": [{"term": "may", "status": "kept"}]})), "audit-legacy-hedge.json"), other)
         elsewhere = self.audited_repairs(self.audit(original=[A("B0004", "We set the MSW to two seconds.")]), "audit-schema4-elsewhere.json")
         self.assertEqual(self.record("repairs", elsewhere, other)["next_stage"], "ready", "schema 4 does not apply the anchor-overlap rule")
         self.assertEqual(rs.ready_run(other, self.index)["ready_to_draft"], True)
@@ -1061,16 +1120,21 @@ We compared short and long sessions. Longer sessions may reduce agreement.
 We define agreement as the share of matching records.
 
 Shorter sessions are reasonably likely to raise agreement.
+
+Longer sessions may reduce agreement. Noise may lower it under these conditions.
 """
 HEDGED_ANCHOR = {"block_id": "B0002", "quote": "Longer sessions may reduce agreement."}
 LIKELY_ANCHOR = {"block_id": "B0004", "quote": "Shorter sessions are reasonably likely to raise agreement."}
-HEDGED_INCLUDED = ["B0002", "B0003", "B0004"]
+HEDGED_INCLUDED = ["B0002", "B0003", "B0004", "B0005"]
+TWO_MAY_ANCHOR = {"block_id": "B0005", "quote": "Longer sessions may reduce agreement. Noise may lower it under these conditions."}
 SYNONYM = "Longer sessions might reduce agreement."
 ASSERTED = "Longer sessions reduce agreement."
 
 
-class HedgedRepairTests(unittest.TestCase):
+class HedgedJournal(unittest.TestCase):
     """A source sentence with a hedge: the audit must account for it before wording is recorded."""
+
+    SCHEMA = rs.JOURNAL_SCHEMA
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1087,6 +1151,10 @@ class HedgedRepairTests(unittest.TestCase):
         """A journal through the decisions stage with one accepted candidate C01 at `anchor`."""
         scope = {"task": "review", "included_block_ids": HEDGED_INCLUDED, "reading_path": "linear", "extraction_notes": "plain", "omissions": [{"block_id": "B0001", "reason": "title"}]}
         rs.start_run(self.index, PROFILE, scope, journal)
+        if self.SCHEMA != rs.JOURNAL_SCHEMA:
+            path = journal / "00-start.json"
+            start = json.loads(path.read_text())
+            path.write_text(json.dumps(rs.sealed({**{k: v for k, v in start.items() if k != "receipt_sha256"}, "schema_version": self.SCHEMA})))
         for stage in ("reading", "checks", "reconcile", "decisions"):
             rs.record_stage(journal, self.index, stage, json.dumps(self.notes(stage, anchor)).encode("utf-8"))
         return journal
@@ -1127,6 +1195,11 @@ class HedgedRepairTests(unittest.TestCase):
         with self.assertRaisesRegex(rp.ReviewDataError, message):
             self.record(value, journal)
         self.assertEqual(sorted(p.name for p in journal.iterdir()), before)
+
+class HedgedRepairTests(HedgedJournal):
+    """The term-level hedge report recorded before 0.20, on a schema 5 journal."""
+
+    SCHEMA = 5
 
     def test_source_hedge_is_found(self):
         self.assertEqual(rp.find_hedges(HEDGED_ANCHOR["quote"]), ["may"])
@@ -1192,6 +1265,63 @@ class HedgedRepairTests(unittest.TestCase):
         audit = self.audit(SYNONYM, [{"term": "may", "status": "kept"}])
         del audit["checks"]["hedges"]
         self.assertRefused("audit\\.checks is missing fields: hedges\\.", self.repairs(SYNONYM, audit, "audit-no-hedges.json"))
+
+
+
+class OccurrenceHedgeTests(HedgedJournal):
+    """The schema 6 report: one entry per hedge occurrence, each kept hedge quoting its own words in the wording."""
+
+    def setUp(self):
+        super().setUp()
+        self.two = self.start(self.root / "two-may", TWO_MAY_ANCHOR)
+
+    def occurrence_audit(self, wording, report, anchor=TWO_MAY_ANCHOR, verdict="preserved", **checks):
+        """report: one (status, kept_as) pair per occurrence, in order."""
+        found = rp.find_hedge_occurrences([anchor["quote"]])
+        audit = self.audit(wording, [{"id": o["id"], "term": o["term"], "status": st, "kept_as": kept} for o, (st, kept) in zip(found, report)], verdict=verdict, anchor=anchor, **checks)
+        return {**audit, "hedges_in_original": found, "hedge_patterns": []}
+
+    def test_occurrences_are_numbered_with_their_clause(self):
+        found = rp.find_hedge_occurrences([TWO_MAY_ANCHOR["quote"]])
+        self.assertEqual([(o["id"], o["term"], o["in_context"]) for o in found],
+                         [("H1", "may", "Longer sessions [[may]] reduce agreement."), ("H2", "may", "Noise [[may]] lower it under these conditions."),
+                          ("H3", "under these conditions", "Noise may lower it [[under these conditions]].")])
+
+    def test_each_kept_hedge_needs_its_own_words(self):
+        good = "Longer sessions might reduce agreement. Noise may lower it under these conditions."
+        one_may = "Longer sessions reduce agreement. Noise may lower it under these conditions."
+        no_may = "Longer sessions might reduce agreement. Noise lowers it under these conditions."
+        kept_all = [("kept", "may"), ("kept", "may"), ("kept", "under these conditions")]
+        cases = (
+            ("one may for two", self.occurrence_audit(one_may, kept_all), "reports H1, H2, H3 kept, but the proposed wording does not hold a separate qualifying phrase for each"),
+            ("condition stands in for may", self.occurrence_audit(no_may, [("kept", "might"), ("kept", "under these conditions"), ("kept", "under these conditions")]), "does not hold a separate qualifying phrase for each"),
+            ("kept_as not in wording", self.occurrence_audit(no_may, [("kept", "might"), ("kept", "may"), ("kept", "under these conditions")]), "hedges\\[1\\]\\.kept_as 'may' is not an exact quotation from the proposed wording\\."),
+            ("kept_as without a hedge", self.occurrence_audit(no_may, [("kept", "might"), ("kept", "lowers"), ("kept", "under these conditions")]), "kept_as 'lowers' contains no hedge the helper recognizes"),
+            ("kept without kept_as", self.occurrence_audit(good, [("kept", "might"), ("kept", None), ("kept", "under these conditions")]), "hedges\\[1\\] is kept, so kept_as must quote the words of the proposed wording that carry H2\\."),
+            ("removed with kept_as", self.occurrence_audit(no_may, [("kept", "might"), ("removed", "lowers"), ("kept", "under these conditions")], uncertainty="changed"), "hedges\\[1\\]\\.kept_as must be null unless the status is kept\\."),
+            ("removed, nothing changed", self.occurrence_audit(no_may, [("kept", "might"), ("removed", None), ("kept", "under these conditions")]), "reports H2 strengthened or removed, so claim_strength or uncertainty must be changed\\."),
+            ("removed, uncertainty changed", self.occurrence_audit(no_may, [("kept", "might"), ("removed", None), ("kept", "under these conditions")], verdict="changed", uncertainty="changed"), "the fidelity audit verdict is changed with changed uncertainty\\."),
+            ("one missing", self.occurrence_audit(good, kept_all[:2]), "does not report every entry in hedges_in_original; missing: H3\\."),
+            ("bad status", self.occurrence_audit(good, [("kept", "might"), ("weakened", None), ("kept", "under these conditions")]), "hedges\\[1\\]\\.status must be one of: kept, removed, strengthened\\."),
+            ("term-level report", {k: v for k, v in self.audit(good, [{"term": "may", "status": "kept"}], anchor=TWO_MAY_ANCHOR).items()}, "fidelity audit is missing fields: hedge_patterns, hedges_in_original\\."),
+        )
+        for n, (name, audit, message) in enumerate(cases, 1):
+            with self.subTest(name=name):
+                self.assertRefused(message, self.repairs(audit["proposed_wording"], audit, f"audit-two-{n}.json"), self.two)
+        duplicated = self.occurrence_audit(good, [("kept", "might"), ("kept", "may"), ("kept", "under these conditions")])
+        duplicated["checks"]["hedges"][2] = {**duplicated["checks"]["hedges"][1]}
+        self.assertRefused("audit\\.checks\\.hedges reports H2 twice; one entry per occurrence\\.", self.repairs(good, duplicated, "audit-two-dup.json"), self.two)
+        renamed = self.occurrence_audit(good, [("kept", "might"), ("kept", "may"), ("kept", "under these conditions")])
+        renamed["checks"]["hedges"][0]["term"] = "might"
+        self.assertRefused("hedges\\[0\\]\\.term must be copied from hedges_in_original \\('may' for H1\\)\\.", self.repairs(good, renamed, "audit-two-renamed.json"), self.two)
+        accepted = self.occurrence_audit(good, [("kept", "might"), ("kept", "may"), ("kept", "under these conditions")])
+        self.assertEqual(self.record(self.repairs(good, accepted, "audit-two-ok.json"), self.two)["next_stage"], "ready")
+        self.assertEqual(rs.ready_run(self.two, self.index)["ready_to_draft"], True)
+
+    def test_a_paraphrased_hedge_is_not_refused_for_its_words(self):
+        paraphrase = "It is possible that longer sessions reduce agreement."
+        audit = self.occurrence_audit(paraphrase, [("kept", "It is possible that")], anchor=HEDGED_ANCHOR)
+        self.assertEqual(self.record(self.repairs(paraphrase, audit, "audit-paraphrase.json"))["next_stage"], "ready")
 
 
 if __name__ == "__main__":

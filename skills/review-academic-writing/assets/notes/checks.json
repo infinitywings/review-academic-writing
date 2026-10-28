@@ -36,6 +36,18 @@
           "block_id": "",
           "quote": ""
         }
+      ],
+      "proposition_checks": [
+        {
+          "anchor": {
+            "block_id": "",
+            "quote": ""
+          },
+          "proposition": "",
+          "supplied_relations": "",
+          "function": "",
+          "needed_here": ""
+        }
       ]
     }
   ],

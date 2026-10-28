@@ -105,8 +105,16 @@ def recall_response(*answers):
     return json.dumps({"answers": [{"question_id": q, "choice": c, "note_ids": list(n)} for q, c, n in answers], "source_recognition": RECOGNITION})
 HEDGED_REQUEST = {"candidate_id": "C06", "original": [{"block_id": "B0002", "quote": "Counts may rise under these conditions."}],
                   "proposed_wording": "Counts might rise under these conditions.", "basis": []}
-KEPT_MAY = {"term": "may", "status": "kept"}
-KEPT_CONDITIONS = {"term": "under these conditions", "status": "kept"}
+KEPT_MAY = {"id": "H1", "term": "may", "status": "kept", "kept_as": "might"}
+KEPT_CONDITIONS = {"id": "H2", "term": "under these conditions", "status": "kept", "kept_as": "under these conditions"}
+HEDGED_OCCURRENCES = [
+    {"id": "H1", "term": "may", "original_index": 0, "start": 7, "end": 10, "in_context": "Counts [[may]] rise under these conditions."},
+    {"id": "H2", "term": "under these conditions", "original_index": 0, "start": 16, "end": 38, "in_context": "Counts may rise [[under these conditions]]."},
+]
+
+
+def hedge(n, term, status, kept_as=None):
+    return {"id": f"H{n}", "term": term, "status": status, "kept_as": kept_as}
 
 
 def masked_response(notes, gist="Counts.", action=("advance", None), claim_source="B1"):
@@ -149,7 +157,9 @@ class DispatchReaderTests(unittest.TestCase):
     def prompt(self, number):
         return (self.fake / "prompts" / f"{number}.txt").read_text()
 
-    def main(self, argv):
+    def main(self, argv, choose_model=True):
+        if choose_model and "--model" not in argv:
+            argv = [*argv, "--model", "default"]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = dr.main(argv)
@@ -616,7 +626,7 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         audit = json.loads(out_path.read_text())
         self.assertEqual(audit["auditor"], {"mode": "bounded-request", "agent_id": "claude-p-sess0001"})
-        self.assertEqual(set(audit), {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "audit_round", "auditor"})
+        self.assertEqual(set(audit), {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "audit_round", "hedges_in_original", "hedge_patterns", "auditor"})
         self.assertEqual(audit["audit_round"], 1)
         self.assertEqual(audit["verdict"], "preserved")
         self.assertTrue(self.prompt(1).startswith("You are an independent auditor of scientific meaning, checking a rewrite that someone else submitted."))
@@ -669,7 +679,7 @@ class DispatchReaderTests(unittest.TestCase):
         code, out, err = self.audit(self.hedged_request(), "C06.audit.json")
         self.assertEqual(code, 0, err)
         sent = self.sent_request(1)
-        self.assertEqual(sent["hedges_in_original"], ["may", "under these conditions"])
+        self.assertEqual(sent["hedges_in_original"], HEDGED_OCCURRENCES)
         self.assertEqual({k: v for k, v in sent.items() if k != "hedges_in_original"}, HEDGED_REQUEST)
         prompt = self.prompt(1)
         self.assertTrue(prompt.startswith("You are an independent auditor of scientific meaning, checking a rewrite that someone else submitted."))
@@ -678,6 +688,7 @@ class DispatchReaderTests(unittest.TestCase):
         audit = json.loads((self.root / "C06.audit.json").read_text())
         self.assertEqual(audit["audit_round"], 1)
         self.assertEqual(audit["checks"]["hedges"], [KEPT_MAY, KEPT_CONDITIONS])
+        self.assertEqual((audit["hedges_in_original"], audit["hedge_patterns"]), (HEDGED_OCCURRENCES, []))
         self.assertEqual(audit["checks"]["added_qualification"], "same")
         self.assertEqual(json.loads((self.events / "summary.json").read_text())["verdict"], "preserved")
 
@@ -696,24 +707,24 @@ class DispatchReaderTests(unittest.TestCase):
                 self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C06", "invalid_format"), ("C06b", "ok")])
                 self.assertEqual(json.loads((self.root / f"{name}.audit.json").read_text())["checks"]["hedges"], [KEPT_MAY, KEPT_CONDITIONS])
 
-    def test_audit_hedges_missing_a_listed_term_is_corrected(self):
-        self.responses(self.hedged_verdict([KEPT_CONDITIONS]), self.hedged_verdict([KEPT_CONDITIONS, {"term": "May", "status": "kept"}]))
+    def test_audit_hedges_missing_an_occurrence_is_corrected(self):
+        self.responses(self.hedged_verdict([KEPT_CONDITIONS]), self.hedged_verdict([KEPT_CONDITIONS, {**KEPT_MAY, "term": "May"}]))
         code, out, err = self.audit(self.hedged_request(), "C06.audit.json")
         self.assertEqual(code, 0, err)
-        self.assertIn("checks.hedges must report every hedge in hedges_in_original; missing: may", self.prompt(2))
-        self.assertIn("checks.hedges must report every hedge", (self.events / "C06.invalid-reason.txt").read_text())
+        self.assertIn("audit.checks.hedges does not report every entry in hedges_in_original; missing: H1.", self.prompt(2))
+        self.assertIn("does not report every entry", (self.events / "C06.invalid-reason.txt").read_text())
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C06", "invalid_format"), ("C06b", "ok")])
-        self.assertEqual([h["term"] for h in json.loads((self.root / "C06.audit.json").read_text())["checks"]["hedges"]], ["under these conditions", "May"])
+        self.assertEqual([h["id"] for h in json.loads((self.root / "C06.audit.json").read_text())["checks"]["hedges"]], ["H2", "H1"])
 
     def test_audit_hedge_removed_requires_a_changed_property(self):
         wording = "Counts rise under these conditions."
-        removed = [{"term": "may", "status": "removed"}, KEPT_CONDITIONS]
+        removed = [hedge(1, "may", "removed"), KEPT_CONDITIONS]
         self.responses(self.hedged_verdict(removed, proposed_wording=wording),
                        self.hedged_verdict(removed, verdict="changed", checks={"claim_strength": "changed"}, proposed_wording=wording))
         code, out, err = self.audit(self.hedged_request(proposed_wording=wording), "C06.audit.json")
         self.assertEqual(code, 0, err)
-        self.assertIn("a hedge reported strengthened or removed (may) requires claim_strength or uncertainty to be changed", self.prompt(2))
+        self.assertIn("audit.checks.hedges reports H1 strengthened or removed, so claim_strength or uncertainty must be changed.", self.prompt(2))
         audit = json.loads((self.root / "C06.audit.json").read_text())
         self.assertEqual((audit["verdict"], audit["checks"]["claim_strength"], audit["checks"]["hedges"][0]["status"]), ("changed", "changed", "removed"))
         summary = json.loads((self.events / "summary.json").read_text())
@@ -721,49 +732,71 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertIn("changed: claim_strength", summary["outcome"])
 
     def test_audit_hedge_strengthened_with_uncertainty_changed_is_accepted(self):
-        hedges = [{"term": "may", "status": "strengthened"}, KEPT_CONDITIONS]
+        hedges = [hedge(1, "may", "strengthened"), KEPT_CONDITIONS]
         self.responses(self.hedged_verdict(hedges, verdict="changed", checks={"uncertainty": "changed"}))
         code, out, err = self.audit(self.hedged_request(), "C06.audit.json")
         self.assertEqual(code, 0, err)
         self.assertFalse((self.events / "C06b.prompt.txt").exists())
         self.assertEqual(json.loads((self.root / "C06.audit.json").read_text())["checks"]["hedges"], hedges)
 
-    def test_audit_duplicate_hedge_term_is_corrected(self):
-        twice = [KEPT_MAY, KEPT_CONDITIONS, {"term": "May", "status": "removed"}]
+    def test_audit_duplicate_hedge_id_is_corrected(self):
+        twice = [KEPT_MAY, KEPT_CONDITIONS, {**KEPT_MAY, "status": "removed", "kept_as": None}]
         self.responses(self.hedged_verdict(twice), self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS]))
         code, out, err = self.audit(self.hedged_request(), "C06.audit.json")
         self.assertEqual(code, 0, err)
-        self.assertIn("checks.hedges lists 'May' twice; one entry per hedge, kept only if every occurrence is kept", self.prompt(2))
+        self.assertIn("audit.checks.hedges reports H1 twice; one entry per occurrence.", self.prompt(2))
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C06", "invalid_format"), ("C06b", "ok")])
         self.assertEqual(json.loads((self.root / "C06.audit.json").read_text())["checks"]["hedges"], [KEPT_MAY, KEPT_CONDITIONS])
 
     def test_audit_kept_hedge_needs_a_hedge_in_the_wording(self):
         wording = "Counts rise."
-        kept = [KEPT_MAY, {"term": "under these conditions", "status": "removed"}]
-        honest = [{"term": "may", "status": "removed"}, {"term": "under these conditions", "status": "removed"}]
+        kept = [{**KEPT_MAY, "kept_as": "rise"}, hedge(2, "under these conditions", "removed")]
+        honest = [hedge(1, "may", "removed"), hedge(2, "under these conditions", "removed")]
         self.responses(self.hedged_verdict(kept, checks={"uncertainty": "changed"}, verdict="changed", proposed_wording=wording),
                        self.hedged_verdict(honest, checks={"claim_strength": "changed", "uncertainty": "changed"}, verdict="changed", proposed_wording=wording))
         code, out, err = self.audit(self.hedged_request(proposed_wording=wording), "C06.audit.json")
         self.assertEqual(code, 0, err)
-        self.assertIn("a hedge reported kept (may) but the proposed wording carries no hedge; report it removed or strengthened, with claim_strength or uncertainty changed", self.prompt(2))
+        self.assertIn("audit.checks.hedges[0].kept_as 'rise' contains no hedge the helper recognizes", self.prompt(2))
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C06", "invalid_format"), ("C06b", "ok")])
         self.assertEqual([h["status"] for h in json.loads((self.root / "C06.audit.json").read_text())["checks"]["hedges"]], ["removed", "removed"])
         # A kept hedge survives through a synonym the helper lists, with no correction.
         (self.fake / "counter.txt").write_text("0")
-        self.responses(self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS], proposed_wording="Counts could rise under these conditions."))
+        could = [{**KEPT_MAY, "kept_as": "could"}, KEPT_CONDITIONS]
+        self.responses(self.hedged_verdict(could, proposed_wording="Counts could rise under these conditions."))
         code, out, err = self.audit(self.hedged_request("synonym.input.json", proposed_wording="Counts could rise under these conditions."), "synonym.audit.json", events=self.root / "events-synonym")
         self.assertEqual(code, 0, err)
         self.assertFalse((self.root / "events-synonym" / "C06b.prompt.txt").exists())
-        self.assertEqual(json.loads((self.root / "synonym.audit.json").read_text())["checks"]["hedges"], [KEPT_MAY, KEPT_CONDITIONS])
+        self.assertEqual(json.loads((self.root / "synonym.audit.json").read_text())["checks"]["hedges"], could)
+
+    def test_audit_kept_hedges_cannot_share_words(self):
+        # Two occurrences of "may", one left in the wording: both cannot be kept (the diagnosis's first case).
+        original = [{"block_id": "B0002", "quote": "Counts may rise. Costs may fall."}]
+        wording = "Counts rise. Costs may fall."
+        lying = [hedge(1, "may", "kept", "may"), hedge(2, "may", "kept", "may")]
+        honest = [hedge(1, "may", "removed"), hedge(2, "may", "kept", "may")]
+        self.responses(json.dumps({**json.loads(self.hedged_verdict(lying, proposed_wording=wording)), "original": original}),
+                       json.dumps({**json.loads(self.hedged_verdict(honest, verdict="changed", checks={"claim_strength": "changed"}, proposed_wording=wording)), "original": original}))
+        code, out, err = self.audit(self.hedged_request("two.input.json", original=original, proposed_wording=wording), "two.audit.json")
+        self.assertEqual(code, 0, err)
+        self.assertIn("reports H1, H2 kept, but the proposed wording does not hold a separate qualifying phrase for each", self.prompt(2))
+        self.assertEqual([h["status"] for h in json.loads((self.root / "two.audit.json").read_text())["checks"]["hedges"]], ["removed", "kept"])
+        # A surviving condition cannot stand in for a deleted "may" (the diagnosis's third case).
+        (self.fake / "counter.txt").write_text("0")
+        wording = "Counts rise under these conditions."
+        self.responses(self.hedged_verdict([{**KEPT_MAY, "kept_as": "under these conditions"}, KEPT_CONDITIONS], proposed_wording=wording),
+                       self.hedged_verdict([hedge(1, "may", "removed"), KEPT_CONDITIONS], verdict="changed", checks={"claim_strength": "changed"}, proposed_wording=wording))
+        code, out, err = self.audit(self.hedged_request("cond.input.json", proposed_wording=wording), "cond.audit.json", events=self.root / "events-cond")
+        self.assertEqual(code, 0, err)
+        self.assertIn("does not hold a separate qualifying phrase for each", (self.root / "events-cond" / "C06b.prompt.txt").read_text())
 
     def test_audit_hedge_item_shape_and_status_are_checked(self):
-        self.responses(self.hedged_verdict([{"term": "may"}, KEPT_CONDITIONS]), self.hedged_verdict([{"term": "may", "status": "weakened"}, KEPT_CONDITIONS]), self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS]))
+        self.responses(self.hedged_verdict([{"term": "may", "status": "kept"}, KEPT_CONDITIONS]), self.hedged_verdict([{**KEPT_MAY, "status": "weakened"}, KEPT_CONDITIONS]), self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS]))
         code, out, err = self.audit(self.hedged_request(), "C06.audit.json")
         self.assertEqual(code, 0, err)
-        self.assertIn("checks.hedges must be an array of {term, status} objects, one per hedge in hedges_in_original", self.prompt(2))
-        self.assertIn("each checks.hedges status must be kept, strengthened, or removed", self.prompt(3))
+        self.assertIn("audit.checks.hedges[0] must be an object with exactly id, term, status, and kept_as.", self.prompt(2))
+        self.assertIn("audit.checks.hedges[0].status must be one of: kept, removed, strengthened.", self.prompt(3))
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([r["status"] for r in summary["calls"]], ["invalid_format", "invalid_format", "ok"])
 
@@ -773,7 +806,7 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         audit = json.loads((self.root / "round2.audit.json").read_text())
         self.assertEqual(audit["audit_round"], 2)
-        self.assertEqual(list(audit), ["candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "audit_round", "auditor"])
+        self.assertEqual(list(audit), ["candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "audit_round", "hedges_in_original", "hedge_patterns", "auditor"])
         self.assertNotIn("audit_round", self.sent_request(1))
         code, out, err = self.audit(self.hedged_request(), "round0.audit.json", "--round", "0", events=self.root / "events-zero")
         self.assertEqual(code, 2)
@@ -788,24 +821,35 @@ class DispatchReaderTests(unittest.TestCase):
         hedge_list = self.root / "hedges.json"
         hedge_list.write_text(json.dumps(["\\bwe believe\\b"]))
         original = [{"block_id": "B0002", "quote": "We believe counts rose."}]
-        believe = {"term": "We believe", "status": "kept"}
+        believe = hedge(1, "We believe", "kept", "We believe")
         self.responses(json.dumps({**json.loads(self.hedged_verdict([believe])), "original": original, "proposed_wording": "We believe counts increased."}))
         code, out, err = self.audit(self.hedged_request("believe.input.json", original=original, proposed_wording="We believe counts increased."), "believe.audit.json", "--hedge-list", str(hedge_list))
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.sent_request(1)["hedges_in_original"], ["We believe"])
-        self.assertEqual(json.loads((self.root / "believe.audit.json").read_text())["checks"]["hedges"], [believe])
-        # Without the list the same original carries no hedge, and an input that lists a term already found merges without a duplicate.
-        self.responses(self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS]), self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS, {"term": "according to the authors", "status": "kept"}]))
+        self.assertEqual([(o["id"], o["term"]) for o in self.sent_request(1)["hedges_in_original"]], [("H1", "We believe")])
+        audit = json.loads((self.root / "believe.audit.json").read_text())
+        self.assertEqual((audit["checks"]["hedges"], audit["hedge_patterns"]), ([believe], ["\\bwe believe\\b"]))
+        # A phrase the input lists joins the patterns; one already found adds nothing; one absent from the original is refused before any call.
+        self.responses(self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS]),
+                       json.dumps({**json.loads(self.hedged_verdict([hedge(1, "According to the authors", "kept", "According to the authors"), {**KEPT_MAY, "id": "H2"}, {**KEPT_CONDITIONS, "id": "H3"}],
+                                                                    proposed_wording="According to the authors, counts might rise under these conditions.")),
+                                   "original": [{"block_id": "B0002", "quote": "According to the authors, counts may rise under these conditions."}]}))
         (self.fake / "counter.txt").write_text("0")
         code, out, err = self.audit(self.hedged_request("given.input.json", hedges_in_original=["May"]), "given.audit.json", events=self.root / "events-given")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.sent_request(1)["hedges_in_original"], ["may", "under these conditions"])
-        code, out, err = self.audit(self.hedged_request("extra.input.json", hedges_in_original=["according  to the authors"]), "extra.audit.json", events=self.root / "events-extra")
+        self.assertEqual(self.sent_request(1)["hedges_in_original"], HEDGED_OCCURRENCES)
+        extra = self.hedged_request("extra.input.json", hedges_in_original=["according  to the authors"], original=[{"block_id": "B0002", "quote": "According to the authors, counts may rise under these conditions."}],
+                                    proposed_wording="According to the authors, counts might rise under these conditions.")
+        code, out, err = self.audit(extra, "extra.audit.json", events=self.root / "events-extra")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.sent_request(2)["hedges_in_original"], ["may", "under these conditions", "according to the authors"])
+        self.assertEqual([o["term"] for o in self.sent_request(2)["hedges_in_original"]], ["According to the authors", "may", "under these conditions"])
+        self.assertEqual(json.loads((self.root / "extra.audit.json").read_text())["hedge_patterns"], [rp.term_pattern("according  to the authors")])
+        code, out, err = self.audit(self.hedged_request("absent.input.json", hedges_in_original=["according to the authors"]), "absent.audit.json", events=self.root / "events-absent")
+        self.assertEqual(code, 2)
+        self.assertIn("hedges_in_original in --input lists 'according to the authors', which does not occur in the original quotes.", err)
         code, out, err = self.audit(self.hedged_request("bad.input.json", hedges_in_original="may"), "bad.audit.json", events=self.root / "events-bad")
         self.assertEqual(code, 2)
         self.assertIn("hedges_in_original in --input must be an array of nonempty strings when present.", err)
+        self.assertEqual((self.fake / "counter.txt").read_text(), "2", "no model call was made for the refused inputs")
 
     def test_malformed_hedge_list_exits_2_before_any_call(self):
         self.responses(self.hedged_verdict([KEPT_MAY, KEPT_CONDITIONS]))
@@ -831,22 +875,36 @@ class DispatchReaderTests(unittest.TestCase):
         good.write_text(json.dumps(["\\bwe (?:believe|think)\\b"]))
         self.assertEqual(dr.load_hedge_list(str(good)), ["\\bwe (?:believe|think)\\b"])
         original = [{"block_id": "B0002", "quote": "We think counts may rise."}]
-        self.responses(json.dumps({**json.loads(self.hedged_verdict([{"term": "We think", "status": "kept"}, KEPT_MAY])), "original": original, "proposed_wording": "We think counts might rise."}))
+        self.responses(json.dumps({**json.loads(self.hedged_verdict([hedge(1, "We think", "kept", "We think"), {**KEPT_MAY, "id": "H2"}])), "original": original, "proposed_wording": "We think counts might rise."}))
         code, out, err = self.audit(self.hedged_request("good.input.json", original=original, proposed_wording="We think counts might rise."), "good.audit.json", "--hedge-list", str(good), events=self.root / "events-good")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.sent_request(1)["hedges_in_original"], ["We think", "may"])
+        self.assertEqual([o["term"] for o in self.sent_request(1)["hedges_in_original"]], ["We think", "may"])
 
     # ------------------------------------------------------------ CLI
 
-    def test_claude_runtime_defaults_to_opus_5_5(self):
+    def test_claude_runtime_has_no_built_in_model(self):
         self.responses(self.audit_verdict_json())
-        code, out, err = self.main(["audit", "--events", str(self.events), "--input", str(self.audit_request()), "--out", str(self.root / "a.json")])
+        code, out, err = self.main(["audit", "--events", str(self.events), "--input", str(self.audit_request()), "--out", str(self.root / "a.json")], choose_model=False)
+        self.assertEqual(code, 2)
+        self.assertIn("ask the user which model to use", err)
+        self.assertFalse((self.events / "C04.prompt.txt").exists(), "nothing is dispatched before the model is chosen")
+        self.assertFalse(hasattr(dr, "CLAUDE_DEFAULT_MODEL"))
+
+    def test_model_default_leaves_the_choice_to_the_claude_command(self):
+        self.responses(self.audit_verdict_json())
+        code, out, err = self.main(["audit", "--events", str(self.events), "--input", str(self.audit_request()), "--out", str(self.root / "a.json"), "--model", "default"])
         self.assertEqual(code, 0, err)
         argv = json.loads((self.fake / "prompts" / "1.argv.json").read_text())
-        self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5")
-        self.assertEqual(dr.CLAUDE_DEFAULT_MODEL, "claude-opus-5-5")
+        self.assertNotIn("--model", argv)
+
+    def test_a_named_model_is_passed_through_and_recorded(self):
+        self.responses(self.audit_verdict_json())
+        code, out, err = self.main(["audit", "--events", str(self.events), "--input", str(self.audit_request()), "--out", str(self.root / "a.json"), "--model", "claude-sonnet-5-5"])
+        self.assertEqual(code, 0, err)
+        argv = json.loads((self.fake / "prompts" / "1.argv.json").read_text())
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-sonnet-5-5")
         provenance = json.loads((self.events / "C04.provenance.json").read_text())
-        self.assertIn("claude-opus-5-5", provenance["command"])
+        self.assertIn("claude-sonnet-5-5", provenance["command"])
 
     def audit_request(self):
         request = {"candidate_id": "C04", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "proposed_wording": "Counts increased.", "basis": [{"fact": "Counts rose.", "location": "B0002"}]}
@@ -894,7 +952,9 @@ class CodexRuntimeTests(unittest.TestCase):
     def responses(self, *entries):
         (self.fake / "codex-responses.json").write_text(json.dumps(list(entries)))
 
-    def main(self, argv):
+    def main(self, argv, choose_model=True):
+        if choose_model and "--model" not in argv:
+            argv = [*argv, "--model", "default"]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = dr.main(argv)
@@ -948,6 +1008,11 @@ class CodexRuntimeTests(unittest.TestCase):
         provenance = json.loads((self.events / "C01.provenance.json").read_text())
         self.assertEqual(provenance["command_executions"][0]["command"], "cat manuscript.md")
         self.assertFalse((self.root / "audit.json").exists())
+
+    def test_codex_runtime_needs_a_chosen_model(self):
+        code, out, err = self.main(["audit", "--runtime", "codex", "--events", str(self.events), "--input", str(self.audit_input()), "--out", str(self.root / "a.json")], choose_model=False)
+        self.assertEqual(code, 2)
+        self.assertIn("--model default to let the codex command use its own configured default", err)
 
     def test_codex_runtime_rejects_config_and_needs_the_executable(self):
         config = self.root / "llm.json"

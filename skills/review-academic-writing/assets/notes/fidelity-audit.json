@@ -21,13 +21,26 @@
     "added_qualification": "",
     "hedges": [
       {
+        "id": "H1",
         "term": "",
-        "status": ""
+        "status": "",
+        "kept_as": null
       }
     ]
   },
   "notes": "",
   "audit_round": 1,
+  "hedges_in_original": [
+    {
+      "id": "H1",
+      "term": "",
+      "original_index": 0,
+      "start": 0,
+      "end": 0,
+      "in_context": ""
+    }
+  ],
+  "hedge_patterns": [],
   "auditor": {
     "mode": "",
     "agent_id": ""

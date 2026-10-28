@@ -347,38 +347,43 @@ class InputTests(unittest.TestCase):
         with self.assertRaises(df.DifficultyError):
             df._anchor_text([{"block_id": "B0001"}])
 
-    def test_compare_pairs_from_repairs_and_checks(self):
+    def test_compare_pairs_from_repairs_take_the_audited_original(self):
         with tempfile.TemporaryDirectory() as tmp:
             repairs = Path(tmp) / "repairs.json"
-            checks = Path(tmp) / "checks.json"
+            audit = Path(tmp) / "C01.audit.json"
+            # The audit quoted the whole sentence the wording replaces, not the short candidate anchor.
+            audit.write_text(json.dumps({"candidate_id": "C01", "original": [{"block_id": "B0002", "quote": "The parser is utilized"}, {"block_id": "B0002", "quote": "for every sentence."}]}), encoding="utf-8")
+            not_audit = Path(tmp) / "C04.audit.json"
+            not_audit.write_text(json.dumps({"candidate_id": "C04"}), encoding="utf-8")
             repairs.write_text(json.dumps({"repairs": [
-                {"candidate_id": "C01", "proposed_wording": "We use the parser."},
-                {"candidate_id": "C02", "proposed_wording": None},
-                {"candidate_id": "C03", "proposed_wording": "Orphan wording."},
+                {"candidate_id": "C01", "proposed_wording": "We use the parser for every sentence.", "audit_path": str(audit)},
+                {"candidate_id": "C02", "proposed_wording": None, "audit_path": None},
+                {"candidate_id": "C03", "proposed_wording": "Unaudited wording.", "audit_path": None},
             ]}), encoding="utf-8")
-            checks.write_text(json.dumps({"candidates": [{"id": "C01", "anchor": {"block_id": "B0002", "quote": "The parser is utilized."}}]}), encoding="utf-8")
-            args = argparse.Namespace(original=None, proposed=None, candidate_id=None, input=None, repairs=str(repairs), checks=str(checks))
-            pairs = df.compare_pairs_from_args(args)
-            self.assertEqual(pairs, [
-                {"candidate_id": "C01", "original": "The parser is utilized.", "proposed_wording": "We use the parser."},
-                {"candidate_id": "C03", "skipped": "no candidate anchor in --checks"},
+            args = argparse.Namespace(original=None, proposed=None, candidate_id=None, input=None, repairs=str(repairs))
+            self.assertEqual(df.compare_pairs_from_args(args), [
+                {"candidate_id": "C01", "original": "The parser is utilized for every sentence.", "proposed_wording": "We use the parser for every sentence."},
+                {"candidate_id": "C03", "skipped": "no audit_path in the repair; audit the wording first"},
             ])
+            repairs.write_text(json.dumps({"repairs": [{"candidate_id": "C04", "proposed_wording": "W.", "audit_path": str(not_audit)}]}), encoding="utf-8")
+            with self.assertRaisesRegex(df.DifficultyError, "is not a fidelity audit with an original"):
+                df.compare_pairs_from_args(args)
 
     def test_compare_pairs_from_audit_input_and_strings(self):
         with tempfile.TemporaryDirectory() as tmp:
             audit_input = Path(tmp) / "C04.input.json"
             audit_input.write_text(json.dumps({"candidate_id": "C04", "original": [{"block_id": "B0001", "quote": "Old."}], "proposed_wording": "New.", "basis": []}), encoding="utf-8")
-            args = argparse.Namespace(original="A.", proposed="B.", candidate_id="X", input=str(audit_input), repairs=None, checks=None)
+            args = argparse.Namespace(original="A.", proposed="B.", candidate_id="X", input=str(audit_input), repairs=None)
             self.assertEqual(df.compare_pairs_from_args(args), [
                 {"candidate_id": "X", "original": "A.", "proposed_wording": "B."},
                 {"candidate_id": "C04", "original": "Old.", "proposed_wording": "New."},
             ])
 
     def test_compare_pairs_requires_an_input(self):
-        args = argparse.Namespace(original="A.", proposed=None, candidate_id=None, input=None, repairs=None, checks=None)
+        args = argparse.Namespace(original="A.", proposed=None, candidate_id=None, input=None, repairs=None)
         with self.assertRaises(df.DifficultyError):
             df.compare_pairs_from_args(args)
-        args = argparse.Namespace(original=None, proposed=None, candidate_id=None, input=None, repairs=None, checks=None)
+        args = argparse.Namespace(original=None, proposed=None, candidate_id=None, input=None, repairs=None)
         with self.assertRaises(df.DifficultyError):
             df.compare_pairs_from_args(args)
 

@@ -1,5 +1,52 @@
 # 变更说明
 
+## 未发布
+
+三处不兼容改动：读者和审计的模型改为使用时询问；保真审计改为逐处报告限定语；记录特征比较时要核对被替换的原文。日志 schema 升到 6。
+
+### 读者模型由使用者指定
+
+技能可能交给不同的智能体使用，所以不再把读者和审计的模型固定为 `claude-opus-5-5`，改为使用时询问。claude 和 codex 运行时不给 `--model` 会报错。
+
+- `dispatch_reader.py`：删除常量 `CLAUDE_DEFAULT_MODEL`。`--runtime claude` 和 `--runtime codex` 必须给 `--model`：给模型名就原样传入；给 `default` 就不传 `--model`，由该命令自己配置的默认模型回答（claude 的出处记录里 `model_usage` 显示实际模型）。不给时在任何调用之前以退出码 2 停下，提示先问用户用哪个模型。`--runtime http` 不变，模型仍来自配置文件，`--model default` 等于不覆盖。
+- `SKILL.md`：第一次调用读者或审计之前，先问用户读者和审计用什么运行时和模型（用户已经说过就不再问），不替用户选；同一次运行里所有读者和审计用同一个模型，写进 scope 记录（例如 `reader_model`）和调用记录。
+- 文档里 claude 和 codex 的命令示例都加上 `--model MODEL`（`SKILL.md`、包内 README、`references/masked-reading.md`、`references/staged-review.md`）；仓库首页 README 改为说明会询问模型。
+- 测试：原来检查默认 Opus 5.5 的一个测试换成四个（claude 不给模型时报错且不发调用、`--model default` 不传 `--model`、指定模型原样传入并记录、codex 不给模型时报错）；测试辅助函数在没给 `--model` 时补 `--model default`。
+
+### 限定语逐处核对（2026-10-28 诊断 P0-A）
+
+原来的检查对同一个词只列一次，并且改稿里只要还剩任何一个限定语，就接受审计员报的 kept。诊断给出的三个反例都能通过：两个 may 删了一个；may 删了但 "under these conditions" 还在；may 从一个命题换到了另一个命题上。
+
+- `review_packets.py`：新增 `find_hedge_occurrences`，原文里每出现一次限定语就列一项，编号 H1、H2……，带上它所在的分句（限定语用 [[ ]] 标出）。新增 `check_hedge_report`：每一处按 id 报告一次；报 kept 的必须在 `kept_as` 里逐字引用改稿中承载它的词，这些词要含有可识别的限定语或原词；两处 kept 不能落在同一段词上。`dispatch_reader.py audit` 和 `review_steps.py` 共用这套规则。
+- `dispatch_reader.py audit`：发给审计员的 `hedges_in_original` 改为逐处列出；输入里列出的短语加进匹配模式，原文里找不到就在调用前报错。审计文件由调度端写入 `hedges_in_original` 和 `hedge_patterns`。
+- `review_steps.py`：日志 schema 6。审计必须带这两个字段，`review_steps.py` 会根据 `original` 重新找一遍限定语，结果必须与记录一致。schema 5 日志仍接受原来按词报告的格式。
+- 审计提示词：kept 的意思是同一个限定语仍然修饰同一个命题（谁对谁做什么、肯定还是否定、范围不变）。条件要整句保留，只留下 "if" 不算。换到另一个命题上的限定语，在原命题上算 removed，在新命题上算 added_qualification。
+- 边界：第三个反例（限定语换了命题）程序看不出来，仍靠审计员判断。`test_a_hedge_moved_to_another_claim_is_left_to_the_auditor` 把这个边界写成了测试。
+
+### 特征比较绑定被审计的原文（P0-B）
+
+原来 `feature_comparison` 只核对 candidate_id 和改稿，不核对 original，也不重算比例。把 original 换成改稿本身，比例就变成 0、light，heavy 的修改也就不需要给理由了。`--repairs` 批量模式还会拿候选里的短锚点引文当原文。
+
+- `review_steps.py`：用比较结果里的两段文本重新计算 `edit_ratio` 和 `edit_weight`，与报告不符就拒绝；在 schema 6 日志里，比较的原文还必须是审计 `original` 用空格连起来的文本。
+- `difficulty_features.py compare --repairs`：原文改为从每条修改的 `audit_path` 读取，不再需要 `--checks`；没有审计的修改标为 skipped。
+- heavy 不等于改变了意思：给出理由仍然可以保留。
+
+- 测试：新增 schema 6 的逐处报告测试、诊断反例的回归测试、比较绑定原文和重算比例的测试；原来按词报告的测试改在 schema 5 日志上运行。
+
+### 读起来顺、实际没说什么的句子（P1-B）
+
+- `review-rubric.md` 新增 3b 节：对可疑的核心句（方法、贡献、目标、意义），写下它从可见文本里实际表达的命题，列出编辑自己补上的关系及其来源，说明这句话在这里起什么作用，以及缺的关系此处是否必需。不编造机制、例子、输入或评价标准；预告、对比、提醒、导航句先看作用再决定是否删。沿用现有类别，不另设"空泛"总分。
+- checks 记录里每个 passage 可选 `proposition_checks`（`anchor`、`proposition`、`supplied_relations`、`function`、`needed_here`）。`function` 取值：fact、definition、premise、comparison、preview、reminder、navigation、other。`review_steps.py` 只核对字段是否齐全、锚点是否引自该段。
+- 这段要求只写给编辑（rubric、`staged-review.md`、`wording-and-sentences.md`），不放进 prefix 读者的提示词，以免预先告诉读者该找什么。
+
+### 其他
+
+- `difficulty_features.py`：输出的 scope 说明和文档都注明：z-score 在每篇稿子内部分别标准化，只能用来给同一版本里的段落排序，不能比较两个版本，也不能说明分数降了文本就变好了（诊断里的"特征层限制"）。
+- `review_steps.py ready` 的输出新增 `overlapping_wordings`：列出两条以上带改稿的修改同时涉及的段落。`staged-review.md` 要求在副本上把这些改稿合起来读一遍，检查定义、指代、例子和提醒有没有丢；合起来出问题的，改为互斥的备选方案。这一项只提示，不拦截（P2-B 的轻量部分）。
+- `staged-review.md`：保持原文（KEEP）或退回早先的写法（REVERT）都算成功的结果；只有仍存在定位明确、有证据的问题时才继续改，不因为"还能更 polished"而开新一轮。
+
+共 280 个测试。
+
 ## 0.19.2（2026-10-27）
 
 包内 README 改为英文。命令行、文件格式、日志 schema、脚本和测试都不变。

@@ -245,5 +245,33 @@ class ReviewPacketsTests(unittest.TestCase):
                 "code": "output_exists", "message": "Output path already exists; choose a new path."}})
 
 
+
+class HedgeReportTests(unittest.TestCase):
+    """review_packets.check_hedge_report on the cases of the October 2026 diagnosis (each audit reports every hedge kept)."""
+
+    def check(self, original, wording, kept_as, **checks):
+        found = rp.find_hedge_occurrences([original])
+        report = [{"id": o["id"], "term": o["term"], "status": "kept", "kept_as": k} for o, k in zip(found, kept_as)]
+        rp.check_hedge_report(found, report, checks, wording)
+
+    def test_a_kept_report_the_wording_cannot_carry_is_refused(self):
+        with self.assertRaisesRegex(rp.ReviewDataError, "reports H1, H2 kept, but the proposed wording does not hold a separate qualifying phrase"):
+            self.check("X may reduce errors. Y may increase latency.", "X reduces errors. Y may increase latency.", ["may", "may"])
+        with self.assertRaisesRegex(rp.ReviewDataError, "does not hold a separate qualifying phrase"):
+            self.check("X may reduce errors under these conditions.", "X reduces errors under these conditions.", ["under these conditions", "under these conditions"])
+
+    def test_paraphrase_and_overlapping_quotations(self):
+        self.check("X may reduce errors.", "It is possible that X reduces errors.", ["It is possible that"])
+        # Two kept hedges may quote different words that do not overlap; overlapping quotations are one place.
+        self.check("X may reduce errors under these conditions.", "X might reduce errors under these conditions.", ["might", "under these conditions"])
+        with self.assertRaisesRegex(rp.ReviewDataError, "does not hold a separate qualifying phrase"):
+            self.check("X may possibly reduce errors.", "X might reduce errors.", ["might", "might reduce"])
+
+    def test_a_hedge_moved_to_another_claim_is_left_to_the_auditor(self):
+        # One "may" before and after, on a different claim: the texts cannot show the move, so the check passes.
+        # The audit prompt asks the auditor to compare which claim each hedge qualifies.
+        self.check("X may reduce errors. Y increases latency.", "X reduces errors. Y may increase latency.", ["may"])
+
+
 if __name__ == "__main__":
     unittest.main()

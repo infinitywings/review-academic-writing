@@ -83,7 +83,10 @@ LIGHT_EDIT_RATIO = 0.2
 SCOPE_NOTE = (
     "Candidate-nomination heuristics computed from a dependency parse (model-side "
     "evidence). Counts are not findings: they nominate passages for the editor's "
-    "wording_check and do not measure human reading difficulty."
+    "wording_check and do not measure human reading difficulty. The ranking is "
+    "standardized within one document, so it cannot compare two versions or two "
+    "manuscripts; compare raw counts and rates with their word counts instead, and "
+    "do not treat a lower count as a better text."
 )
 INSTALL_HELP = """spaCy is not installed in this Python. It is an optional dependency; install it in a
 separate environment under the working directory (not in the skill directory):
@@ -758,22 +761,20 @@ def compare_pairs_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
             raise DifficultyError("--input must be the audit input JSON with candidate_id, original and proposed_wording.")
         pairs.append({"candidate_id": request.get("candidate_id"), "original": _anchor_text(request["original"]), "proposed_wording": str(request["proposed_wording"])})
     if args.repairs is not None:
-        if args.checks is None:
-            raise DifficultyError("--repairs needs --checks to look up each candidate's anchor quote as the original.")
         repairs = rp.load_json(args.repairs)
-        checks = rp.load_json(args.checks)
-        anchors = {c.get("id"): c.get("anchor", {}) for c in checks.get("candidates", []) if isinstance(c, dict)}
         for repair in repairs.get("repairs", []):
             wording = repair.get("proposed_wording")
             if not isinstance(wording, str) or not wording.strip():
                 continue
-            anchor = anchors.get(repair.get("candidate_id"))
-            if not anchor or not isinstance(anchor.get("quote"), str):
-                pairs.append({"candidate_id": repair.get("candidate_id"), "skipped": "no candidate anchor in --checks"})
+            if not isinstance(repair.get("audit_path"), str):
+                pairs.append({"candidate_id": repair.get("candidate_id"), "skipped": "no audit_path in the repair; audit the wording first"})
                 continue
-            pairs.append({"candidate_id": repair.get("candidate_id"), "original": anchor["quote"], "proposed_wording": wording})
+            audit = rp.load_json(repair["audit_path"])
+            if not isinstance(audit, dict) or "original" not in audit:
+                raise DifficultyError(f"audit_path {repair['audit_path']} for {repair.get('candidate_id')} is not a fidelity audit with an original.")
+            pairs.append({"candidate_id": repair.get("candidate_id"), "original": _anchor_text(audit["original"]), "proposed_wording": wording})
     if not pairs:
-        raise DifficultyError("Give --original with --proposed, or --input, or --repairs with --checks.")
+        raise DifficultyError("Give --original with --proposed, or --input, or --repairs.")
     return pairs
 
 
@@ -915,8 +916,7 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--proposed", help="Proposed wording, or @path to read a file.")
     compare.add_argument("--candidate-id", help="Label for the --original/--proposed pair.")
     compare.add_argument("--input", help="Audit input JSON (candidate_id, original anchors, proposed_wording).")
-    compare.add_argument("--repairs", help="repairs.json; every repair with proposed_wording is compared with its candidate anchor from --checks.")
-    compare.add_argument("--checks", help="checks.json that holds the candidates' anchors (with --repairs).")
+    compare.add_argument("--repairs", help="repairs.json; every repair with proposed_wording is compared with the original its fidelity audit (audit_path) quoted.")
     compare.add_argument("--lexical-only", action="store_true", help="Compute only the edit ratio, type-token ratio and mean word length (no spaCy needed).")
     common(compare)
     return parser

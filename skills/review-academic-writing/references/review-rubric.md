@@ -3,7 +3,7 @@
 ## Contents
 
 - Review contract and information boundaries
-- Concepts, dispersion, and paragraph function
+- Concepts, dispersion, paragraph function, and what a fluent sentence states
 - Definitions, evidence, and scientific meaning
 - False positives, editing priority, and acceptance
 - Wording and sentence construction
@@ -70,6 +70,17 @@
 - Check dependencies among aims or thrusts: readers should know what each produces and what later work needs from it.
 - Preserve the difference between preliminary evidence, established capability, planned work, and an expected outcome.
 - These are functional checks across the relevant section, not a demand that every paragraph contain every component.
+
+## 3b. What a fluent sentence actually states
+
+A sentence can read smoothly and still say little: "Our framework enables context-aware reasoning through seamless integration of heterogeneous information." Do not treat a fluent paraphrase, yours or a reader's, as evidence that the passage explains its claim. For a suspected central sentence (a method, contribution, aim, or significance statement), record a `proposition_checks` entry in that passage's checks:
+
+- `proposition`: the concrete proposition or relation the sentence conveys, from the visible text and the agreed reader background only: who or what acts, the action, the object, and any condition, scope, or uncertainty. Mark a dimension that does not apply as not applicable rather than forcing a technical-system template onto it.
+- `supplied_relations`: every relation you added yourself to make the sentence mean something, and where it came from (this sentence, an earlier block, the agreed background, or nowhere).
+- `function`: what the sentence does here: `fact`, `definition`, `premise`, `comparison`, `preview`, `reminder`, `navigation`, or `other`.
+- `needed_here`: whether a missing relation is needed at this point or is honestly deferred, and what deleting the sentence would lose.
+
+In the example, replacing "seamless" changes nothing. The questions are what the context is, which information is combined, and what reasoning depends on it, and whether the reader needs those answers here. If the manuscript answers them elsewhere, the candidate repair moves the shortest explanation forward; if it does not, the repair is an author question. Do not invent a mechanism, example, input, condition, or evaluation criterion to make the prose specific. A preview, contrast, reminder, or navigation sentence can be useful without adding a scientific proposition; check its role before recommending deletion. Use the existing categories (`missing_relation`, `paragraph_function`, `word_choice`) for any resulting candidate; there is no separate score for vague prose. The record makes the diagnosis checkable; it does not make it correct.
 
 ## 4. Definition versus evidence
 

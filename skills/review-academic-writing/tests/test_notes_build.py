@@ -164,7 +164,8 @@ class NotesBuildTests(unittest.TestCase):
         checks = {name: "same" for name in AUDIT_CHECKS}
         checks.update(changed)
         return {"candidate_id": "C01", "proposed_wording": wording, "original": [ORIGINAL], "verdict": verdict, "checks": {**checks, "hedges": []},
-                "notes": "Threshold kept; RVG spelled out from B0004.", "audit_round": audit_round, "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"}}
+                "notes": "Threshold kept; RVG spelled out from B0004.", "audit_round": audit_round, "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"},
+                "hedges_in_original": nb.rp.find_hedge_occurrences([ORIGINAL["quote"]]), "hedge_patterns": []}
 
     def write_audits(self):
         """Round 1 changed the quantifiers; round 2 preserved the meaning: the edit's wording must come from round 2."""
@@ -172,7 +173,7 @@ class NotesBuildTests(unittest.TestCase):
         self.write("audits/C01-2.audit.json", self.audit(2, "preserved"))
 
     def compare_result(self, wording=WORDING):
-        return {"command": "compare", "comparisons": [{"candidate_id": "C01", "proposed_wording": wording, "lexical": {"edit_weight": "light", "edit_ratio": 0.1}}]}
+        return {"command": "compare", "comparisons": [nb.rs.df.lexical_comparison("C01", ORIGINAL["quote"], wording)]}
 
     # ---------------------------------------------------------------- tests
 

@@ -108,6 +108,106 @@ def find_hedges(text: str, extra_patterns: tuple[str, ...] | list[str] = ()) -> 
     return list(found.values())
 
 
+HEDGE_REPORT_KEYS = {"id", "term", "status", "kept_as"}
+HEDGE_OCCURRENCE_KEYS = {"id", "term", "original_index", "start", "end", "in_context"}
+HEDGE_REPORT_STATUSES = {"kept", "strengthened", "removed"}
+_CLAUSE_END = re.compile(r"[.;:!?](?=\s|$)")
+
+
+def hedge_regex(extra_patterns: tuple[str, ...] | list[str] = ()) -> re.Pattern[str]:
+    return HEDGE_REGEX if not extra_patterns else re.compile("|".join((*HEDGE_PATTERNS, *extra_patterns)), re.IGNORECASE)
+
+
+def term_pattern(term: str) -> str:
+    """A regular expression for a caller-given hedge phrase: its words in order, any whitespace between them."""
+    return r"(?<!\w)" + r"\s+".join(re.escape(word) for word in term.split()) + r"(?!\w)"
+
+
+def find_hedge_occurrences(quotes: list[str], extra_patterns: tuple[str, ...] | list[str] = ()) -> list[dict[str, Any]]:
+    """Every hedge and condition phrase in the quoted original, one entry per occurrence.
+
+    Entries are numbered H1, H2, ... in reading order and carry the index of the quote, the
+    character offsets of the phrase in it, and the clause around it with the phrase in [[ ]],
+    so an auditor can tell two occurrences of the same word apart.
+    """
+    regex = hedge_regex(extra_patterns)
+    found: list[dict[str, Any]] = []
+    for index, quote in enumerate(quotes):
+        for match in regex.finditer(quote):
+            start, end = match.span()
+            before = [m.end() for m in _CLAUSE_END.finditer(quote, 0, start)]
+            after = _CLAUSE_END.search(quote, end)
+            left = before[-1] if before else 0
+            right = after.end() if after else len(quote)
+            context = (quote[left:start] + "[[" + match.group(0) + "]]" + quote[end:right]).strip()
+            found.append({"id": f"H{len(found) + 1}", "term": match.group(0), "original_index": index, "start": start, "end": end, "in_context": context})
+    return found
+
+
+def _place_kept(spans: list[list[tuple[int, int]]], used: list[tuple[int, int]]) -> bool:
+    """Whether every kept hedge can be given its own non-overlapping place in the wording."""
+    if not spans:
+        return True
+    for start, end in spans[0]:
+        if all(end <= s or start >= e for s, e in used):
+            if _place_kept(spans[1:], [*used, (start, end)]):
+                return True
+    return False
+
+
+def check_hedge_report(occurrences: list[dict[str, Any]], reported: Any, checks: dict[str, Any], proposed_wording: str,
+                       extra_patterns: tuple[str, ...] | list[str] = ()) -> None:
+    """Hold an auditor's hedge-by-hedge report to what the texts can show.
+
+    Each occurrence in `occurrences` is reported exactly once, by id. A hedge reported kept
+    quotes, as kept_as, the words of the proposed wording that carry it; those words must
+    contain a recognized hedge or the original phrase itself, and no two kept hedges may rest
+    on the same words. So two occurrences of "may" cannot both be kept by one "may", and a
+    surviving condition cannot stand in for a deleted "may". A hedge reported strengthened or
+    removed must show as a changed claim_strength or uncertainty. These are checks of
+    correspondence: they cannot show that a kept hedge still qualifies the same claim.
+    """
+    if not isinstance(reported, list):
+        raise ReviewDataError("audit.checks.hedges must be an array with one {id, term, status, kept_as} object per entry in hedges_in_original.")
+    by_id = {o["id"]: o for o in occurrences}
+    seen: dict[str, dict[str, Any]] = {}
+    for n, item in enumerate(reported):
+        label = f"audit.checks.hedges[{n}]"
+        if not isinstance(item, dict) or set(item) != HEDGE_REPORT_KEYS:
+            raise ReviewDataError(f"{label} must be an object with exactly id, term, status, and kept_as.")
+        if item["id"] not in by_id:
+            raise ReviewDataError(f"{label} reports {item['id']!r}, which is not an id in hedges_in_original.")
+        if item["id"] in seen:
+            raise ReviewDataError(f"audit.checks.hedges reports {item['id']} twice; one entry per occurrence.")
+        if not isinstance(item["term"], str) or hedge_key(item["term"]) != hedge_key(by_id[item["id"]]["term"]):
+            raise ReviewDataError(f"{label}.term must be copied from hedges_in_original ({by_id[item['id']]['term']!r} for {item['id']}).")
+        if item["status"] not in HEDGE_REPORT_STATUSES:
+            raise ReviewDataError(f"{label}.status must be one of: kept, removed, strengthened.")
+        if item["status"] == "kept":
+            if not isinstance(item["kept_as"], str) or not item["kept_as"].strip():
+                raise ReviewDataError(f"{label} is kept, so kept_as must quote the words of the proposed wording that carry {item['id']}.")
+            if item["kept_as"] not in proposed_wording:
+                raise ReviewDataError(f"{label}.kept_as {item['kept_as']!r} is not an exact quotation from the proposed wording.")
+            term = hedge_key(by_id[item["id"]]["term"])
+            if not hedge_regex(extra_patterns).search(item["kept_as"]) and not re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", hedge_key(item["kept_as"])):
+                raise ReviewDataError(f"{label}.kept_as {item['kept_as']!r} contains no hedge the helper recognizes (review_packets.HEDGE_PATTERNS) and not the original phrase; quote the qualifying words, or report {item['id']} removed or strengthened.")
+        elif item["kept_as"] is not None:
+            raise ReviewDataError(f"{label}.kept_as must be null unless the status is kept.")
+        seen[item["id"]] = item
+    missing = [o["id"] for o in occurrences if o["id"] not in seen]
+    if missing:
+        raise ReviewDataError("audit.checks.hedges does not report every entry in hedges_in_original; missing: " + ", ".join(missing) + ".")
+    weakened = [i for i, item in seen.items() if item["status"] != "kept"]
+    if weakened and checks.get("claim_strength") != "changed" and checks.get("uncertainty") != "changed":
+        raise ReviewDataError("audit.checks.hedges reports " + ", ".join(weakened) + " strengthened or removed, so claim_strength or uncertainty must be changed.")
+    kept = [item for item in seen.values() if item["status"] == "kept"]
+    spans = [[(m.start(), m.end()) for m in re.finditer(re.escape(item["kept_as"]), proposed_wording)] for item in kept]
+    order = sorted(range(len(kept)), key=lambda i: len(spans[i]))
+    if not _place_kept([spans[i] for i in order], []):
+        raise ReviewDataError("audit.checks.hedges reports " + ", ".join(item["id"] for item in kept) + " kept, but the proposed wording does not hold a separate qualifying phrase for each: "
+                              "two kept hedges quote the same words. Report each hedge the wording dropped as removed or strengthened.")
+
+
 def sha256_text(text: str) -> str:
     try:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()

@@ -73,7 +73,7 @@ Give the host the manuscript (drag in the PDF or give its path) and say who the 
 
 The model works through seven stages: extract and index the text; fix the reader profile and scope; take notes on every included passage; check concepts, claims, paragraphs, and wording; dispatch the independent readers; reconcile, decide, and repair, with every wording audited; then check readiness and write the report. All intermediate files go in a run folder next to the manuscript, never inside the skill.
 
-Readers and auditors default to `claude -p --model claude-opus-5-5` with tools, MCP servers, and settings disabled. Add `--runtime codex` to use a Codex subscription, or `--runtime http` for an OpenAI-compatible endpoint on a server. A full review of a 23–30 page manuscript has taken two to three and a half hours and about 70 to 150 reader calls, roughly 5 to 18 USD of equivalent usage. Ask for a quick review, or name a section, to scale it down.
+Readers and auditors run through `claude -p` with tools, MCP servers, and settings disabled. The skill names no model: before the first reader call the agent asks you which model the readers and auditors should use, and passes it to every call (or uses the command's own default if you say so). Add `--runtime codex` to use a Codex subscription, or `--runtime http` for an OpenAI-compatible endpoint on a server. A full review of a 23–30 page manuscript has taken two to three and a half hours and about 70 to 150 reader calls, roughly 5 to 18 USD of equivalent usage. Ask for a quick review, or name a section, to scale it down.
 
 ## Limits
 
@@ -118,7 +118,7 @@ cd skills/review-academic-writing
 python3 -I -m unittest discover -s tests
 ```
 
-Expect 268 tests to pass (one is skipped when spaCy is not installed). The tests never call MinerU or a real model.
+Expect 280 tests to pass (one is skipped when spaCy is not installed). The tests never call MinerU or a real model.
 
 ## References
 

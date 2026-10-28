@@ -24,16 +24,23 @@ from typing import Any
 sys.dont_write_bytecode = True
 # The helpers import each other by module name; isolated mode and symlinked installs leave this directory off sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import difficulty_features as df
 import masked_reader as mr
 import review_packets as rp
 
 STAGES = ("reading", "checks", "reconcile", "decisions", "repairs")
-JOURNAL_SCHEMA = 5
+JOURNAL_SCHEMA = 6
 # Schema 4 journals (0.17) replay with the 0.18 fields optional: an audit may lack hedges,
 # added_qualification and audit_round, a repair may lack edit_scope, and actions and author
 # questions are not checked for a block id or a question mark. Schema 5 journals require them.
-SUPPORTED_SCHEMAS = {4, JOURNAL_SCHEMA}
+# Schema 6 journals also require the occurrence-level hedge report (hedges_in_original and
+# hedge_patterns in the audit, an id and kept_as per hedge) and a feature comparison of the
+# audited original; schema 5 journals accept the earlier term-level report as well.
+SUPPORTED_SCHEMAS = {4, 5, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
+# An optional passage.proposition_checks entry: what one suspected sentence actually states.
+PROPOSITION_CHECK_FIELDS = ("anchor", "proposition", "supplied_relations", "function", "needed_here")
+SENTENCE_FUNCTIONS = {"fact", "definition", "premise", "comparison", "preview", "reminder", "navigation", "other"}
 REPAIR_KINDS = {"edit", "move", "author_question"}
 EDIT_SCOPES = {"pointer", "apposition", "term", "reorder", "split", "sentence"}
 EDIT_WEIGHTS = {"light", "medium", "heavy"}
@@ -388,6 +395,16 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             ev = evidence(row["evidence"], blocks, "passage.evidence")
             if not any(a["block_id"] == row["block_id"] for a in ev):
                 raise Error("Each passage check needs an exact quotation from that passage.")
+            for n, check in enumerate(array(row.get("proposition_checks", []), "passage.proposition_checks")):
+                label = f"passage.proposition_checks[{n}]"
+                check = obj(check, label)
+                fields(check, set(PROPOSITION_CHECK_FIELDS), label)
+                rp._anchor(check["anchor"], blocks, label + ".anchor")
+                if check["anchor"]["block_id"] != row["block_id"]:
+                    raise Error(f"{label}.anchor must quote the passage it belongs to ({row['block_id']}).")
+                for key in ("proposition", "supplied_relations", "needed_here"):
+                    string(check[key], f"{label}.{key}")
+                rp._enum(check["function"], SENTENCE_FUNCTIONS, label + ".function")
         coverage(seen, included, "Structure and wording checks")
         if any(key in value for key in READER_EVIDENCE_KEYS):
             raise Error("Reader observations belong to the reconcile stage; the checks stage is the editor's independent review.")
@@ -528,7 +545,7 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                     if scope == "sentence":
                         raise Error(f"Repair {key} rewrites a whole sentence (edit_scope sentence); attach the difficulty_features.py compare result as compare_path.")
                 else:
-                    attachments.extend(feature_comparison(row, key))
+                    attachments.extend(feature_comparison(row, key, start["schema_version"]))
     return attachments
 
 
@@ -546,7 +563,11 @@ def fidelity_audit(row: dict, candidate_id: str, blocks: dict, schema: int, targ
     raw = read_raw(path)
     audit = obj(parse(raw), "fidelity audit")
     required = {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}
-    rp._keys(audit, required | ({"audit_round"} if strict else set()), set() if strict else {"audit_round"}, "fidelity audit")
+    occurrence_keys = {"hedges_in_original", "hedge_patterns"}
+    if schema >= 6:
+        rp._keys(audit, required | {"audit_round"} | occurrence_keys, set(), "fidelity audit")
+    else:
+        rp._keys(audit, required | ({"audit_round"} if strict else set()), occurrence_keys | (set() if strict else {"audit_round"}), "fidelity audit")
     if audit["candidate_id"] != candidate_id:
         raise Error(f"Fidelity audit at {path.name} is for {audit['candidate_id']!r}, not {candidate_id}.")
     if audit["proposed_wording"] != row["proposed_wording"]:
@@ -571,7 +592,11 @@ def fidelity_audit(row: dict, candidate_id: str, blocks: dict, schema: int, targ
     for name in AUDIT_CHECKS:
         if name in checks:
             rp._enum(checks[name], AUDIT_CHECK_VALUES, "audit.checks." + name)
-    if "hedges" in checks:
+    if "hedges_in_original" in audit or "hedge_patterns" in audit:
+        if "hedges" not in checks:
+            raise Error("audit.checks is missing fields: hedges.")
+        hedge_occurrences(audit, checks, original, row["proposed_wording"])
+    elif "hedges" in checks:
         hedge_report(checks, original, row["proposed_wording"])
     string(audit["notes"], "audit.notes")
     auditor = obj(audit["auditor"], "audit.auditor")
@@ -585,8 +610,29 @@ def fidelity_audit(row: dict, candidate_id: str, blocks: dict, schema: int, targ
     return [{"path": str(path), "sha256": digest(raw)}]
 
 
+def hedge_occurrences(audit: dict, checks: dict, original: list, proposed_wording: str) -> None:
+    """checks.hedges reports every hedge occurrence in the original by id (schema 6; dispatch_reader.py audit).
+
+    The audit records the occurrences it listed (hedges_in_original) and the extra patterns that
+    found them (hedge_patterns); both must be what review_packets finds in audit.original with
+    those patterns, so no built-in hedge can be left off the list. The report itself is held to
+    review_packets.check_hedge_report.
+    """
+    patterns = strings(audit.get("hedge_patterns"), "audit.hedge_patterns")
+    try:
+        expected = rp.find_hedge_occurrences([a["quote"] for a in original], patterns)
+    except re.error as exc:
+        raise Error(f"audit.hedge_patterns do not compile: {exc}") from exc
+    if audit.get("hedges_in_original") != expected:
+        raise Error("audit.hedges_in_original is not the list of hedge occurrences that review_packets finds in audit.original with audit.hedge_patterns; rerun the audit with dispatch_reader.py.")
+    try:
+        rp.check_hedge_report(expected, checks["hedges"], checks, proposed_wording, patterns)
+    except rp.ReviewDataError as exc:
+        raise Error(str(exc)) from exc
+
+
 def hedge_report(checks: dict, original: list, proposed_wording: str) -> None:
-    """checks.hedges reports every hedge the helper finds in the original, one status each.
+    """checks.hedges reports every hedge the helper finds in the original, one status each (schema 4 and 5 term-level report).
 
     A hedge reported strengthened or removed must show up as a changed claim_strength or
     uncertainty; a hedge reported kept needs some hedge left in the proposed wording (a
@@ -615,8 +661,14 @@ def hedge_report(checks: dict, original: list, proposed_wording: str) -> None:
         raise Error("audit.checks.hedges reports " + ", ".join(repr(t) for t in kept) + " kept, but the proposed wording carries no hedge the helper recognizes (review_packets.HEDGE_PATTERNS); keep a recognized qualification or report it removed.")
 
 
-def feature_comparison(row: dict, candidate_id: str) -> list[dict]:
-    """Bind a repair to a difficulty_features.py compare result for its wording; a heavy edit (kind edit) needs a stated reason."""
+def feature_comparison(row: dict, candidate_id: str, schema: int) -> list[dict]:
+    """Bind a repair to a difficulty_features.py compare result for its wording; a heavy edit (kind edit) needs a stated reason.
+
+    The lexical measures are recomputed from the texts in the comparison, so a reported weight
+    cannot differ from the words. In a schema 6 journal the compared original must also be the
+    text the fidelity audit quoted (its anchors joined by spaces), so a comparison against an
+    earlier wording, a short candidate quote, or another passage is refused.
+    """
     path = Path(string(row.get("compare_path"), "repair.compare_path")).resolve()
     raw = read_raw(path)
     result = obj(parse(raw), "feature comparison")
@@ -628,8 +680,16 @@ def feature_comparison(row: dict, candidate_id: str) -> list[dict]:
     comparison = rows[-1]
     if comparison.get("proposed_wording") != row["proposed_wording"]:
         raise Error(f"compare_path for {candidate_id} compared different wording than the repair proposes.")
+    compared = string(comparison.get("original"), "comparison.original")
+    if schema >= 6:
+        audited = " ".join(anchor["quote"] for anchor in parse(read_raw(Path(row["audit_path"]).resolve()))["original"])
+        if compared != audited:
+            raise Error(f"compare_path for {candidate_id} compared a different original than the fidelity audit quoted; run difficulty_features.py compare on the audit input (--input) or with --repairs.")
     lexical = obj(comparison.get("lexical"), "comparison.lexical")
     rp._enum(lexical.get("edit_weight"), EDIT_WEIGHTS, "comparison.lexical.edit_weight")
+    measured = df.lexical_measures(compared, row["proposed_wording"])
+    if (lexical.get("edit_ratio"), lexical["edit_weight"]) != (measured["edit_ratio"], measured["edit_weight"]):
+        raise Error(f"compare_path for {candidate_id} reports edit ratio {lexical.get('edit_ratio')} ({lexical['edit_weight']}), but its texts give {measured['edit_ratio']} ({measured['edit_weight']}).")
     if row["kind"] == "edit" and lexical["edit_weight"] == "heavy":
         reason = row.get("heavy_edit_reason")
         if reason is None:
@@ -816,7 +876,23 @@ def ready_run(journal: Path, index: Any) -> dict:
                               **({"supersedes": supersedes["supersedes"], "restart_at": supersedes["restart_at"], "supersedes_sha256": supersedes["receipt_sha256"]} if supersedes else {})})
             rp.write_json_atomic(path, receipt)
     return {"ok": True, "command": "ready", "ready_to_draft": True, "receipt_sha256": receipt["receipt_sha256"],
-            "verified": ["saved stages in permitted order", "source/profile/scope and file consistency", "declared passage coverage", "exact anchors and candidate decisions"], "not_verified": LIMITS}
+            "verified": ["saved stages in permitted order", "source/profile/scope and file consistency", "declared passage coverage", "exact anchors and candidate decisions"], "not_verified": LIMITS,
+            "overlapping_wordings": overlapping_wordings(notes["repairs"]["repairs"])}
+
+
+def overlapping_wordings(repairs: list[dict]) -> list[dict]:
+    """Blocks that two or more repairs with proposed wording affect.
+
+    Each wording was audited alone; applied together they can overlap, drop a definition a
+    later block relies on, or break a reference. The list says where to read the combined text
+    before the report recommends both; it is not a finding.
+    """
+    by_block: dict[str, list[str]] = {}
+    for row in repairs:
+        if row.get("proposed_wording") is not None:
+            for block in row["affected_block_ids"]:
+                by_block.setdefault(block, []).append(row["candidate_id"])
+    return [{"block_id": block, "candidate_ids": ids} for block, ids in sorted(by_block.items()) if len(ids) > 1]
 
 
 def check_final(journal: Path, index: Any, review: Any) -> dict:
