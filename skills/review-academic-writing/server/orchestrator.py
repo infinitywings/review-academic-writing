@@ -41,6 +41,7 @@ SCRIPTS = PACKAGE / "scripts"
 PROMPTS = PACKAGE / "server" / "prompts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import difficulty_features as df  # noqa: E402
 import dispatch_reader as dr  # noqa: E402
 import extract_pdf as ep  # noqa: E402
 import llm  # noqa: E402
@@ -203,6 +204,7 @@ class Run:
         self.masked_summary: dict[str, Any] | None = None
         self.branch_summary: dict[str, Any] | None = None
         self.converted: list[str] = []
+        self.withheld: list[str] = []
 
     # ------------------------------------------------------------ bookkeeping
 
@@ -663,9 +665,10 @@ class Run:
             rows[row["candidate_id"]] = row
         require(set(rows) == set(wanted), f"repairs must cover exactly {', '.join(wanted)}.")
         decisions = rs.by_id(notes["decisions"]["decisions"], "candidate_id", "decisions")
+        candidates = rs.all_candidates(notes)
         def pending(row: dict[str, Any]) -> dict[str, Any]:
             """The row as the helper will see it before the audit: no wording yet, so an edit needs a stand-in reason."""
-            stripped = {k: v for k, v in row.items() if k not in ("original", "basis")} | {"proposed_wording": None, "audit_path": None}
+            stripped = {k: v for k, v in row.items() if k not in ("original", "basis")} | {"proposed_wording": None, "audit_path": None, "compare_path": None}
             if row.get("kind") == "edit" and row.get("proposed_wording") is not None:
                 stripped["wording_withheld_reason"] = "pending the independent fidelity audit"
             return stripped
@@ -690,6 +693,9 @@ class Run:
                     except rp.ReviewDataError as exc:
                         raise Rejected(helper_message(exc)) from exc
                     require(anchor["block_id"] in affected, f"Repair {key}: original[{n}] quotes a block outside affected_block_ids.")
+                targets = [candidates[key]["anchor"], *candidates[key]["evidence"], *decisions[key]["evidence"]]
+                require(any(rs.anchor_overlaps(anchor, target) for anchor in original for target in targets),
+                        f"Repair {key}: original must quote the manuscript text at the candidate's anchor ({candidates[key]['anchor']['block_id']}) or at one of its recorded evidence anchors, not an earlier wording or another passage.")
             provisional.append(pending(row))
         try:
             rs.validate_notes("repairs", {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "repairs": provisional}, start, self.index, notes)
@@ -705,7 +711,8 @@ class Run:
         request = {"candidate_id": key, "original": row["original"], "proposed_wording": row["proposed_wording"], "basis": row["basis"]}
         input_path = self.write_json(self.audits / f"{label}.input.json", request)
         out_path = self.audits / f"{label}.audit.json"
-        summary = self.dispatch("audit", ["--events", str(self.audits / label), "--input", str(input_path), "--out", str(out_path), "--label", label])
+        audit_round = 2 if suffix else 1
+        summary = self.dispatch("audit", ["--events", str(self.audits / label), "--input", str(input_path), "--out", str(out_path), "--label", label, "--round", str(audit_round)])
         result = {"candidate_id": key, "label": label, "proposed_wording": row["proposed_wording"], "audit_path": str(out_path), "verdict": None, "changed": [], "notes": summary["outcome"], "accepted": False}
         if summary["ok"] and out_path.is_file():
             audit = rp.load_json(out_path)
@@ -716,6 +723,17 @@ class Run:
         self.say(f"audit {label}: verdict {result['verdict']}" + (f" (changed: {', '.join(result['changed'])})" if result["changed"] else ""))
         return result
 
+    def compare(self, key: str, row: dict[str, Any], suffix: str) -> dict[str, Any]:
+        """Write the lexical comparison (edit ratio, type-token ratio, word length) for one wording; returns weight and path."""
+        label = key + suffix
+        original = " ".join(anchor["quote"] for anchor in row["original"])
+        comparison = df.lexical_comparison(key, original, row["proposed_wording"])
+        path = self.write_json(self.audits / f"{label}.features.json", {**df.compare_header(None, None, True), "comparisons": [comparison]})
+        lexical = comparison["lexical"]
+        self.log("compare", candidate_id=key, label=label, edit_ratio=lexical["edit_ratio"], edit_weight=lexical["edit_weight"], advisory_flags=lexical["advisory_flags"])
+        return {"compare_path": str(path), "edit_ratio": lexical["edit_ratio"], "edit_weight": lexical["edit_weight"],
+                "heavy_without_reason": lexical["edit_weight"] == "heavy" and row.get("kind") == "edit" and not (isinstance(row.get("heavy_edit_reason"), str) and row["heavy_edit_reason"].strip())}
+
     def step_repairs(self) -> None:
         self.assert_checks_frozen("repairs")
         start, notes = self.start_and_notes()
@@ -725,42 +743,64 @@ class Run:
         rows = self.ask("repairs", "05-repairs", {"input": base_input}, lambda parsed, call: self.validate_repairs(parsed, wanted, start, notes))
         summary = self.client.calls[-1].parsed["summary"]
         audits: dict[str, dict[str, Any]] = {}
+        compared: dict[str, dict[str, Any]] = {}
         for key in wanted:
             if rows[key].get("proposed_wording") is not None:
                 audits[key] = self.audit(key, rows[key], "")
+                compared[key] = self.compare(key, rows[key], "")
         failed = [key for key, result in audits.items() if not result["accepted"]]
-        if failed:
+        heavy = [key for key, result in compared.items() if result["heavy_without_reason"]]
+        if failed or heavy:
             feedback = [{"candidate_id": key, "audited_wording": audits[key]["proposed_wording"], "verdict": audits[key]["verdict"], "changed": audits[key]["changed"], "auditor_notes": audits[key]["notes"]} for key in failed]
-            retry_input = {**base_input, "retained": [r for r in retained if r["decision"]["candidate_id"] in failed], "audit_feedback": feedback}
-            revised = self.ask("repairs", "05-repairs-audit", {"input": retry_input}, lambda parsed, call: self.validate_repairs(parsed, failed, start, notes, rows))
-            for key in failed:
+            edit_feedback = [{"candidate_id": key, "proposed_wording": rows[key]["proposed_wording"], "edit_ratio": compared[key]["edit_ratio"], "edit_weight": "heavy",
+                              "note": "The wording replaces more than half of the original's words. Narrow the edit to its one purpose, or keep it and give heavy_edit_reason."} for key in heavy]
+            retry = failed + [key for key in heavy if key not in failed]
+            retry_input = {**base_input, "retained": [r for r in retained if r["decision"]["candidate_id"] in retry]}
+            if feedback:
+                retry_input["audit_feedback"] = feedback
+            if edit_feedback:
+                retry_input["edit_feedback"] = edit_feedback
+            revised = self.ask("repairs", "05-repairs-audit", {"input": retry_input}, lambda parsed, call: self.validate_repairs(parsed, retry, start, notes, rows))
+            for key in retry:
                 rows[key] = revised[key]
                 if rows[key].get("proposed_wording") is not None:
                     audits[key] = self.audit(key, rows[key], "-2")
+                    compared[key] = self.compare(key, rows[key], "-2")
                 else:
-                    audits.pop(key)
-            for key in failed:
+                    audits.pop(key, None)
+                    compared.pop(key, None)
+            for key in retry:
                 if key in audits and not audits[key]["accepted"]:
                     result = audits.pop(key)
+                    compared.pop(key, None)
                     row = rows[key]
                     question = ("An independent fidelity audit found that the proposed replacement would change its scientific meaning"
                                 + (f" ({', '.join(result['changed'])})" if result["changed"] else "") + f": {result['notes']} "
                                 + f"Audited wording: {result['proposed_wording']!r}. Which wording keeps the intended meaning: the original text, or a revision that preserves these properties?")
-                    rows[key] = {**row, "kind": "author_question", "proposed_wording": None, "wording_withheld_reason": None, "original": [], "basis": [], "author_question": question}
+                    rows[key] = {**row, "kind": "author_question", "edit_scope": None, "heavy_edit_reason": None, "proposed_wording": None, "wording_withheld_reason": None, "original": [], "basis": [], "author_question": question}
                     self.converted.append(key)
                     self.log("audit_converted", candidate_id=key)
                     self.say(f"repair {key}: audit still not preserved; converted to an author question")
+                elif key in compared and compared[key]["heavy_without_reason"]:
+                    result = compared.pop(key)
+                    audits.pop(key, None)
+                    rows[key] = {**rows[key], "proposed_wording": None, "original": [], "basis": [],
+                                 "wording_withheld_reason": f"withheld: the wording replaced {result['edit_ratio']} of the original's words with no stated reason after one revision; the action stands and the author or editor can rewrite it in smaller steps"}
+                    self.withheld.append(key)
+                    self.log("edit_withheld", candidate_id=key, edit_ratio=result["edit_ratio"])
+                    self.say(f"repair {key}: heavy edit without a reason after revision; wording withheld")
         repairs = []
         for key in wanted:
             row = {k: v for k, v in rows[key].items() if k not in ("original", "basis")}
             row["audit_path"] = audits[key]["audit_path"] if key in audits else None
+            row["compare_path"] = compared[key]["compare_path"] if key in compared else None
             repairs.append(row)
         try:
             self.record("repairs", {"snapshot_id": self.index["snapshot_id"], "summary": summary, "repairs": repairs}, self.out / "repairs.json")
         except rp.ReviewDataError as exc:
             raise StopRun("repairs", helper_message(exc), "The repairs passed the controller's checks but the helper refused the merged notes; inspect repairs.json and the audits directory.") from exc
         self.stages["repairs"] = {"status": "recorded", "repairs": len(repairs), "with_wording": sum(1 for r in repairs if r["proposed_wording"] is not None),
-                                  "author_questions": sum(1 for r in repairs if r["kind"] == "author_question"), "audits": len(self.audit_rows), "converted_by_audit": list(self.converted)}
+                                  "author_questions": sum(1 for r in repairs if r["kind"] == "author_question"), "audits": len(self.audit_rows), "converted_by_audit": list(self.converted), "withheld_heavy_edits": list(self.withheld)}
         self.say(f"repairs: recorded ({self.stages['repairs']['with_wording']} with wording, {len(self.converted)} converted by audit)")
 
     # ------------------------------------------------------------ 5. ready, review, report

@@ -78,9 +78,15 @@ LOOKUP_STALL_LIMIT = 3
 BUDGET_MESSAGE = re.compile(r"carry_memory has (\d+) (words|characters); limit is (\d+)")
 ANCHOR_MESSAGE = re.compile(r"(?i)quote is not (?:exact text|an exact substring)")
 AUDIT_KEYS = {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}
-AUDIT_CHECKS = ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "time_horizon", "numerical_values", "uncertainty", "causal_vs_associative")
+# Keys the controller fills in after the auditor answers; an auditor that echoes them is not refused.
+AUDIT_CONTROLLER_KEYS = {"auditor", "audit_round"}
+AUDIT_CHECKS = ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "time_horizon", "numerical_values", "uncertainty", "causal_vs_associative", "added_qualification")
 AUDIT_VERDICTS = {"preserved", "changed", "undetermined"}
 AUDIT_CHECK_VALUES = {"same", "changed", "not_applicable"}
+HEDGE_STATUSES = {"kept", "strengthened", "removed"}
+# The hedge and condition phrases listed as hedges_in_original; the list lives in review_packets so
+# that review_steps.py can require the same phrases in the recorded audit.
+HEDGE_PATTERNS = rp.HEDGE_PATTERNS
 CODE_FENCE = re.compile(r"\A\s*```(?:json)?\s*\n(.*?)\n\s*```\s*\Z", re.S)
 
 
@@ -866,8 +872,35 @@ def run_branch(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
     return events.finish("branch", f"{call['label']} recorded as branch {record['branch_sequence']} (support: {record['support']}).", True, {"label": call["label"], "run": str(run), "branch_sequence": record["branch_sequence"]})
 
 
-def check_audit_shape(audit: Any, request: dict[str, Any]) -> None:
-    if not isinstance(audit, dict) or set(audit) - {"auditor"} != AUDIT_KEYS - {"auditor"}:
+def check_hedges_shape(hedges: Any, checks: dict[str, Any], expected: list[str], proposed_wording: Any, extra_patterns: list[str] = ()) -> None:
+    """The same rules review_steps.hedge_report applies when the audit is recorded, so a bad report is corrected now.
+
+    Every listed hedge is reported once; a weakened hedge shows in claim_strength or uncertainty;
+    a kept hedge leaves some recognizable hedge, or its own words, in the proposed wording.
+    """
+    if not isinstance(hedges, list) or any(not isinstance(h, dict) or set(h) != {"term", "status"} or not isinstance(h.get("term"), str) or not h["term"].strip() for h in hedges):
+        raise Failure("format", "checks.hedges must be an array of {term, status} objects, one per hedge in hedges_in_original")
+    if any(not isinstance(h["status"], str) or h["status"] not in HEDGE_STATUSES for h in hedges):
+        raise Failure("format", "each checks.hedges status must be kept, strengthened, or removed")
+    reported: dict[str, str] = {}
+    for h in hedges:
+        key = rp.hedge_key(h["term"])
+        if key in reported:
+            raise Failure("format", f"checks.hedges lists {h['term']!r} twice; one entry per hedge, kept only if every occurrence is kept")
+        reported[key] = h["status"]
+    missing = [term for term in expected if rp.hedge_key(term) not in reported]
+    if missing:
+        raise Failure("format", "checks.hedges must report every hedge in hedges_in_original; missing: " + ", ".join(missing))
+    weakened = [term for term, status in reported.items() if status != "kept"]
+    if weakened and checks.get("claim_strength") != "changed" and checks.get("uncertainty") != "changed":
+        raise Failure("format", "a hedge reported strengthened or removed (" + ", ".join(weakened) + ") requires claim_strength or uncertainty to be changed")
+    kept = [term for term, status in reported.items() if status == "kept"]
+    if kept and isinstance(proposed_wording, str) and not rp.hedge_survives(kept, proposed_wording, extra_patterns):
+        raise Failure("format", "a hedge reported kept (" + ", ".join(kept) + ") but the proposed wording carries no hedge; report it removed or strengthened, with claim_strength or uncertainty changed")
+
+
+def check_audit_shape(audit: Any, request: dict[str, Any], extra_patterns: list[str] = ()) -> None:
+    if not isinstance(audit, dict) or set(audit) - AUDIT_CONTROLLER_KEYS != AUDIT_KEYS - {"auditor"}:
         raise Failure("format", "audit must have exactly candidate_id, proposed_wording, original, verdict, checks, notes, auditor")
     if audit["candidate_id"] != request["candidate_id"]:
         raise Failure("format", "candidate_id must be copied from the input")
@@ -875,13 +908,47 @@ def check_audit_shape(audit: Any, request: dict[str, Any]) -> None:
         raise Failure("format", "proposed_wording must be copied from the input exactly")
     if audit["original"] != request["original"]:
         raise Failure("format", "original must be copied from the input exactly")
-    if audit["verdict"] not in AUDIT_VERDICTS:
+    if not isinstance(audit["verdict"], str) or audit["verdict"] not in AUDIT_VERDICTS:
         raise Failure("format", "verdict must be preserved, changed, or undetermined")
     checks = audit["checks"]
-    if not isinstance(checks, dict) or set(checks) != set(AUDIT_CHECKS) or any(checks[k] not in AUDIT_CHECK_VALUES for k in AUDIT_CHECKS):
-        raise Failure("format", "checks must map each of the nine properties to same, changed, or not_applicable")
+    if not isinstance(checks, dict) or set(checks) != set(AUDIT_CHECKS) | {"hedges"} or any(not isinstance(checks[k], str) or checks[k] not in AUDIT_CHECK_VALUES for k in AUDIT_CHECKS):
+        raise Failure("format", "checks must map each of the ten properties to same, changed, or not_applicable and carry a hedges array")
+    check_hedges_shape(checks["hedges"], checks, list(request.get("hedges_in_original") or []), request.get("proposed_wording"), extra_patterns)
     if not isinstance(audit["notes"], str):
         raise Failure("format", "notes must be a string")
+
+
+def audit_request_with_hedges(request: dict[str, Any], extra_patterns: list[str]) -> dict[str, Any]:
+    """The audit input as sent: the caller's fields plus hedges_in_original found in the original quotes."""
+    quotes = [a.get("quote") for a in request["original"] if isinstance(a, dict) and isinstance(a.get("quote"), str)] if isinstance(request["original"], list) else []
+    found = rp.find_hedges(" ".join(quotes), extra_patterns)
+    given = request.get("hedges_in_original")
+    if given is not None and (not isinstance(given, list) or any(not isinstance(t, str) or not t.strip() for t in given)):
+        raise DispatchError("hedges_in_original in --input must be an array of nonempty strings when present.")
+    merged: dict[str, str] = {}
+    for term in [*found, *(given or [])]:
+        merged.setdefault(rp.hedge_key(term), " ".join(term.split()))
+    return {**request, "hedges_in_original": list(merged.values())}
+
+
+def load_hedge_list(path: str | None) -> list[str]:
+    if path is None:
+        return []
+    patterns = rp.load_json(path)
+    if not isinstance(patterns, list) or any(not isinstance(p, str) or not p.strip() for p in patterns):
+        raise DispatchError("--hedge-list must be a JSON array of regular-expression strings.")
+    for pattern in patterns:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            raise DispatchError(f"--hedge-list pattern {pattern!r} does not compile: {exc}") from exc
+        if compiled.match("") is not None:
+            raise DispatchError(f"--hedge-list pattern {pattern!r} matches the empty string; every pattern must require at least one character.")
+    try:
+        re.compile("|".join((*rp.HEDGE_PATTERNS, *patterns)), re.IGNORECASE)
+    except re.error as exc:
+        raise DispatchError(f"--hedge-list patterns do not combine with the built-in list (no inline flags such as (?i) are allowed): {exc}") from exc
+    return patterns
 
 
 def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
@@ -889,6 +956,10 @@ def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dic
     request = rp.load_json(input_file)
     if not isinstance(request, dict) or not all(k in request for k in ("candidate_id", "original", "proposed_wording", "basis")):
         raise DispatchError("--input must be a JSON object with candidate_id, original, proposed_wording, and basis.")
+    if not isinstance(args.round, int) or args.round < 1:
+        raise DispatchError("--round must be a positive integer (1 for the first wording of a candidate).")
+    extra_patterns = load_hedge_list(args.hedge_list)
+    request = audit_request_with_hedges(request, extra_patterns)
     label = args.label or str(request["candidate_id"])
     out = Path(args.out)
     if out.exists():
@@ -896,13 +967,14 @@ def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dic
 
     def accept(call: dict[str, Any]) -> dict[str, Any]:
         audit = call["parsed"]
-        check_audit_shape(audit, request)
+        check_audit_shape(audit, request, extra_patterns)
         audit = {k: audit[k] for k in ("candidate_id", "proposed_wording", "original", "verdict", "checks", "notes")}
+        audit["audit_round"] = args.round
         audit["auditor"] = {"mode": "bounded-request", "agent_id": runtime.agent_id(call["session_id"])}
         write_new(out, encoded(audit))
         return audit
 
-    call, audit, failure = attempt_chain(events, runtime, "auditor", label, events.generic_prompt("audit"), input_file.read_bytes(), input_file, accept)
+    call, audit, failure = attempt_chain(events, runtime, "auditor", label, events.generic_prompt("audit"), encoded(request), input_file, accept)
     if failure is not None:
         return events.finish("audit", stop_message(label, failure), False, {"label": label})
     changed = [k for k in AUDIT_CHECKS if audit["checks"][k] == "changed"]
@@ -956,6 +1028,8 @@ def _parser() -> argparse.ArgumentParser:
     common(audit)
     audit.add_argument("--input", required=True, help="JSON with candidate_id, original, proposed_wording, basis.")
     audit.add_argument("--out", required=True, help="Audit file to write (shape of assets/notes/fidelity-audit.json).")
+    audit.add_argument("--round", type=int, default=1, help="Which wording of this candidate is audited: 1 for the first, 2 for a revision after a failed audit, and so on. Every round is audited against the manuscript text, never against the previous wording (default 1).")
+    audit.add_argument("--hedge-list", help="JSON array of regular expressions added to the built-in hedge patterns when listing hedges_in_original.")
     return parser
 
 

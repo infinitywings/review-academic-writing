@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from typing import Any
@@ -27,13 +28,23 @@ import masked_reader as mr
 import review_packets as rp
 
 STAGES = ("reading", "checks", "reconcile", "decisions", "repairs")
-JOURNAL_SCHEMA = 4
+JOURNAL_SCHEMA = 5
+# Schema 4 journals (0.17) replay with the 0.18 fields optional: an audit may lack hedges,
+# added_qualification and audit_round, a repair may lack edit_scope, and actions and author
+# questions are not checked for a block id or a question mark. Schema 5 journals require them.
+SUPPORTED_SCHEMAS = {4, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
 REPAIR_KINDS = {"edit", "move", "author_question"}
+EDIT_SCOPES = {"pointer", "apposition", "term", "reorder", "split", "sentence"}
+EDIT_WEIGHTS = {"light", "medium", "heavy"}
 FIGURE_POLICIES = {"strict-prefix", "reference-jump", "text-only"}
 AUDIT_VERDICTS = {"preserved", "changed", "undetermined"}
-AUDIT_CHECKS = ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "time_horizon", "numerical_values", "uncertainty", "causal_vs_associative")
+AUDIT_CHECKS_V4 = ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "time_horizon", "numerical_values", "uncertainty", "causal_vs_associative")
+AUDIT_CHECKS = AUDIT_CHECKS_V4 + ("added_qualification",)
 AUDIT_CHECK_VALUES = {"same", "changed", "not_applicable"}
+HEDGE_STATUSES = {"kept", "strengthened", "removed"}
+BLOCK_ID = re.compile(r"(?<![A-Za-z0-9])B\d{4}(?![A-Za-z0-9])")
+QUESTION_END = re.compile(r"[?？][\s\"'”’)\]）】」』]*$")
 READY = f"{len(STAGES) + 1:02d}-ready.json"
 FINAL_STATUSES = {"accepted", "needs_author"}
 PREFIX_MODES = {"fresh-prefix", "bounded-request"}
@@ -155,6 +166,19 @@ def evidence(value: Any, blocks: dict, label: str) -> list:
 def coverage(ids: list, included: set, label: str) -> None:
     if len(ids) != len(set(ids)) or set(ids) != included:
         raise Error(f"{label} must cover each included block exactly once.")
+
+
+def anchor_overlaps(a: dict, b: dict) -> bool:
+    """Two exact anchors of the same block overlap when one quotation contains the other."""
+    return a["block_id"] == b["block_id"] and (a["quote"] in b["quote"] or b["quote"] in a["quote"])
+
+
+def names_a_block(text: str, blocks: dict) -> bool:
+    return any(match in blocks for match in BLOCK_ID.findall(text))
+
+
+def is_question(text: str) -> bool:
+    return QUESTION_END.search(text.rstrip()) is not None
 
 
 def by_id(rows: list, key: str, label: str) -> dict:
@@ -433,6 +457,8 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                 if target not in decisions or not isinstance(decisions[target].get("status"), str) or decisions[target]["status"] not in FINAL_STATUSES:
                     raise Error("A merged candidate must point directly to an accepted or needs_author candidate; no chains or cycles.")
     elif stage == "repairs":
+        strict = start["schema_version"] >= 5
+        candidates = all_candidates(previous)
         decisions = by_id(previous["decisions"]["decisions"], "candidate_id", "decisions")
         wanted = {key for key, row in decisions.items() if row["status"] in FINAL_STATUSES}
         repairs = by_id(array(value.get("repairs"), "repairs.repairs"), "candidate_id", "repairs")
@@ -446,6 +472,8 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             for field in ("proposed_wording", "author_question"):
                 if row[field] is not None:
                     string(row[field], "repair." + field)
+            if strict and not names_a_block(row["action"], blocks):
+                raise Error(f"Repair {key}: action must say where to act by naming a block id of this source (for example B0003).")
             withheld = row.get("wording_withheld_reason")
             if row["kind"] == "edit" and row["proposed_wording"] is None:
                 if withheld is None:
@@ -453,31 +481,60 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                 string(withheld, "repair.wording_withheld_reason")
             elif withheld is not None:
                 raise Error(f"Repair {key}: wording_withheld_reason belongs only to an edit that carries no proposed_wording.")
+            scope = row.get("edit_scope")
+            if row["kind"] == "edit":
+                if scope is None:
+                    if strict:
+                        raise Error(f"Repair {key} is an edit without edit_scope; give one of: " + ", ".join(sorted(EDIT_SCOPES)) + ".")
+                else:
+                    rp._enum(scope, EDIT_SCOPES, "repair.edit_scope")
+            elif scope is not None:
+                raise Error(f"Repair {key}: edit_scope belongs only to a repair of kind edit.")
             affected = strings(row["affected_block_ids"], "repair.affected_block_ids", nonempty=True)
             if len(affected) != len(set(affected)) or not set(affected) <= blocks.keys():
                 raise Error("Affected block IDs must be distinct blocks from this source.")
             if decisions[key]["status"] == "needs_author" and (row["kind"] != "author_question" or row["proposed_wording"] is not None):
                 raise Error("needs_author requires an author question, not a definitive replacement.")
             if row["kind"] == "author_question":
-                string(row["author_question"], "repair.author_question")
+                question = string(row["author_question"], "repair.author_question")
+                if strict and not is_question(question):
+                    raise Error(f"Repair {key}: author_question must be a question that ends with a question mark, not a statement.")
             if row["proposed_wording"] is None:
                 if row.get("audit_path") is not None:
                     raise Error("A repair without proposed wording has nothing to audit; leave audit_path null.")
+                if row.get("compare_path") is not None:
+                    raise Error("A repair without proposed wording has nothing to compare; leave compare_path null.")
             else:
-                attachments.extend(fidelity_audit(row, key, blocks))
+                attachments.extend(fidelity_audit(row, key, blocks, start["schema_version"], [candidates[key]["anchor"], *candidates[key]["evidence"], *decisions[key]["evidence"]]))
+                if row.get("compare_path") is None:
+                    if scope == "sentence":
+                        raise Error(f"Repair {key} rewrites a whole sentence (edit_scope sentence); attach the difficulty_features.py compare result as compare_path.")
+                else:
+                    attachments.extend(feature_comparison(row, key))
     return attachments
 
 
-def fidelity_audit(row: dict, candidate_id: str, blocks: dict) -> list[dict]:
-    """Bind an edit to an independent fidelity audit that found the scientific meaning preserved."""
+def fidelity_audit(row: dict, candidate_id: str, blocks: dict, schema: int, targets: list[dict]) -> list[dict]:
+    """Bind an edit to an independent fidelity audit that found the scientific meaning preserved.
+
+    In a schema 5 journal the audit's `original` is manuscript text (exact anchors) that
+    overlaps the candidate's anchor or one of its evidence anchors (candidate or decision),
+    so every round of wording is audited against the source the candidate pointed at, never
+    against an earlier wording. Schema 5 audits report the ten properties, the hedge-by-hedge
+    list, and the round number; schema 4 audits may lack them.
+    """
+    strict = schema >= 5
     path = Path(string(row.get("audit_path"), "repair.audit_path")).resolve()
     raw = read_raw(path)
     audit = obj(parse(raw), "fidelity audit")
-    rp._keys(audit, {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}, set(), "fidelity audit")
+    required = {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}
+    rp._keys(audit, required | ({"audit_round"} if strict else set()), set() if strict else {"audit_round"}, "fidelity audit")
     if audit["candidate_id"] != candidate_id:
         raise Error(f"Fidelity audit at {path.name} is for {audit['candidate_id']!r}, not {candidate_id}.")
     if audit["proposed_wording"] != row["proposed_wording"]:
         raise Error(f"Fidelity audit for {candidate_id} audited different wording than the repair proposes.")
+    if "audit_round" in audit and (type(audit["audit_round"]) is not int or audit["audit_round"] < 1):
+        raise Error("audit.audit_round must be a positive integer: 1 for the first wording, 2 for a revision, and so on.")
     original = array(audit["original"], "audit.original")
     if not original:
         raise Error("audit.original must quote the source text the wording replaces.")
@@ -485,20 +542,81 @@ def fidelity_audit(row: dict, candidate_id: str, blocks: dict) -> list[dict]:
         rp._anchor(anchor, blocks, f"audit.original[{n}]")
         if anchor["block_id"] not in row["affected_block_ids"]:
             raise Error(f"audit.original[{n}] quotes a block outside the repair's affected_block_ids.")
+    if strict and not any(anchor_overlaps(anchor, target) for anchor in original for target in targets):
+        raise Error(f"Fidelity audit for {candidate_id} does not quote the candidate's anchor text: audit.original must be the manuscript text at the candidate's anchor ({targets[0]['block_id']}) or at one of its recorded evidence anchors, not an earlier wording or another passage.")
     rp._enum(audit["verdict"], AUDIT_VERDICTS, "audit.verdict")
     checks = obj(audit["checks"], "audit.checks")
-    rp._keys(checks, set(AUDIT_CHECKS), set(), "audit.checks")
+    if strict:
+        rp._keys(checks, set(AUDIT_CHECKS) | {"hedges"}, set(), "audit.checks")
+    else:
+        rp._keys(checks, set(AUDIT_CHECKS_V4), {"added_qualification", "hedges"}, "audit.checks")
     for name in AUDIT_CHECKS:
-        rp._enum(checks[name], AUDIT_CHECK_VALUES, "audit.checks." + name)
+        if name in checks:
+            rp._enum(checks[name], AUDIT_CHECK_VALUES, "audit.checks." + name)
+    if "hedges" in checks:
+        hedge_report(checks, original, row["proposed_wording"])
     string(audit["notes"], "audit.notes")
     auditor = obj(audit["auditor"], "audit.auditor")
     rp._keys(auditor, {"mode", "agent_id"}, set(), "audit.auditor")
     rp._enum(auditor["mode"], {"bounded-request", "fresh-prefix", "full-context"}, "audit.auditor.mode")
     string(auditor["agent_id"], "audit.auditor.agent_id")
-    changed = [name for name in AUDIT_CHECKS if checks[name] == "changed"]
+    changed = [name for name in AUDIT_CHECKS if checks.get(name) == "changed"]
     if audit["verdict"] != "preserved" or changed:
         raise Error(f"Repair {candidate_id} cannot carry proposed wording: the fidelity audit verdict is {audit['verdict']}"
                     + (f" with changed {', '.join(changed)}" if changed else "") + ". Revise the wording and audit again, or set proposed_wording to null and ask the author.")
+    return [{"path": str(path), "sha256": digest(raw)}]
+
+
+def hedge_report(checks: dict, original: list, proposed_wording: str) -> None:
+    """checks.hedges reports every hedge the helper finds in the original, one status each.
+
+    A hedge reported strengthened or removed must show up as a changed claim_strength or
+    uncertainty; a hedge reported kept needs some hedge left in the proposed wording (a
+    synonym counts, a bare assertion does not).
+    """
+    hedges = array(checks["hedges"], "audit.checks.hedges")
+    seen = {}
+    for n, item in enumerate(hedges):
+        item = obj(item, f"audit.checks.hedges[{n}]")
+        rp._keys(item, {"term", "status"}, set(), f"audit.checks.hedges[{n}]")
+        term = string(item["term"], f"audit.checks.hedges[{n}].term")
+        rp._enum(item["status"], HEDGE_STATUSES, f"audit.checks.hedges[{n}].status")
+        key = rp.hedge_key(term)
+        if key in seen:
+            raise Error(f"audit.checks.hedges lists {term!r} twice.")
+        seen[key] = item["status"]
+    expected = rp.find_hedges(" ".join(a["quote"] for a in original))
+    missing = [term for term in expected if rp.hedge_key(term) not in seen and not any(rp.hedge_key(term) in key for key in seen)]
+    if missing:
+        raise Error("audit.checks.hedges does not report every hedge in the original text; missing: " + ", ".join(repr(t) for t in missing) + ".")
+    weakened = [term for term, status in seen.items() if status != "kept"]
+    if weakened and checks.get("claim_strength") != "changed" and checks.get("uncertainty") != "changed":
+        raise Error("audit.checks.hedges reports " + ", ".join(repr(t) for t in weakened) + " strengthened or removed, so claim_strength or uncertainty must be changed.")
+    kept = [term for term, status in seen.items() if status == "kept"]
+    if kept and not rp.hedge_survives(kept, proposed_wording):
+        raise Error("audit.checks.hedges reports " + ", ".join(repr(t) for t in kept) + " kept, but the proposed wording carries no hedge the helper recognizes (review_packets.HEDGE_PATTERNS); keep a recognized qualification or report it removed.")
+
+
+def feature_comparison(row: dict, candidate_id: str) -> list[dict]:
+    """Bind a repair to a difficulty_features.py compare result for its wording; a heavy edit (kind edit) needs a stated reason."""
+    path = Path(string(row.get("compare_path"), "repair.compare_path")).resolve()
+    raw = read_raw(path)
+    result = obj(parse(raw), "feature comparison")
+    if result.get("command") != "compare" or not isinstance(result.get("comparisons"), list):
+        raise Error(f"compare_path for {candidate_id} is not a difficulty_features.py compare result.")
+    rows = [c for c in result["comparisons"] if isinstance(c, dict) and c.get("candidate_id") == candidate_id and "skipped" not in c]
+    if not rows:
+        raise Error(f"compare_path for {candidate_id} holds no comparison for that candidate.")
+    comparison = rows[-1]
+    if comparison.get("proposed_wording") != row["proposed_wording"]:
+        raise Error(f"compare_path for {candidate_id} compared different wording than the repair proposes.")
+    lexical = obj(comparison.get("lexical"), "comparison.lexical")
+    rp._enum(lexical.get("edit_weight"), EDIT_WEIGHTS, "comparison.lexical.edit_weight")
+    if row["kind"] == "edit" and lexical["edit_weight"] == "heavy":
+        reason = row.get("heavy_edit_reason")
+        if reason is None:
+            raise Error(f"Repair {candidate_id} replaces more than half of the original words (edit ratio {lexical.get('edit_ratio')}); give heavy_edit_reason, or split the change into smaller repairs.")
+        string(reason, "repair.heavy_edit_reason")
     return [{"path": str(path), "sha256": digest(raw)}]
 
 
@@ -541,7 +659,7 @@ def load_run(journal: Path, index: Any) -> tuple[dict, dict, str]:
     index = rp.validate_index(index)
     start = verify_receipt(parse(read_raw(journal / "00-start.json")), "start receipt")
     fields(start, {"schema_version", "artifact_type", "snapshot_id", "index_sha256", "profile", "profile_sha256", "scope", "scope_sha256", "recorded_at"}, "start receipt")
-    if type(start["schema_version"]) is not int or start["schema_version"] != JOURNAL_SCHEMA or start["artifact_type"] != "academic_review_steps":
+    if type(start["schema_version"]) is not int or start["schema_version"] not in SUPPORTED_SCHEMAS or start["artifact_type"] != "academic_review_steps":
         raise Error("Unsupported journal schema; use the helper version that wrote this journal.")
     if (start["snapshot_id"], start["index_sha256"]) != (index["snapshot_id"], index["index_sha256"]):
         raise Error("Current index differs from the journal's source. Start a new run for a revised source.")
@@ -635,10 +753,16 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
         final = by_id(review["issues"], "candidate_id", "final issues")
         if final.keys() != repairs.keys():
             raise Error("Final issues must match all accepted/needs_author candidates exactly; rejected/merged or new issues cannot appear.")
+        strict = start["schema_version"] >= 5
+        blocks = {b["block_id"] for b in index["blocks"]}
         for key, issue in final.items():
             decision, repair = decisions[key], repairs[key]
             if issue.get("decision_status") != decision["status"]:
                 raise Error(f"Final issue {key} must preserve decision_status.")
+            if strict and not names_a_block(issue["action"], blocks):
+                raise Error(f"Final issue {key}: action must say where to act by naming a block id of this source (for example B0003).")
+            if strict and decision["status"] == "needs_author" and not is_question(string(issue.get("author_question"), f"final issue {key}.author_question")):
+                raise Error(f"Final issue {key}: author_question must be a question that ends with a question mark.")
             for field in ("category", "diagnosis", "severity", "confidence"):
                 if issue[field] != decision[field]:
                     raise Error(f"Final issue {key}.{field} differs from the saved decision; revise notes in a new run.")
@@ -655,7 +779,8 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
             if any(rp._canonical_hash(a) not in allowed for a in issue.get("evidence", [])):
                 raise Error(f"Final issue {key} adds evidence not recorded during checking.")
     return {"ok": True, "command": "check-final", "issue_count": len(final),
-            "verified": ["ready receipt and saved-stage consistency", "final review schema and exact source anchors", "final issues exactly linked to saved decisions and repairs", "needs_author status and author question retained"],
+            "verified": ["ready receipt and saved-stage consistency", "final review schema and exact source anchors", "final issues exactly linked to saved decisions and repairs", "needs_author status and author question retained",
+                         "every action names a block id and every author question is a question (schema 5 journals)"],
             "not_verified": LIMITS + ["whether final prose preserves the implications of its structured status"]}
 
 

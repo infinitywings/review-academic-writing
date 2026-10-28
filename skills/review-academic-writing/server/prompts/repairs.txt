@@ -16,19 +16,24 @@ Wording rules to apply (quoted from references/wording-and-sentences.md):
 
 {{section:references/wording-and-sentences.md|## Output exact improvements}}
 
-The blank template this step fills (assets/notes/repairs.json); snapshot_id and audit_path are added by the controller:
+The blank template this step fills (assets/notes/repairs.json); snapshot_id, audit_path and compare_path are added by the controller:
 
 {{file:assets/notes/repairs.json}}
 
 What to return: exactly one JSON object with these keys and nothing else:
-{"summary":"string","repairs":[{"candidate_id":"C01","kind":"edit","action":"string","proposed_wording":"the complete replacement sentence(s)" or null,"wording_withheld_reason":"string" or null,"original":[{"block_id":"B0003","quote":"exact text the wording replaces"}],"basis":[{"fact":"string","location":"B0004"}],"scientific_fidelity":"string","new_terms_check":"string","affected_block_ids":["B0003","B0004"],"author_question":"string" or null}]}
+{"summary":"string","repairs":[{"candidate_id":"C01","kind":"edit","edit_scope":"pointer|apposition|term|reorder|split|sentence" or null,"action":"string naming the block id where to act","proposed_wording":"the complete replacement sentence(s)" or null,"wording_withheld_reason":"string" or null,"heavy_edit_reason":"string" or null,"original":[{"block_id":"B0003","quote":"exact text the wording replaces"}],"basis":[{"fact":"string","location":"B0004"}],"scientific_fidelity":"string","new_terms_check":"string","affected_block_ids":["B0003","B0004"],"author_question":"string" or null}]}
 
 - Exactly one repair per candidate id in the input.
-- kind is edit, move, or author_question. A needs_author decision requires kind author_question, proposed_wording null, and a nonempty author_question.
+- kind is edit, move, or author_question. Every author_question ends with a question mark. A needs_author decision requires kind author_question, proposed_wording null, and a nonempty author_question.
+- action says where to act: it names at least one block id of this manuscript (B0003) together with the verb (move, add, replace, split, ask).
+- An edit carries edit_scope, the one thing it changes: pointer (a referent or cross-reference), apposition (a short explanation added beside a term), term (one word or phrase replaced), reorder (clauses of one sentence reordered), split (one sentence split into two), or sentence (the whole sentence rewritten). Write the wording for that scope only: do not touch numbers, conditions, hedges, or causal words that the scope does not name. A move or author_question has edit_scope null.
+- Before writing a replacement, count what it changes: a wording that replaces more than half of the original's words is a heavy edit. Prefer a narrower scope; when the whole sentence must go, say why in heavy_edit_reason (null otherwise). The controller measures the share and asks again when a heavy edit has no reason.
+- original is the manuscript text at the candidate's anchor or at one of the candidate's or decision's evidence anchors. A revised wording after audit feedback is still compared with that original text, never with the earlier wording.
 - When proposed_wording is a string, original must quote the exact source text it replaces (at least one anchor, each within affected_block_ids) and basis must list the manuscript facts the wording rests on with their block ids; both go to the auditor unchanged. When proposed_wording is null, original and basis are empty arrays.
 - affected_block_ids is a nonempty list of distinct block ids.
 - wording_withheld_reason is required, as a nonempty string, when kind is edit and proposed_wording is null: say why no replacement is offered (the manuscript lacks the fact, the fix needs an author decision). In every other case set it to null; the helper refuses it beside a proposed wording, on a move, or on an author question.
 - When the input contains audit_feedback, an earlier wording for each listed candidate failed the independent audit; the feedback quotes the audited wording, the verdict, the properties found changed, and the auditor's notes. Revise the wording so that those properties stay the same, or set proposed_wording to null and put the open question to the author.
+- When the input contains edit_feedback, an earlier wording for each listed candidate replaced more than half of the original's words without a reason. Narrow the edit (a smaller edit_scope, one purpose), or keep it and give heavy_edit_reason.
 - Do not introduce a new label, acronym, or compound noun; say in new_terms_check what you checked.
 - Return no code fence and no commentary.
 

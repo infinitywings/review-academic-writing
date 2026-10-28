@@ -8,6 +8,17 @@ Subcommands:
             the top N with the feature that drove each one.
   compare   count the same features in an original quote and a proposed wording,
             side by side, and flag any feature the proposed wording has more of.
+            It also reports, without a parse, the share of the original's words the
+            proposal replaces (edit ratio; above 0.5 the edit is "heavy"), the
+            type-token ratio and the mean word length of both texts, with advisory
+            flags when the proposal is less varied or uses longer words.
+            --lexical-only computes just these and needs no spaCy.
+
+nominate also counts, per block, the words from assets/excess-vocabulary.json
+(Kobak et al. 2025, Science Advances: words in excess in 2024 biomedical abstracts).
+That count is a separate column, not part of the ranking: the list is a lower
+bound, it ages as authors avoid the words, and it cannot tell an author's style
+from a model's. It nominates a passage for inspection; it never convicts one.
 
 Both commands write JSON and print a short table. The JSON carries a fixed "scope"
 note: these are candidate-nomination heuristics from model-side evidence, not
@@ -49,18 +60,26 @@ en_core_web_trf when it is installed and en_core_web_sm otherwise.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
+import re
 import sys
 from typing import Any, Iterable, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import review_packets as rp  # noqa: E402
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 PAPER = "Clark, Martin and Mahowald (2026), arXiv:2610.29162, Section 3.1"
+EXCESS_VOCABULARY = Path(__file__).resolve().parent.parent / "assets" / "excess-vocabulary.json"
+WORD_TOKEN = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+# Edit weight by the share of the original's words that the proposal replaces (Jourdan et al.'s
+# light/medium/heavy classes); above HEAVY_EDIT_RATIO the repair needs a stated reason or a split.
+HEAVY_EDIT_RATIO = 0.5
+LIGHT_EDIT_RATIO = 0.2
 SCOPE_NOTE = (
     "Candidate-nomination heuristics computed from a dependency parse (model-side "
     "evidence). Counts are not findings: they nominate passages for the editor's "
@@ -442,6 +461,83 @@ def rank_blocks(rows: Sequence[dict[str, Any]], feature_names: Sequence[str], to
     return ranked[:top]
 
 
+def word_tokens(text: str) -> list[str]:
+    """Lower-cased word tokens; no parse needed."""
+    return [match.group(0).lower() for match in WORD_TOKEN.finditer(text)]
+
+
+def edit_ratio(original_words: Sequence[str], proposed_words: Sequence[str]) -> tuple[int, float | None]:
+    """Changed words and their share of the original: a replaced run counts once by its longer side."""
+    changed = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=list(original_words), b=list(proposed_words), autojunk=False).get_opcodes():
+        if tag == "replace":
+            changed += max(i2 - i1, j2 - j1)
+        elif tag == "delete":
+            changed += i2 - i1
+        elif tag == "insert":
+            changed += j2 - j1
+    return changed, (round(changed / len(original_words), 4) if original_words else None)
+
+
+def edit_weight(ratio: float | None) -> str | None:
+    if ratio is None:
+        return None
+    if ratio > HEAVY_EDIT_RATIO:
+        return "heavy"
+    return "light" if ratio <= LIGHT_EDIT_RATIO else "medium"
+
+
+def lexical_measures(original_text: str, proposed_text: str) -> dict[str, Any]:
+    """Edit ratio, type-token ratio and mean word length of the two texts, with advisory flags."""
+    a, b = word_tokens(original_text), word_tokens(proposed_text)
+    changed, ratio = edit_ratio(a, b)
+    weight = edit_weight(ratio)
+    ttr_a = round(len(set(a)) / len(a), 4) if a else None
+    ttr_b = round(len(set(b)) / len(b), 4) if b else None
+    len_a = round(sum(map(len, a)) / len(a), 3) if a else None
+    len_b = round(sum(map(len, b)) / len(b), 3) if b else None
+    flags = []
+    if weight == "heavy":
+        flags.append("heavy_edit")
+    if ttr_a is not None and ttr_b is not None and ttr_b < ttr_a:
+        flags.append("lower_type_token_ratio")
+    if len_a is not None and len_b is not None and len_b > len_a:
+        flags.append("longer_words")
+    return {
+        "original_words": len(a),
+        "proposed_words": len(b),
+        "changed_words": changed,
+        "edit_ratio": ratio,
+        "edit_weight": weight,
+        "type_token_ratio": {"original": ttr_a, "proposed": ttr_b, "proposed_is_lower": "lower_type_token_ratio" in flags},
+        "mean_word_length": {"original": len_a, "proposed": len_b, "proposed_is_longer": "longer_words" in flags},
+        "advisory_flags": flags,
+    }
+
+
+def load_excess_vocabulary(path: str | Path | None) -> dict[str, Any] | None:
+    """The excess-vocabulary asset as {word: part_of_speech} plus its source; None when disabled."""
+    if path is None:
+        return None
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("groups"), dict) or not isinstance(data.get("source"), dict):
+        raise DifficultyError("The excess-vocabulary file must be a JSON object with groups (part of speech to word list) and source.")
+    words: dict[str, str] = {}
+    for pos, items in data["groups"].items():
+        if not isinstance(items, list) or any(not isinstance(w, str) or not w.strip() or w != w.lower() for w in items):
+            raise DifficultyError(f"excess vocabulary group {pos!r} must list lower-cased words.")
+        for word in items:
+            words.setdefault(word, pos)
+    return {"path": str(path), "source": data["source"], "words": words, "count": len(words)}
+
+
+def count_excess_vocabulary(text: str, vocabulary: dict[str, Any]) -> dict[str, Any]:
+    """Tokens of `text` whose lower-cased form is in the list; a nomination signal, not a finding."""
+    tokens = word_tokens(text)
+    matches = [t for t in tokens if t in vocabulary["words"]]
+    return {"count": len(matches), "per_1k_words": round(1000 * len(matches) / len(tokens), 2) if tokens else None, "matches": sorted(set(matches))}
+
+
 def compare_measures(original: dict[str, Any], proposed: dict[str, Any]) -> dict[str, Any]:
     """Side-by-side counts with a flag for every feature the proposed text has more of."""
     features: dict[str, Any] = {}
@@ -685,7 +781,7 @@ def compare_pairs_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
 # Commands
 # ---------------------------------------------------------------------------
 
-def _header(model_name: str, reference_info: dict[str, Any] | None) -> dict[str, Any]:
+def _header(model_name: str | None, reference_info: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "tool": "difficulty_features.py",
         "version": VERSION,
@@ -700,13 +796,15 @@ def _header(model_name: str, reference_info: dict[str, Any] | None) -> dict[str,
 
 
 def run_nominate(args: argparse.Namespace) -> dict[str, Any]:
+    vocabulary = load_excess_vocabulary(None if args.no_excess_vocabulary else args.excess_vocabulary)
     nlp, model_name = load_nlp(args.model)
     blocks, source_kind, snapshot_id = load_blocks(args.input)
     reference, reference_info = load_reference(nlp, args.reference, args.bin_width, args.add_k)
     measured: list[dict[str, Any]] = []
     for block in blocks:
         measure = measure_text(nlp, block["text"], reference)
-        measured.append({"block_id": block["block_id"], "kind": block.get("kind", "text"), **measure})
+        excess = count_excess_vocabulary(block["text"], vocabulary) if vocabulary else None
+        measured.append({"block_id": block["block_id"], "kind": block.get("kind", "text"), **measure, "excess_vocabulary": excess})
     eligible = [m for m in measured if m["kind"] == "text" and m["words"] >= args.min_words]
     rows = [{"block_id": m["block_id"], "features": ranking_features(m, reference is not None)} for m in eligible]
     ranked = rank_blocks(rows, RANKED_FEATURES, args.top)
@@ -714,52 +812,81 @@ def run_nominate(args: argparse.Namespace) -> dict[str, Any]:
     nominations = []
     for item in ranked:
         measure = by_id[item["block_id"]]
-        nominations.append({**item, "words": measure["words"], "examples": measure["examples"].get(item["driver"], []) if item["driver"] else [], "note": "Candidate for wording_check; inspect in context before recording anything."})
+        nominations.append({**item, "words": measure["words"], "excess_vocabulary": measure["excess_vocabulary"], "examples": measure["examples"].get(item["driver"], []) if item["driver"] else [], "note": "Candidate for wording_check; inspect in context before recording anything."})
     result = {
         **_header(model_name, reference_info),
         "command": "nominate",
         "input": {"path": str(args.input), "kind": source_kind, "snapshot_id": snapshot_id, "blocks": len(blocks), "ranked_blocks": len(eligible), "min_words": args.min_words},
+        "excess_vocabulary": None if vocabulary is None else {"path": vocabulary["path"], "words": vocabulary["count"], "source": vocabulary["source"],
+                                                               "note": "A separate count, not part of z_sum. The list is a lower bound that ages and cannot separate an author's style from a model's; a count nominates, it never convicts."},
         "nominations": nominations,
         "blocks": measured,
     }
     rp.write_json_atomic(args.out, result)
-    print(f"difficulty_features nominate: {len(eligible)} of {len(blocks)} blocks ranked; model {model_name}; reference {'yes' if reference else 'no'}")
-    print(f"{'rank':>4}  {'block':<7} {'z_sum':>7}  {'words':>5}  driver")
+    print(f"difficulty_features nominate: {len(eligible)} of {len(blocks)} blocks ranked; model {model_name}; reference {'yes' if reference else 'no'}; excess vocabulary {'yes' if vocabulary else 'no'}")
+    print(f"{'rank':>4}  {'block':<7} {'z_sum':>7}  {'words':>5}  {'excess':>6}  driver")
     for item in nominations:
         example = item["examples"][0] if item["examples"] else ""
-        print(f"{item['rank']:>4}  {item['block_id']:<7} {item['z_sum']:>7.2f}  {item['words']:>5}  {item['driver'] or '-'}  {example[:60]}")
+        excess = "-" if item["excess_vocabulary"] is None else item["excess_vocabulary"]["count"]
+        print(f"{item['rank']:>4}  {item['block_id']:<7} {item['z_sum']:>7.2f}  {item['words']:>5}  {str(excess):>6}  {item['driver'] or '-'}  {example[:60]}")
     print("Scope: " + SCOPE_NOTE)
     print(f"Wrote {args.out}")
     return result
 
 
+def lexical_comparison(candidate_id: Any, original: str, proposed_wording: str) -> dict[str, Any]:
+    """One compare row without a parse: the texts, word counts and lexical measures; parse fields empty."""
+    lexical = lexical_measures(original, proposed_wording)
+    return {"candidate_id": candidate_id, "original": original, "proposed_wording": proposed_wording,
+            "words": {"original": lexical["original_words"], "proposed": lexical["proposed_words"]},
+            "features": {}, "flagged": [], "proposed_has_more_difficulty_features": False,
+            "advisory": "Parse-based features not computed (lexical only). Advisory only; the fidelity audit remains the gate.",
+            "lexical": lexical}
+
+
+def compare_header(model_name: str | None, reference_info: dict[str, Any] | None, lexical_only: bool) -> dict[str, Any]:
+    return {**_header(model_name, reference_info), "command": "compare", "lexical_only": lexical_only}
+
+
 def run_compare(args: argparse.Namespace) -> dict[str, Any]:
     pairs = compare_pairs_from_args(args)
-    nlp, model_name = load_nlp(args.model)
-    reference, reference_info = load_reference(nlp, args.reference, args.bin_width, args.add_k)
+    if args.lexical_only:
+        nlp, model_name, reference, reference_info = None, None, None, None
+    else:
+        nlp, model_name = load_nlp(args.model)
+        reference, reference_info = load_reference(nlp, args.reference, args.bin_width, args.add_k)
     comparisons: list[dict[str, Any]] = []
     for pair in pairs:
         if "skipped" in pair:
             comparisons.append(pair)
             continue
-        original = measure_text(nlp, pair["original"], reference)
-        proposed = measure_text(nlp, pair["proposed_wording"], reference)
-        comparisons.append({"candidate_id": pair["candidate_id"], **compare_measures(original, proposed), "examples": {"original": original["examples"], "proposed": proposed["examples"]}})
-    result = {**_header(model_name, reference_info), "command": "compare", "comparisons": comparisons}
+        row = lexical_comparison(pair["candidate_id"], pair["original"], pair["proposed_wording"])
+        if nlp is not None:
+            original = measure_text(nlp, pair["original"], reference)
+            proposed = measure_text(nlp, pair["proposed_wording"], reference)
+            row.update(compare_measures(original, proposed), examples={"original": original["examples"], "proposed": proposed["examples"]})
+        comparisons.append(row)
+    result = {**compare_header(model_name, reference_info, bool(args.lexical_only)), "comparisons": comparisons}
     rp.write_json_atomic(args.out, result)
-    print(f"difficulty_features compare: {len(comparisons)} pair(s); model {model_name}; reference {'yes' if reference else 'no'}")
+    print(f"difficulty_features compare: {len(comparisons)} pair(s); model {model_name or 'none (lexical only)'}; reference {'yes' if reference else 'no'}")
     for item in comparisons:
         label = item.get("candidate_id") or "-"
         if "skipped" in item:
             print(f"{label}: skipped ({item['skipped']})")
             continue
-        print(f"{label}: words {item['words']['original']} -> {item['words']['proposed']}; flagged: {', '.join(item['flagged']) or 'none'}")
-        print(f"  {'feature':<34} {'orig':>8} {'prop':>8}  more?")
-        for name, cell in item["features"].items():
-            before = "-" if cell["original"] is None else cell["original"]
-            after = "-" if cell["proposed"] is None else cell["proposed"]
-            print(f"  {name:<34} {str(before):>8} {str(after):>8}  {'yes' if cell['proposed_has_more'] else ''}")
-    print("Advisory only; the fidelity audit remains the gate. Scope: " + SCOPE_NOTE)
+        lexical = item["lexical"]
+        print(f"{label}: words {item['words']['original']} -> {item['words']['proposed']}; flagged: {', '.join(item['flagged']) or 'none'}; "
+              f"edit ratio {lexical['edit_ratio']} ({lexical['edit_weight']}); advisory: {', '.join(lexical['advisory_flags']) or 'none'}")
+        if item["features"]:
+            print(f"  {'feature':<34} {'orig':>8} {'prop':>8}  more?")
+            for name, cell in item["features"].items():
+                before = "-" if cell["original"] is None else cell["original"]
+                after = "-" if cell["proposed"] is None else cell["proposed"]
+                print(f"  {name:<34} {str(before):>8} {str(after):>8}  {'yes' if cell['proposed_has_more'] else ''}")
+        ttr, length = lexical["type_token_ratio"], lexical["mean_word_length"]
+        print(f"  {'type_token_ratio':<34} {str(ttr['original']):>8} {str(ttr['proposed']):>8}  {'lower' if ttr['proposed_is_lower'] else ''}")
+        print(f"  {'mean_word_length':<34} {str(length['original']):>8} {str(length['proposed']):>8}  {'longer' if length['proposed_is_longer'] else ''}")
+    print("Advisory only; the fidelity audit remains the gate. A heavy edit (ratio above 0.5) needs heavy_edit_reason in the repair or a split. Scope: " + SCOPE_NOTE)
     print(f"Wrote {args.out}")
     return result
 
@@ -779,6 +906,8 @@ def _parser() -> argparse.ArgumentParser:
     nominate.add_argument("--input", required=True, help="index.json from review_packets.py index, or a Markdown file.")
     nominate.add_argument("--top", type=int, default=10, help="How many blocks to print (default 10).")
     nominate.add_argument("--min-words", type=int, default=20, help="Rank only text blocks with at least this many words (default 20).")
+    nominate.add_argument("--excess-vocabulary", default=str(EXCESS_VOCABULARY), help=f"Word list counted per block as a separate column (default {EXCESS_VOCABULARY}).")
+    nominate.add_argument("--no-excess-vocabulary", action="store_true", help="Skip the excess-vocabulary count.")
     common(nominate)
 
     compare = sub.add_parser("compare", help="Compare an original quote with a proposed wording (advisory).")
@@ -788,6 +917,7 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--input", help="Audit input JSON (candidate_id, original anchors, proposed_wording).")
     compare.add_argument("--repairs", help="repairs.json; every repair with proposed_wording is compared with its candidate anchor from --checks.")
     compare.add_argument("--checks", help="checks.json that holds the candidates' anchors (with --repairs).")
+    compare.add_argument("--lexical-only", action="store_true", help="Compute only the edit ratio, type-token ratio and mean word length (no spaCy needed).")
     common(compare)
     return parser
 

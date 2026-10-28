@@ -17,9 +17,17 @@
     "time_horizon": "",
     "numerical_values": "",
     "uncertainty": "",
-    "causal_vs_associative": ""
+    "causal_vs_associative": "",
+    "added_qualification": "",
+    "hedges": [
+      {
+        "term": "",
+        "status": ""
+      }
+    ]
   },
   "notes": "",
+  "audit_round": 1,
   "auditor": {
     "mode": "",
     "agent_id": ""

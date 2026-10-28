@@ -43,6 +43,31 @@ REVIEW_CATEGORIES = {
 }
 HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SNAPSHOT_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+# Hedges and conditions that a fidelity audit compares one by one (dispatch_reader.py audit
+# lists them as hedges_in_original; review_steps.py requires each to be reported). Patterns are
+# matched case-insensitively on the original text; extend the list here or per call with
+# --hedge-list. The list is a floor, not a definition of hedging.
+HEDGE_PATTERNS = (
+    r"\bmay\b", r"\bmight\b", r"\bcould\b", r"\bwould\b",
+    r"\blikely\b", r"\bunlikely\b", r"\bpossibl[ey]\b", r"\bprobabl[ey]\b", r"\bpotential(?:ly)?\b",
+    r"\bperhaps\b", r"\bpresumably\b", r"\bapparently\b", r"\barguably\b", r"\bplausibl[ey]\b",
+    r"\boften\b", r"\btypically\b", r"\bgenerally\b", r"\busually\b", r"\bmostly\b", r"\bsometimes\b", r"\boccasionally\b", r"\bsomewhat\b", r"\bin general\b",
+    r"\bclose to\b", r"\bexcept (?:when|for|in)\b", r"\bgiven that\b", r"\brestricted to\b",
+    r"\bsuggest(?:s|ed|ing)?\b", r"\bappear(?:s|ed)? to\b", r"\bseem(?:s|ed)?\b", r"\btend(?:s|ed)? to\b",
+    r"\bhypothesi[sz]e(?:s|d)?\b", r"\bspeculate(?:s|d)?\b", r"\bexpect(?:s|ed)? (?:that|to)\b", r"\bassume(?:s|d)?\b",
+    r"\bassociated with\b", r"\bcorrelat(?:ed|es|ion|ions) (?:with|between)\b", r"\brelated to\b", r"\blinked to\b",
+    r"\bconsistent with\b", r"\bcompatible with\b",
+    r"\bapproximately\b", r"\broughly\b", r"\bnearly\b", r"\balmost\b", r"\bat least\b", r"\bat most\b", r"\bup to\b",
+    r"\bon average\b", r"\bin part\b", r"\bpartly\b", r"\bpartially\b", r"\bto some extent\b",
+    r"\bin (?:some|most|many|several|a few|a subset of|a minority of|a majority of) \w+\b",
+    r"\b(?:some|most|many|several|a subset) of\b", r"\b(?:in )?\d+ of (?:the )?\d+\b",
+    r"\bunder (?:\w+ ){0,4}?(?:assumptions?|conditions?|settings?|regimes?|hypothes[ie]s|constraints?)\b",
+    r"\b(?:in|within) (?:our|this|the present|these) (?:setting|settings|sample|samples|dataset|datasets|cohort|cohorts|experiments?|study|studies)\b",
+    r"\bif\b", r"\bunless\b", r"\bassuming\b", r"\bprovided that\b", r"\bonly (?:when|if)\b", r"\bas long as\b",
+    r"\bpreliminary\b", r"\btentative(?:ly)?\b", r"\bexploratory\b", r"\bnot necessarily\b", r"\bnot always\b",
+    r"\bcannot (?:rule out|exclude)\b", r"\blimited to\b", r"\bwe did not (?:measure|test|examine|observe)\b",
+)
+HEDGE_REGEX = re.compile("|".join(HEDGE_PATTERNS), re.IGNORECASE)
 
 
 class ReviewDataError(ValueError):
@@ -55,6 +80,32 @@ class ReviewDataError(ValueError):
 
 def normalize_text(text: str) -> str:
     return text.replace("\r\n", "\n")
+
+
+def hedge_key(term: str) -> str:
+    return " ".join(term.lower().split())
+
+
+def hedge_survives(kept: list[str], proposed_wording: str, extra_patterns: tuple[str, ...] | list[str] = ()) -> bool:
+    """A kept hedge survives when the wording carries some listed hedge or the kept phrase itself."""
+    if find_hedges(proposed_wording, extra_patterns):
+        return True
+    wording = hedge_key(proposed_wording)
+    return any(re.search(r"(?<!\w)" + re.escape(hedge_key(term)) + r"(?!\w)", wording) for term in kept)
+
+
+def find_hedges(text: str, extra_patterns: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """Hedge and condition phrases in `text`, in order of first occurrence, one entry per distinct phrase.
+
+    A phrase that occurs twice is listed once; the auditor reports it kept only when every
+    occurrence is kept. `extra_patterns` are regular expressions added to HEDGE_PATTERNS.
+    """
+    regex = HEDGE_REGEX if not extra_patterns else re.compile("|".join((*HEDGE_PATTERNS, *extra_patterns)), re.IGNORECASE)
+    found: dict[str, str] = {}
+    for match in regex.finditer(text):
+        key = hedge_key(match.group(0))
+        found.setdefault(key, " ".join(match.group(0).split()))
+    return list(found.values())
 
 
 def sha256_text(text: str) -> str:

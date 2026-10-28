@@ -21,7 +21,9 @@ def load(name):
 
 
 rs = load("review_steps")
+df = load("difficulty_features")
 rp, mr = rs.rp, rs.mr
+DELETE = object()  # in repairs_with: remove the field instead of setting it
 
 TEXT = """# Measuring agreement between two records
 
@@ -105,16 +107,16 @@ class ReviewStepsTests(unittest.TestCase):
             {"candidate_id": "C01", "kind": "move", "action": "Move the definition ahead of B0003.", "proposed_wording": WORDING,
              "scientific_fidelity": "threshold preserved", "new_terms_check": "drops MSW", "affected_block_ids": ["B0003", "B0004"], "author_question": None,
              "audit_path": str(self.root / "audit-C01.json")},
-            {"candidate_id": "C02", "kind": "author_question", "action": "Ask how pairs were counted.", "proposed_wording": None,
+            {"candidate_id": "C02", "kind": "author_question", "action": "Ask the author how the 412 pairs in B0005 were counted.", "proposed_wording": None,
              "scientific_fidelity": "no change", "new_terms_check": "none", "affected_block_ids": ["B0005"], "author_question": "How were the 412 pairs selected?", "audit_path": None},
-            {"candidate_id": "C05", "kind": "edit", "action": "State the comparison rate.", "proposed_wording": None,
+            {"candidate_id": "C05", "kind": "edit", "edit_scope": "apposition", "action": "State the comparison rate beside the 91 percent in B0005.", "proposed_wording": None,
              "wording_withheld_reason": "the comparison rate is not in the manuscript; the author must supply it",
              "scientific_fidelity": "rate preserved", "new_terms_check": "none", "affected_block_ids": ["B0005"], "author_question": None}]}
 
     def audit(self, **change):
-        checks = {name: "same" for name in ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "numerical_values", "uncertainty", "causal_vs_associative")}
-        return {"candidate_id": "C01", "proposed_wording": WORDING, "original": [ORIGINAL], "verdict": "preserved", "checks": {**checks, "time_horizon": "not_applicable"},
-                "notes": "Threshold and direction kept; MSW spelled out from B0004.", "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"}, **change}
+        checks = {name: "same" for name in ("claim_strength", "quantifiers", "assumptions", "population", "measured_outcome", "numerical_values", "uncertainty", "causal_vs_associative", "added_qualification")}
+        return {"candidate_id": "C01", "proposed_wording": WORDING, "original": [ORIGINAL], "verdict": "preserved", "checks": {**checks, "time_horizon": "not_applicable", "hedges": []},
+                "notes": "Threshold and direction kept; MSW spelled out from B0004.", "audit_round": 1, "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"}, **change}
 
     def write_audit(self, value, name="audit-C01.json"):
         path = self.root / name
@@ -168,7 +170,7 @@ class ReviewStepsTests(unittest.TestCase):
         receipts = [json.loads((self.journal / STAGE_FILES[s][1]).read_text()) for s in rs.STAGES]
         self.assertEqual([r["previous_receipt_sha256"] for r in receipts[1:]], [r["receipt_sha256"] for r in receipts[:-1]])
         self.assertEqual(receipts[4]["attachments"], [{"path": str(self.root / "audit-C01.json"), "sha256": sha(self.root / "audit-C01.json")}])
-        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 4)
+        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 5)
         self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
         self.assertEqual(self.names(), ["00-start.json", "01-reading.notes.json", "01-reading.receipt.json", "02-checks.notes.json", "02-checks.receipt.json",
                                         "03-reconcile.notes.json", "03-reconcile.receipt.json", "04-decisions.notes.json", "04-decisions.receipt.json",
@@ -602,6 +604,7 @@ class ReviewStepsTests(unittest.TestCase):
                 self.assertRefused(message, self.record, "repairs", value)
         moved = self.notes("repairs")
         moved["repairs"][2]["kind"] = "move"
+        moved["repairs"][2]["edit_scope"] = None
         del moved["repairs"][2]["wording_withheld_reason"]
         self.assertEqual(self.record("repairs", moved)["next_stage"], "ready")
         self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
@@ -611,6 +614,390 @@ class ReviewStepsTests(unittest.TestCase):
         original = json.loads(path.read_text())
         path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": 3})))
         self.assertRefused("Unsupported journal schema", self.record, "reading")
+
+    # ------------------------------------------------------------ 0.18 repair rules (schema 5)
+
+    def repairs_with(self, edits):
+        """The repairs notes after applying {candidate_id: {field: value}}; a value of DELETE removes the field."""
+        notes = self.notes("repairs")
+        for row in notes["repairs"]:
+            for field, value in edits.get(row["candidate_id"], {}).items():
+                if value is DELETE:
+                    del row[field]
+                else:
+                    row[field] = value
+        return notes
+
+    def fresh_journal(self, name, through="decisions", schema=None):
+        journal = self.root / name
+        rs.start_run(self.index, PROFILE, self.scope(), journal)
+        if schema is not None:
+            self.reseal_schema(journal, schema)
+        self.record_through(through, journal)
+        return journal
+
+    def test_repair_action_must_name_a_block_of_this_source(self):
+        self.record_through("decisions")
+        for action in ("Move the definition ahead of the threshold.", "Move the definition ahead of B9999.", "Move it ahead of b0003.", "Move it ahead of B00031.", "Move it ahead of AB0003."):
+            with self.subTest(action=action):
+                self.assertRefused("Repair C01: action must say where to act by naming a block id of this source \\(for example B0003\\)\\.",
+                                   self.record, "repairs", self.repairs_with({"C01": {"action": action}}))
+        self.assertRefused("Repair C02: action must say where to act", self.record, "repairs", self.repairs_with({"C02": {"action": "Ask the author how the pairs were counted."}}))
+        self.assertTrue(rs.names_a_block("Add the comparison beside the rate (B0005).", {"B0005": {}}))
+        self.assertFalse(rs.names_a_block("Add the comparison beside the rate.", {"B0005": {}}))
+        blocks = {b["block_id"]: b for b in self.index["blocks"]}
+        for text in ("在B0003处加一句说明", "把定义移到B0003之前。", "B0003。", "(B0003)", "B0003/B0004"):
+            self.assertTrue(rs.names_a_block(text, blocks), text)
+        for text in ("B00031", "AB0003", "b0003", "B003", "在B00031处加一句说明", "1B0003"):
+            self.assertFalse(rs.names_a_block(text, blocks), text)
+        journal = self.fresh_journal("cjk-action")
+        self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"action": "在B0003处加一句说明"}}), journal)["next_stage"], "ready")
+        self.assertEqual(json.loads((journal / "05-repairs.notes.json").read_text(encoding="utf-8"))["repairs"][0]["action"], "在B0003处加一句说明")
+        self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"action": "Move B0004's first sentence ahead of B0003."}}))["next_stage"], "ready")
+
+    def test_edit_scope_is_required_on_edits_and_refused_elsewhere(self):
+        self.record_through("decisions")
+        scopes = "apposition, pointer, reorder, sentence, split, term"
+        for edits, message in (({"C05": {"edit_scope": DELETE}}, f"Repair C05 is an edit without edit_scope; give one of: {scopes}\\."),
+                               ({"C05": {"edit_scope": None}}, f"Repair C05 is an edit without edit_scope; give one of: {scopes}\\."),
+                               ({"C05": {"edit_scope": "paragraph"}}, f"repair\\.edit_scope must be one of: {scopes}\\."),
+                               ({"C01": {"edit_scope": "term"}}, "Repair C01: edit_scope belongs only to a repair of kind edit\\."),
+                               ({"C02": {"edit_scope": "pointer"}}, "Repair C02: edit_scope belongs only to a repair of kind edit\\.")):
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "repairs", self.repairs_with(edits))
+        for n, scope in enumerate(sorted(rs.EDIT_SCOPES)):
+            if scope == "sentence":
+                continue  # a sentence rewrite with wording needs compare_path; C05 carries no wording, so it is covered below
+            with self.subTest(scope=scope):
+                journal = self.fresh_journal(f"scope-{n}")
+                self.assertEqual(self.record("repairs", self.repairs_with({"C05": {"edit_scope": scope}}), journal)["next_stage"], "ready")
+        journal = self.fresh_journal("scope-sentence")
+        self.assertEqual(self.record("repairs", self.repairs_with({"C05": {"edit_scope": "sentence"}}), journal)["next_stage"], "ready")
+        self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"edit_scope": None}}))["next_stage"], "ready")
+
+    def test_author_question_must_end_with_a_question_mark(self):
+        self.record_through("decisions")
+        message = "Repair C02: author_question must be a question that ends with a question mark, not a statement\\."
+        for question in ("Tell us how the 412 pairs were selected.", "How were the 412 pairs selected", "How were the 412 pairs selected? Explain."):
+            with self.subTest(question=question):
+                self.assertRefused(message, self.record, "repairs", self.repairs_with({"C02": {"author_question": question}}))
+        for n, question in enumerate(("How were the 412 pairs selected?", "How were the 412 pairs selected？", 'Were the pairs "selected"?', "(How were the 412 pairs selected?)", "How were the 412 pairs selected?  ")):
+            with self.subTest(question=question):
+                self.assertTrue(rs.is_question(question))
+                journal = self.fresh_journal(f"question-{n}")
+                self.assertEqual(self.record("repairs", self.repairs_with({"C02": {"author_question": question}}), journal)["next_stage"], "ready")
+
+    def test_audit_round_and_ten_checks_are_required(self):
+        self.record_through("decisions")
+        checks = self.audit()["checks"]
+        cases = [
+            ({k: v for k, v in self.audit().items() if k != "audit_round"}, "fidelity audit is missing fields: audit_round\\."),
+            (self.audit(audit_round=0), "audit\\.audit_round must be a positive integer: 1 for the first wording, 2 for a revision, and so on\\."),
+            (self.audit(audit_round="1"), "audit\\.audit_round must be a positive integer"),
+            (self.audit(audit_round=True), "audit\\.audit_round must be a positive integer"),
+            (self.audit(checks={k: v for k, v in checks.items() if k != "hedges"}), "audit\\.checks is missing fields: hedges\\."),
+            (self.audit(checks={k: v for k, v in checks.items() if k != "added_qualification"}), "audit\\.checks is missing fields: added_qualification\\."),
+            (self.audit(checks={**checks, "added_qualification": "changed"}), "^Repair C01 cannot carry proposed wording: the fidelity audit verdict is preserved with changed added_qualification\\. Revise"),
+            (self.audit(checks={**checks, "hedges": {}}), "audit\\.checks\\.hedges must be an array\\."),
+            (self.audit(checks={**checks, "hedges": ["may"]}), "audit\\.checks\\.hedges\\[0\\] must be a JSON object with string keys\\."),
+            (self.audit(checks={**checks, "hedges": [{"term": "may"}]}), "audit\\.checks\\.hedges\\[0\\] is missing fields: status\\."),
+            (self.audit(checks={**checks, "hedges": [{"term": "may", "status": "kept", "note": "x"}]}), "audit\\.checks\\.hedges\\[0\\] has unsupported fields: note\\."),
+            (self.audit(checks={**checks, "hedges": [{"term": "", "status": "kept"}]}), "audit\\.checks\\.hedges\\[0\\]\\.term must be a nonempty string\\."),
+            (self.audit(checks={**checks, "hedges": [{"term": "may", "status": "weakened"}]}), "audit\\.checks\\.hedges\\[0\\]\\.status must be one of: kept, removed, strengthened\\."),
+        ]
+        for n, (value, message) in enumerate(cases, 1):
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "repairs", self.audited_repairs(value, f"audit-round-{n}.json"))
+        self.assertEqual(self.record("repairs", self.audited_repairs(self.audit(audit_round=3), "audit-round-ok.json"))["next_stage"], "ready")
+
+    def test_audit_original_must_overlap_the_candidate_anchor(self):
+        self.record_through("decisions")
+        elsewhere = A("B0004", "We set the MSW to two seconds.")
+        message = "Fidelity audit for C01 does not quote the candidate's anchor text: audit\\.original must be the manuscript text at the candidate's anchor \\(B0003\\) or at one of its recorded evidence anchors, not an earlier wording or another passage\\."
+        for n, original in enumerate(([elsewhere], [A("B0003", "so we restricted the analysis")], [elsewhere, A("B0003", "Agreement fell sharply")]), 1):
+            with self.subTest(original=original):
+                self.assertRefused(message, self.record, "repairs", self.audited_repairs(self.audit(original=original), f"audit-overlap-{n}.json"))
+        self.assertTrue(rs.anchor_overlaps(CRITICAL, A("B0003", "MSW exceeded two")))
+        self.assertFalse(rs.anchor_overlaps(CRITICAL, A("B0004", "the MSW exceeded two seconds")))
+        for n, original in enumerate(([elsewhere, ORIGINAL], [A("B0003", "MSW exceeded two")]), 1):
+            with self.subTest(original=original):
+                journal = self.fresh_journal(f"overlap-{n}")
+                repairs = self.audited_repairs(self.audit(original=original), f"audit-overlap-ok-{n}.json")
+                self.assertEqual(self.record("repairs", repairs, journal)["next_stage"], "ready")
+
+    def test_audit_original_may_quote_an_evidence_anchor(self):
+        # C01's candidate evidence and decision evidence both hold DEFINITION (B0004), so the audit may quote it or a part of it.
+        for n, original in enumerate(([DEFINITION], [A("B0004", "Measurement Separation Window (MSW).")], [A("B0004", "We set the MSW to two seconds."), DEFINITION]), 1):
+            with self.subTest(original=original):
+                journal = self.fresh_journal(f"evidence-{n}")
+                repairs = self.audited_repairs(self.audit(original=original), f"audit-evidence-ok-{n}.json")
+                self.assertEqual(self.record("repairs", repairs, journal)["next_stage"], "ready")
+                self.assertEqual(rs.ready_run(journal, self.index)["ready_to_draft"], True)
+        # Decision evidence alone counts: C01's decision cites 412 pairs in B0005 while the candidate evidence stays at B0004.
+        journal = self.fresh_journal("decision-evidence", "reconcile")
+        decisions = self.notes("decisions")
+        decisions["decisions"][0]["evidence"] = [A("B0005", "The restricted analysis included 412 pairs.")]
+        self.record("decisions", decisions, journal)
+        wider = {"C01": {"affected_block_ids": ["B0003", "B0004", "B0005"]}}
+        refused = self.repairs_with(wider)
+        refused["repairs"][0]["audit_path"] = str(self.write_audit(self.audit(original=[A("B0005", "Agreement in this set was 91 percent.")]), "audit-evidence-other.json"))
+        self.assertRefused("Fidelity audit for C01 does not quote the candidate's anchor text: .* or at one of its recorded evidence anchors", self.record, "repairs", refused, journal)
+        accepted = self.repairs_with(wider)
+        accepted["repairs"][0]["audit_path"] = str(self.write_audit(self.audit(original=[A("B0005", "412 pairs")]), "audit-evidence-decision.json"))
+        self.assertEqual(self.record("repairs", accepted, journal)["next_stage"], "ready")
+
+    def compare_file(self, name, candidate_id="C01", original=ORIGINAL["quote"], wording=WORDING, **change):
+        result = {**df.compare_header(None, None, True), "comparisons": [df.lexical_comparison(candidate_id, original, wording)], **change}
+        path = self.root / name
+        path.write_text(json.dumps(result), encoding="utf-8")
+        return path
+
+    def test_compare_path_binds_a_difficulty_features_result(self):
+        self.record_through("decisions")
+        heavy = str(self.compare_file("compare-heavy.json"))  # WORDING replaces 6 of 9 words: heavy
+        light = str(self.compare_file("compare-light.json", wording="Agreement fell sharply when the MSW exceeded two seconds apart."))
+        other = str(self.compare_file("compare-other.json", wording="Agreement fell."))
+        skipped = str(self.compare_file("compare-skipped.json", comparisons=[{"candidate_id": "C01", "skipped": "no candidate anchor in --checks"}]))
+        foreign = str(self.compare_file("compare-foreign.json", candidate_id="C05"))
+        nominate = str(self.compare_file("compare-nominate.json", command="nominate"))
+        no_weight = self.compare_file("compare-no-weight.json")
+        value = json.loads(no_weight.read_text())
+        value["comparisons"][0]["lexical"]["edit_weight"] = "huge"
+        no_weight.write_text(json.dumps(value))
+        sentence = {"kind": "edit", "edit_scope": "sentence"}
+        self.assertEqual(json.loads(Path(heavy).read_text())["comparisons"][0]["lexical"]["edit_weight"], "heavy")
+        self.assertEqual(json.loads(Path(light).read_text())["comparisons"][0]["lexical"]["edit_weight"], "light")
+        cases = (
+            ({"C05": {"compare_path": light}}, "A repair without proposed wording has nothing to compare; leave compare_path null\\."),
+            ({"C01": sentence}, "Repair C01 rewrites a whole sentence \\(edit_scope sentence\\); attach the difficulty_features\\.py compare result as compare_path\\."),
+            ({"C01": {**sentence, "compare_path": None}}, "Repair C01 rewrites a whole sentence"),
+            ({"C01": {"compare_path": ""}}, "repair\\.compare_path must be a nonempty string\\."),
+            ({"C01": {"compare_path": nominate}}, "compare_path for C01 is not a difficulty_features\\.py compare result\\."),
+            ({"C01": {"compare_path": foreign}}, "compare_path for C01 holds no comparison for that candidate\\."),
+            ({"C01": {"compare_path": skipped}}, "compare_path for C01 holds no comparison for that candidate\\."),
+            ({"C01": {"compare_path": other}}, "compare_path for C01 compared different wording than the repair proposes\\."),
+            ({"C01": {"compare_path": str(no_weight)}}, "comparison\\.lexical\\.edit_weight must be one of: heavy, light, medium\\."),
+            ({"C01": {**sentence, "compare_path": heavy}}, "Repair C01 replaces more than half of the original words \\(edit ratio 0\\.6667\\); give heavy_edit_reason, or split the change into smaller repairs\\."),
+            ({"C01": {**sentence, "compare_path": heavy, "heavy_edit_reason": None}}, "Repair C01 replaces more than half of the original words"),
+            ({"C01": {**sentence, "compare_path": heavy, "heavy_edit_reason": " "}}, "repair\\.heavy_edit_reason must be a nonempty string\\."),
+        )
+        for edits, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "repairs", self.repairs_with(edits))
+        passes = (
+            ("reason", {"C01": {**sentence, "compare_path": heavy, "heavy_edit_reason": "the sentence must spell out the window because MSW is dropped"}}),
+            ("move", {"C01": {"compare_path": heavy}}),  # a move is not an edit: a heavy ratio needs no reason
+            ("light", {"C01": {**sentence, "compare_path": light, "proposed_wording": "Agreement fell sharply when the MSW exceeded two seconds apart."}}),
+        )
+        for name, edits in passes:
+            with self.subTest(name=name):
+                journal = self.fresh_journal(f"compare-{name}")
+                if name == "light":
+                    self.write_audit(self.audit(proposed_wording=edits["C01"]["proposed_wording"]), f"audit-{name}.json")
+                    edits["C01"]["audit_path"] = str(self.root / f"audit-{name}.json")
+                self.assertEqual(self.record("repairs", self.repairs_with(edits), journal)["next_stage"], "ready")
+                receipt = json.loads((journal / "05-repairs.receipt.json").read_text())
+                self.assertEqual([a["path"] for a in receipt["attachments"]], [edits["C01"].get("audit_path", str(self.audit_path)), edits["C01"]["compare_path"]])
+                self.assertEqual(rs.ready_run(journal, self.index)["ready_to_draft"], True)
+        Path(heavy).write_text(json.dumps({**json.loads(Path(heavy).read_text()), "note": "edited after recording"}))
+        self.assertRefused("A saved checkpoint attachment has changed\\.", rs.ready_run, self.root / "compare-move", self.index)
+
+    def test_check_final_requires_a_block_id_and_a_question(self):
+        self.record_through("repairs")
+        rs.ready_run(self.journal, self.index)
+        no_block = self.final_review()
+        no_block["issues"][0]["action"] = "Move the definition ahead of the threshold."
+        statement = self.final_review()
+        statement["issues"][1]["author_question"] = "How were the 412 pairs selected."
+        no_question = self.final_review()
+        no_question["issues"][1]["author_question"] = None
+        for value, message in ((no_block, "Final issue C01: action must say where to act by naming a block id of this source \\(for example B0003\\)\\."),
+                               (statement, "Final issue C02: author_question must be a question that ends with a question mark\\."),
+                               (no_question, "final issue C02\\.author_question must be a nonempty string\\.")):
+            with self.subTest(message=message):
+                self.assertRefused(message, rs.check_final, self.journal, self.index, value)
+        self.assertEqual(rs.check_final(self.journal, self.index, self.final_review())["issue_count"], 3)
+
+    def reseal_schema(self, journal, version):
+        path = journal / "00-start.json"
+        original = json.loads(path.read_text())
+        path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": version})))
+
+    def legacy_audit(self):
+        audit = self.audit()
+        del audit["audit_round"]
+        audit["checks"] = {k: v for k, v in audit["checks"].items() if k not in ("hedges", "added_qualification")}
+        return audit
+
+    def test_journal_schema_4_accepts_0_17_style_repairs(self):
+        self.reseal_schema(self.journal, 4)
+        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 4)
+        self.record_through("decisions")
+        legacy = self.repairs_with({"C01": {"action": "Move the definition earlier.", "audit_path": str(self.write_audit(self.legacy_audit(), "audit-legacy.json"))},
+                                    "C02": {"action": "Ask the author how the pairs were counted.", "author_question": "Tell us how the 412 pairs were selected."},
+                                    "C05": {"edit_scope": DELETE}})
+        self.assertEqual(self.record("repairs", legacy)["next_stage"], "ready")
+        self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
+        review = self.final_review()
+        review["issues"][0]["action"] = "Move the definition earlier."
+        review["issues"][1]["action"] = "Ask the author how the pairs were counted."
+        review["issues"][1]["author_question"] = "Tell us how the 412 pairs were selected."
+        self.assertEqual(rs.check_final(self.journal, self.index, review)["issue_count"], 3)
+        # The same schema still refuses what 0.17 refused, and an audit with the new fields is accepted.
+        other = self.fresh_journal("schema4-strict", schema=4)
+        self.assertRefused("repair\\.edit_scope must be one of:", self.record, "repairs", self.repairs_with({"C05": {"edit_scope": "paragraph"}}), other)
+        self.assertRefused("Repair C01: edit_scope belongs only to a repair of kind edit\\.", self.record, "repairs", self.repairs_with({"C01": {"edit_scope": "term"}}), other)
+        self.assertRefused("audit\\.checks is missing fields: uncertainty\\.", self.record, "repairs",
+                           self.audited_repairs({**self.legacy_audit(), "checks": {k: v for k, v in self.legacy_audit()["checks"].items() if k != "uncertainty"}}, "audit-legacy-short.json"), other)
+        self.assertRefused("audit\\.checks\\.hedges reports 'may' kept, but the proposed wording carries no hedge", self.record, "repairs",
+                           self.audited_repairs(self.audit(checks={**self.audit()["checks"], "hedges": [{"term": "may", "status": "kept"}]}), "audit-legacy-hedge.json"), other)
+        elsewhere = self.audited_repairs(self.audit(original=[A("B0004", "We set the MSW to two seconds.")]), "audit-schema4-elsewhere.json")
+        self.assertEqual(self.record("repairs", elsewhere, other)["next_stage"], "ready", "schema 4 does not apply the anchor-overlap rule")
+        self.assertEqual(rs.ready_run(other, self.index)["ready_to_draft"], True)
+        self.assertEqual(rs.check_final(other, self.index, self.final_review())["issue_count"], 3)
+        third = self.fresh_journal("schema4-new-fields", schema=4)
+        self.assertEqual(self.record("repairs", journal=third)["next_stage"], "ready", "an audit with the new fields is accepted on schema 4")
+        self.assertEqual(rs.ready_run(third, self.index)["ready_to_draft"], True)
+
+
+HEDGED_TEXT = """# Session length and agreement
+
+We compared short and long sessions. Longer sessions may reduce agreement.
+
+We define agreement as the share of matching records.
+
+Shorter sessions are reasonably likely to raise agreement.
+"""
+HEDGED_ANCHOR = {"block_id": "B0002", "quote": "Longer sessions may reduce agreement."}
+LIKELY_ANCHOR = {"block_id": "B0004", "quote": "Shorter sessions are reasonably likely to raise agreement."}
+HEDGED_INCLUDED = ["B0002", "B0003", "B0004"]
+SYNONYM = "Longer sessions might reduce agreement."
+ASSERTED = "Longer sessions reduce agreement."
+
+
+class HedgedRepairTests(unittest.TestCase):
+    """A source sentence with a hedge: the audit must account for it before wording is recorded."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.index = rp.build_index(HEDGED_TEXT)
+        self.sid = self.index["snapshot_id"]
+        self.text = {b["block_id"]: b["text"] for b in self.index["blocks"]}
+        self.journal = self.start(self.root / "journal", HEDGED_ANCHOR)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def start(self, journal, anchor):
+        """A journal through the decisions stage with one accepted candidate C01 at `anchor`."""
+        scope = {"task": "review", "included_block_ids": HEDGED_INCLUDED, "reading_path": "linear", "extraction_notes": "plain", "omissions": [{"block_id": "B0001", "reason": "title"}]}
+        rs.start_run(self.index, PROFILE, scope, journal)
+        for stage in ("reading", "checks", "reconcile", "decisions"):
+            rs.record_stage(journal, self.index, stage, json.dumps(self.notes(stage, anchor)).encode("utf-8"))
+        return journal
+
+    def notes(self, stage, anchor=HEDGED_ANCHOR):
+        base = {"snapshot_id": self.sid, "summary": stage + " notes"}
+        if stage == "reading":
+            return {**base, "paragraphs": [{"anchor": A(b, self.text[b][:20]), "paraphrase": "p", "role": "r", "required_context": [], "new_information": [], "open_questions": []} for b in HEDGED_INCLUDED]}
+        if stage == "checks":
+            return {**base, "concepts": [], "no_concepts_reason": "none questioned", "checkpoint_plan": [], "no_candidate": [],
+                    "passages": [{"block_id": b, "structure_check": "s", "wording_check": "w", "claim_check": CLAIM_CHECK, "evidence": [A(b, self.text[b][:15])]} for b in HEDGED_INCLUDED],
+                    "candidates": [{"id": "C01", "anchor": anchor, "question": "Is the hedge on the effect kept?", "evidence": []}]}
+        if stage == "reconcile":
+            return {**base, "checkpoints": [], "no_checkpoints_reason": "none run", "branches": [], "observations": [], "candidates": []}
+        return {**base, "decisions": [{"candidate_id": "C01", "status": "accepted", "verification": "v", "countercheck": "c", "evidence": [], "category": "unsupported_claim",
+                                       "diagnosis": "The hedged effect reads as established.", "severity": "minor", "confidence": "medium"}]}
+
+    def audit(self, wording, hedges, verdict="preserved", audit_round=1, anchor=HEDGED_ANCHOR, **checks):
+        base = {name: "same" for name in rs.AUDIT_CHECKS}
+        base["time_horizon"] = "not_applicable"
+        return {"candidate_id": "C01", "proposed_wording": wording, "original": [anchor], "verdict": verdict, "checks": {**base, **checks, "hedges": hedges},
+                "notes": "Hedge accounted for.", "audit_round": audit_round, "auditor": {"mode": "bounded-request", "agent_id": "auditor-1"}}
+
+    def repairs(self, wording, audit, name):
+        path = self.root / name
+        path.write_text(json.dumps(audit), encoding="utf-8")
+        block = audit["original"][0]["block_id"]
+        return {"snapshot_id": self.sid, "summary": "one repair", "repairs": [
+            {"candidate_id": "C01", "kind": "edit", "edit_scope": "term", "action": f"Keep the hedge on the effect in {block}.", "proposed_wording": wording,
+             "scientific_fidelity": "hedge kept", "new_terms_check": "none", "affected_block_ids": [block], "author_question": None, "audit_path": str(path)}]}
+
+    def record(self, value, journal=None):
+        return rs.record_stage(journal or self.journal, self.index, "repairs", json.dumps(value).encode("utf-8"))
+
+    def assertRefused(self, message, value, journal=None):
+        journal = journal or self.journal
+        before = sorted(p.name for p in journal.iterdir())
+        with self.assertRaisesRegex(rp.ReviewDataError, message):
+            self.record(value, journal)
+        self.assertEqual(sorted(p.name for p in journal.iterdir()), before)
+
+    def test_source_hedge_is_found(self):
+        self.assertEqual(rp.find_hedges(HEDGED_ANCHOR["quote"]), ["may"])
+        self.assertEqual(rp.find_hedges(SYNONYM), ["might"])
+        self.assertEqual(rp.find_hedges(ASSERTED), [])
+
+    def test_dropping_the_hedge_is_refused_in_every_audit_shape(self):
+        kept = [{"term": "may", "status": "kept"}]
+        removed = [{"term": "may", "status": "removed"}]
+        strengthened = [{"term": "may", "status": "strengthened"}]
+        cases = (
+            ("kept", self.audit(ASSERTED, kept), "audit\\.checks\\.hedges reports 'may' kept, but the proposed wording carries no hedge the helper recognizes"),
+            ("removed, nothing changed", self.audit(ASSERTED, removed), "audit\\.checks\\.hedges reports 'may' strengthened or removed, so claim_strength or uncertainty must be changed\\."),
+            ("strengthened, nothing changed", self.audit(ASSERTED, strengthened), "audit\\.checks\\.hedges reports 'may' strengthened or removed, so claim_strength or uncertainty must be changed\\."),
+            ("removed, verdict changed", self.audit(ASSERTED, removed, verdict="changed", claim_strength="changed"),
+             "^Repair C01 cannot carry proposed wording: the fidelity audit verdict is changed with changed claim_strength\\. Revise the wording and audit again, or set proposed_wording to null and ask the author\\.$"),
+            ("removed, verdict preserved", self.audit(ASSERTED, removed, claim_strength="changed"), "the fidelity audit verdict is preserved with changed claim_strength\\."),
+            ("strengthened, uncertainty changed", self.audit(ASSERTED, strengthened, verdict="changed", uncertainty="changed"), "the fidelity audit verdict is changed with changed uncertainty\\."),
+            ("unreported", self.audit(ASSERTED, []), "audit\\.checks\\.hedges does not report every hedge in the original text; missing: 'may'\\."),
+            ("other term only", self.audit(ASSERTED, [{"term": "might", "status": "kept"}]), "does not report every hedge in the original text; missing: 'may'\\."),
+            ("listed twice", self.audit(SYNONYM, kept + [{"term": "May", "status": "removed"}]), "audit\\.checks\\.hedges lists 'May' twice\\."),
+            ("unreported with synonym", self.audit(SYNONYM, []), "missing: 'may'\\."),
+            ("no round", {k: v for k, v in self.audit(SYNONYM, kept).items() if k != "audit_round"}, "fidelity audit is missing fields: audit_round\\."),
+            ("nine checks", {**self.audit(SYNONYM, kept), "checks": {k: v for k, v in self.audit(SYNONYM, kept)["checks"].items() if k != "added_qualification"}}, "audit\\.checks is missing fields: added_qualification\\."),
+        )
+        for n, (name, audit, message) in enumerate(cases, 1):
+            with self.subTest(name=name):
+                self.assertRefused(message, self.repairs(audit["proposed_wording"], audit, f"audit-{n}.json"))
+        self.assertEqual(sorted(p.name for p in self.journal.iterdir())[-1], "04-decisions.receipt.json")
+
+    def test_synonym_hedge_is_recorded(self):
+        audit = self.audit(SYNONYM, [{"term": "may", "status": "kept"}])
+        self.assertEqual(sorted(audit["checks"]), sorted(list(rs.AUDIT_CHECKS) + ["hedges"]))
+        self.assertEqual(self.record(self.repairs(SYNONYM, audit, "audit-ok.json"))["next_stage"], "ready")
+        receipt = json.loads((self.journal / "05-repairs.receipt.json").read_text())
+        self.assertEqual(receipt["attachments"], [{"path": str(self.root / "audit-ok.json"), "sha256": sha(self.root / "audit-ok.json")}])
+        self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
+        saved = json.loads((self.journal / "05-repairs.notes.json").read_text())
+        self.assertEqual(saved["repairs"][0]["proposed_wording"], SYNONYM)
+
+    def test_custom_phrase_that_contains_a_built_in_hedge_counts_as_reported(self):
+        self.assertEqual(rp.find_hedges(LIKELY_ANCHOR["quote"]), ["likely"])
+        journal = self.start(self.root / "likely", LIKELY_ANCHOR)
+        kept_phrase = [{"term": "reasonably likely", "status": "kept"}]
+        softened = "Shorter sessions are reasonably likely to increase agreement."
+        asserted = "Shorter sessions raise agreement."
+        cases = (
+            ("unreported", self.audit(softened, [], anchor=LIKELY_ANCHOR), "does not report every hedge in the original text; missing: 'likely'\\."),
+            ("adverb only", self.audit(softened, [{"term": "reasonably", "status": "kept"}], anchor=LIKELY_ANCHOR), "missing: 'likely'\\."),
+            ("phrase kept, hedge gone", self.audit(asserted, kept_phrase, anchor=LIKELY_ANCHOR), "audit\\.checks\\.hedges reports 'reasonably likely' kept, but the proposed wording carries no hedge the helper recognizes"),
+            ("phrase removed, nothing changed", self.audit(asserted, [{"term": "reasonably likely", "status": "removed"}], anchor=LIKELY_ANCHOR), "strengthened or removed, so claim_strength or uncertainty must be changed\\."),
+        )
+        for n, (name, audit, message) in enumerate(cases, 1):
+            with self.subTest(name=name):
+                self.assertRefused(message, self.repairs(audit["proposed_wording"], audit, f"audit-likely-{n}.json"), journal)
+        # The custom phrase swallows the built-in "likely": reporting it alone is complete, and the wording keeps the phrase.
+        self.assertEqual(self.record(self.repairs(softened, self.audit(softened, kept_phrase, anchor=LIKELY_ANCHOR), "audit-likely-ok.json"), journal)["next_stage"], "ready")
+        self.assertEqual(rs.ready_run(journal, self.index)["ready_to_draft"], True)
+        saved = json.loads((journal / "05-repairs.notes.json").read_text())
+        self.assertEqual((saved["repairs"][0]["proposed_wording"], saved["repairs"][0]["affected_block_ids"]), (softened, ["B0004"]))
+
+    def test_wording_without_hedges_key_is_refused_on_a_schema_5_journal(self):
+        audit = self.audit(SYNONYM, [{"term": "may", "status": "kept"}])
+        del audit["checks"]["hedges"]
+        self.assertRefused("audit\\.checks is missing fields: hedges\\.", self.repairs(SYNONYM, audit, "audit-no-hedges.json"))
 
 
 if __name__ == "__main__":

@@ -75,7 +75,7 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py nominate --i
 tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --input run/C04.input.json --out run/C04.features.json
 ```
 
-`nominate` 对每个块给出各特征的计数和每千词率，在文档内按 z 分数之和排名，打印前 N 个块和驱动排名的特征，供 checks 阶段的 `wording_check` 决定先看哪里。`--reference` 给一份参考语料（纯文本或 Markdown，例如同领域已发表论文的正文），未见词对、三元语法意外度和依存长度标准化都依赖它，没有时这三项为 null，依存长度退回原始均值加句长。`compare` 把原句和替换句的各项计数并排列出，替换句任一特征更多就标记；`--repairs run/repairs.json --checks run/checks.json` 对每条带替换句的修改做同样比较，原句取候选的 anchor 引文。标记只是提醒，不是门槛，也不代替保真审计。名词转动词和主语有生性两项用内置词表，输出里标为 heuristic。
+`nominate` 对每个块给出各特征的计数和每千词率，在文档内按 z 分数之和排名，打印前 N 个块和驱动排名的特征，供 checks 阶段的 `wording_check` 决定先看哪里。`--reference` 给一份参考语料（纯文本或 Markdown，例如同领域已发表论文的正文），未见词对、三元语法意外度和依存长度标准化都依赖它，没有时这三项为 null，依存长度退回原始均值加句长。`nominate` 还对每个块单独数一列 `assets/excess-vocabulary.json` 里的词（Kobak 等 2025 年 Science Advances 的 2024 年超额风格词，出处和筛选规则写在文件里；不进 z 分数排名；`--no-excess-vocabulary` 关闭）：只用来提名待查段落，词表是下界、会过时、分不清作者风格和机器风格，不作任何"这句是机器写的"判断。`compare` 把原句和替换句的各项计数并排列出，替换句任一特征更多就标记，另外不依赖 spaCy 地给出改动词数与原句词数之比（`edit_ratio`，0.2 以内 light、0.5 以内 medium、超过 0.5 heavy）、type-token 比和平均词长，替换句词汇更单一或词更长时给 advisory 标记；`--lexical-only` 只算这三项，没有 spaCy 也能跑。`--repairs run/repairs.json --checks run/checks.json` 对每条带替换句的修改做同样比较，原句取候选的 anchor 引文。除 heavy 之外的标记只是提醒，不是门槛，也不代替保真审计：`edit_scope` 为 `sentence` 的修改必须把 compare 结果写进 `compare_path`，heavy 的修改要写 `heavy_edit_reason` 或拆成几条。名词转动词和主语有生性两项用内置词表，输出里标为 heuristic。
 
 ## 一次审稿的命令顺序
 
@@ -120,7 +120,7 @@ tools/nlp-env/bin/python <skill-dir>/scripts/difficulty_features.py compare --in
 
 	`--model` 和 `--effort` 原样传给 `claude`；不给 `--model` 时默认 `claude-opus-5-5`（读者和审计者用最强的订阅模型，出处记录的 `command` 里可见）。笔记超出预算或返回内容不是可解析 JSON 时，原文件保留，写 `<label>.invalid-reason.txt`，再用同一 packet 加一句说明（限额、计数方法、目标为限额的 85%）重发，标为 b、c；两次更正后仍不通过就停止。遮罩循环在连续三次查阅没有带来新来源时停止。不用脚本时，前缀读者用 `review_packets.py packet` 和 `check-observation`，遮罩读者用 `masked_reader.py start`、`packet`、`record`，追问用 `branch` 和 `branch-record`。
 
-5. 每条带替换句的修改先做独立保真审计，输入是 `candidate_id`、`original`、`proposed_wording`、`basis`。装了 spaCy 时可以用同一个输入文件运行 `difficulty_features.py compare` 作为提醒性检查（见上一节）：
+5. 每条带替换句的修改先做独立保真审计，输入是 `candidate_id`、`original`、`proposed_wording`、`basis`；脚本从 `original` 抽出限定词和条件短语写成 `hedges_in_original` 一并送审（词表在 `review_packets.py` 的 `HEDGE_PATTERNS`，`--hedge-list` 可加本领域的写法），审计员逐个报 kept / strengthened / removed，并多审第十项 `added_qualification`（改写新增而原文没有的限定语）；`--round` 记录这是该候选的第几版措辞，每一版都对照原文审，不对照上一版。edit 项要写 `edit_scope`（pointer、apposition、term、reorder、split、sentence 之一），`action` 要含块 id，作者问题要是问句。同一个输入文件可以运行 `difficulty_features.py compare`（`--lexical-only` 不需要 spaCy）：
 
 	```bash
 	python3 <skill-dir>/scripts/dispatch_reader.py audit --events run/events --input run/C04.input.json --out run/C04.audit.json
@@ -207,7 +207,7 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 2. reading、checks 按 `--batch-blocks` 个块分批调用模板，每批只看本批全文加其余块的一行摘要（checks 还看全部段落的 paraphrase 和前几批已记录的概念、候选、计划），控制器合并数组、重编号（K01、P01、C01）后交 `record`；每批先用 `review_steps` 的校验函数预检，覆盖和锚点错误按批回传。
 3. `02-checks.receipt.json` 存在后才派发读者：按 checks 的 `checkpoint_plan` 建前缀包并跑 `prefix`（模式 `bounded-request`），把纳入块按 `--masked-budget` 词分窗、取前 `--masked-windows` 窗跑一次 `masked`（`--masked-windows 0` 关闭），checks 阶段可以给出一个 `branch_question`，遮罩跑完后在对应显示事件上跑一次 `branch`。
 4. reconcile 模板看冻结的观察（前缀观察原文、遮罩每个事件的材料与回答、分支回答），模型只填 `result`、`limitation`、分类和新候选；路径、模式、plan_id、figure_policy 由控制器绑定。decisions、repairs 同样记录。
-5. 每条带 `proposed_wording` 的修改先经 `dispatch_reader.py audit`；verdict 不是 `preserved` 或任一属性 `changed` 时，把审计意见作为 `audit_feedback` 回传 repairs 模板重写一次，再审一次（文件名加 `-2`），仍不通过就转成向作者的提问（`kind: author_question`，`proposed_wording: null`）。
+5. 每条带 `proposed_wording` 的修改先经 `dispatch_reader.py audit`（第二版用 `--round 2`），并在 `audits/<id>.features.json` 写词级比较；verdict 不是 `preserved` 或任一属性 `changed` 时，把审计意见作为 `audit_feedback` 回传 repairs 模板重写一次，再审一次（文件名加 `-2`），仍不通过就转成向作者的提问（`kind: author_question`，`proposed_wording: null`）；edit 的替换句换掉原句一半以上的词又没有 `heavy_edit_reason` 时，作为 `edit_feedback` 一起回传，重写后仍如此就撤回措辞（`proposed_wording: null`，`wording_withheld_reason` 写明比值），`summary.json` 的 `withheld_heavy_edits` 列出这些候选。
 6. `ready` 后 review 模板只给出总述和问题顺序，`review.json` 的每个字段由记录拷贝，过 `check-review` 和 `check-final`；report 模板按 `assets/review-report.md` 写 `report.md`；最后写 `summary.json`（各阶段状态、每次调用的秒数与用量、读者调用按类型计数、审计结果、重试次数）。
 
 助手拒绝某一步的回答时，同一步带着助手的原话重新提问（"Correction note from the controller: … The helper rejected it: …"），最多三次，仍失败就停下：日志保持原样，`summary.json` 的 `failure` 写明阶段、最后一条错误和该查看的文件，退出码 1。reconcile、decisions、repairs 三个模板只在 checks 回执存在后运行，代码在派发读者和这三步之前都断言这个文件。
@@ -226,12 +226,12 @@ python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --
 python3 -m unittest discover -s tests
 ```
 
-预期输出以 `Ran 190 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
+预期输出以 `Ran 229 tests` 开头并以 `OK` 结束（没有 spaCy 时为 `OK (skipped=1)`，跳过的是 `difficulty_features.py` 的集成用例；用 `tools/nlp-env/bin/python -m unittest discover -s tests` 可以把它一起跑）。测试不调用 MinerU，也不调用真实模型：`claude`、`uv`、`mineru` 由临时目录里的假程序代替，http 运行时由线程里的标准库 `http.server` 假端点代替，编排器测试里的假端点按提示内容同时扮演编辑、读者和审计。
 
 ## 兼容性
 
 - `scripts/masked_reader.py` 只读写运行格式 5。格式 4 的运行用 0.9.0 的脚本重放，格式 2 用 `scripts/legacy/masked_reader_v2.py`。
-- `scripts/review_steps.py` 只读 `schema_version` 4 的日志（0.17.0 起；checks 笔记多了 `claim_check` 和 `no_candidate`，repairs 多了 `wording_withheld_reason`）。0.16 的日志用 0.16.3 的脚本重放。
+- `scripts/review_steps.py` 写 `schema_version` 5 的日志（0.18.0 起；repairs 多了 `edit_scope`、`compare_path`、`heavy_edit_reason`，审计文件多了 `audit_round`、`added_qualification` 和 `checks.hedges`，action 要含块 id，作者问题要是问句），并仍可重放 0.17 的 schema 4 日志（新字段可缺）。0.16 的日志用 0.16.3 的脚本重放。
 - 每条带替换句的修改都要先通过独立保真审计（`assets/prompts/fidelity-audit.txt`），审计 JSON 的路径写在 repairs 笔记的 `audit_path` 里。
 - `SHA256SUMS` 覆盖包内除它自身以外的每个文件。在包目录运行 `shasum -a 256 -c SHA256SUMS` 可核对。
 

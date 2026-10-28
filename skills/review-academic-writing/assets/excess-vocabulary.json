@@ -1,0 +1,2600 @@
+{
+  "name": "excess-vocabulary",
+  "description": "Words whose frequency in 2024 PubMed abstracts exceeded the frequency expected from the 2021-2022 trend, as identified and annotated as style words by Kobak et al. The list nominates words for the wording_check; it does not show that a sentence was written or revised by a language model.",
+  "source": {
+    "citation": "Kobak D, Gonzalez-Marquez R, Horvat E-A, Lause J. Delving into LLM-assisted writing in biomedical publications through excess vocabulary. Science Advances. 2025;11(27):eadt3813.",
+    "doi": "10.1126/sciadv.adt3813",
+    "url": "https://www.science.org/doi/10.1126/sciadv.adt3813",
+    "data": "https://github.com/berenslab/llm-excess-vocab (results/excess_words.csv and results/yearly-counts.csv.gz, MIT License, Copyright (c) 2024 Dmitry Kobak, Rita Gonzalez-Marquez)",
+    "retrieved": "2026-10-27"
+  },
+  "selection": "From the authors' annotated list of 900 excess words (2013-2024), the words annotated as style words (type style, style/content, or style/count) were kept when their 2024 frequency exceeded a linear extrapolation of the 2021 and 2022 frequencies by a gap above 0.01 or a ratio above 1.5, computed from the authors' yearly-counts matrix. This gives 366 words; the paper reports 379 excess style words for 2024 under its own thresholds, so the two sets differ at the margin. Word forms are the authors' (inflections are separate entries); matching is on the lower-cased exact form.",
+  "limits": [
+    "The paper estimates a lower bound: an abstract revised by a language model that uses none of these words is not counted, so a passage without them is not shown to be free of such revision.",
+    "The paper cannot separate direct language-model use from authors who adopted the vocabulary themselves; a count says nothing about who wrote the sentence or how.",
+    "Preprints on 2024-2025 text report that authors avoid words once they are named, so the list ages: a low count in a recent manuscript is weaker evidence than it was for 2024 text.",
+    "A count nominates a passage for the editor's wording_check in context. It is not a finding, not a measure of reading difficulty, and never a judgment that a text is machine-written."
+  ],
+  "groups": {
+    "verb": [
+      "accentuates",
+      "achieving",
+      "acknowledges",
+      "acknowledging",
+      "address",
+      "addresses",
+      "addressing",
+      "adhered",
+      "adhering",
+      "advancing",
+      "advocates",
+      "advocating",
+      "affirming",
+      "afflicted",
+      "aiding",
+      "aims",
+      "align",
+      "aligning",
+      "aligns",
+      "apologizes",
+      "assess",
+      "assessed",
+      "attains",
+      "augmenting",
+      "bolster",
+      "bolstered",
+      "bolstering",
+      "burgeoning",
+      "capitalizing",
+      "categorized",
+      "categorizes",
+      "categorizing",
+      "combating",
+      "complicates",
+      "complicating",
+      "comprehend",
+      "comprehending",
+      "comprising",
+      "conducted",
+      "consolidates",
+      "contributing",
+      "correlating",
+      "crafted",
+      "crafting",
+      "culminating",
+      "customizing",
+      "delineates",
+      "delve",
+      "delved",
+      "delves",
+      "delving",
+      "demonstrated",
+      "demonstrates",
+      "demonstrating",
+      "detailing",
+      "diminishes",
+      "diminishing",
+      "discern",
+      "discerned",
+      "discerning",
+      "displaying",
+      "disrupts",
+      "elevate",
+      "elevates",
+      "elevating",
+      "elucidate",
+      "elucidates",
+      "elucidating",
+      "embracing",
+      "emerged",
+      "emerges",
+      "emphasises",
+      "emphasising",
+      "emphasize",
+      "emphasizes",
+      "emphasizing",
+      "employed",
+      "employing",
+      "employs",
+      "empowers",
+      "emulating",
+      "enabling",
+      "encapsulates",
+      "encompass",
+      "encompassed",
+      "encompasses",
+      "encompassing",
+      "enduring",
+      "enhance",
+      "enhanced",
+      "enhances",
+      "enhancing",
+      "ensuring",
+      "equipping",
+      "escalating",
+      "evaluates",
+      "evolving",
+      "exacerbating",
+      "examines",
+      "exceeding",
+      "excels",
+      "exerting",
+      "exhibit",
+      "exhibited",
+      "exhibiting",
+      "exhibits",
+      "expedite",
+      "expediting",
+      "explores",
+      "facilitated",
+      "facilitating",
+      "featuring",
+      "focusing",
+      "fostering",
+      "fosters",
+      "furnish",
+      "garnered",
+      "garnering",
+      "gauged",
+      "grappling",
+      "harness",
+      "harnesses",
+      "harnessing",
+      "heighten",
+      "highlight",
+      "highlighting",
+      "highlights",
+      "hinder",
+      "hinges",
+      "hinting",
+      "hold",
+      "holds",
+      "identified",
+      "illuminates",
+      "imbalances",
+      "impacting",
+      "impede",
+      "incorporates",
+      "incorporating",
+      "integrates",
+      "integrating",
+      "investigates",
+      "involves",
+      "leading",
+      "leverages",
+      "leveraging",
+      "merges",
+      "necessitate",
+      "necessitates",
+      "necessitating",
+      "need",
+      "observed",
+      "offer",
+      "offering",
+      "offers",
+      "optimizing",
+      "orchestrating",
+      "outlines",
+      "overlook",
+      "overlooking",
+      "overwhelmed",
+      "paving",
+      "persist",
+      "pinpoint",
+      "pinpointed",
+      "pinpointing",
+      "pioneering",
+      "poised",
+      "pose",
+      "posed",
+      "poses",
+      "posing",
+      "postponed",
+      "presents",
+      "preserving",
+      "promise",
+      "promising",
+      "propelling",
+      "providing",
+      "recognizing",
+      "refine",
+      "refines",
+      "refining",
+      "remains",
+      "resulting",
+      "revealed",
+      "revealing",
+      "revolutionize",
+      "revolutionizing",
+      "revolves",
+      "scrutinize",
+      "scrutinized",
+      "scrutinizing",
+      "seeks",
+      "serves",
+      "serving",
+      "shaping",
+      "shedding",
+      "showcased",
+      "showcases",
+      "showcasing",
+      "signifying",
+      "solidify",
+      "spanned",
+      "spanning",
+      "spurred",
+      "standardizing",
+      "stands",
+      "stemming",
+      "streamline",
+      "streamlined",
+      "streamlines",
+      "streamlining",
+      "struggle",
+      "substantiated",
+      "substantiates",
+      "surged",
+      "surmount",
+      "surpass",
+      "surpassed",
+      "surpasses",
+      "surpassing",
+      "synthesizes",
+      "uncovering",
+      "underexplored",
+      "underscore",
+      "underscored",
+      "underscores",
+      "underscoring",
+      "understanding",
+      "unlocking",
+      "unraveling",
+      "unveil",
+      "unveiled",
+      "unveiling",
+      "unveils",
+      "uphold",
+      "upholding",
+      "urging",
+      "using",
+      "utilized",
+      "utilizes",
+      "utilizing",
+      "warranting",
+      "yielding"
+    ],
+    "adjective": [
+      "adept",
+      "akin",
+      "broader",
+      "commendable",
+      "compelling",
+      "comprehensive",
+      "crucial",
+      "dependable",
+      "discernible",
+      "distinct",
+      "distinctive",
+      "diverse",
+      "exceptional",
+      "formidable",
+      "foundational",
+      "groundbreaking",
+      "heightened",
+      "illuminating",
+      "impeding",
+      "imperative",
+      "impressive",
+      "inherent",
+      "innovative",
+      "intricate",
+      "introduces",
+      "invaluable",
+      "juxtaposed",
+      "meticulous",
+      "multifaceted",
+      "notable",
+      "noteworthy",
+      "nuanced",
+      "pivotal",
+      "potential",
+      "precise",
+      "pressing",
+      "primary",
+      "pronounced",
+      "remarkable",
+      "renowned",
+      "seamless",
+      "strategically",
+      "substantial",
+      "swift",
+      "thorough",
+      "transformative",
+      "uncharted",
+      "unexplored",
+      "unparalleled",
+      "valuable",
+      "various"
+    ],
+    "adverb": [
+      "additionally",
+      "conversely",
+      "detrimentally",
+      "effectively",
+      "exceptionally",
+      "inadequately",
+      "intricately",
+      "meticulously",
+      "notably",
+      "particularly",
+      "potentially",
+      "predominantly",
+      "primarily",
+      "seamlessly",
+      "swiftly",
+      "thereby",
+      "typically",
+      "ultimately",
+      "within"
+    ],
+    "noun": [
+      "advancement",
+      "advancements",
+      "approach",
+      "assessments",
+      "avenue",
+      "avenues",
+      "capabilities",
+      "challenges",
+      "complex",
+      "conditions",
+      "dependability",
+      "distinctions",
+      "efficacy",
+      "emulation",
+      "endeavors",
+      "endeavours",
+      "enhancements",
+      "exploration",
+      "findings",
+      "groundwork",
+      "impact",
+      "individuals",
+      "inquiries",
+      "insights",
+      "interconnectedness",
+      "interplay",
+      "intricacies",
+      "methodologies",
+      "necessity",
+      "nuances",
+      "outcomes",
+      "pioneers",
+      "realm",
+      "realms",
+      "research",
+      "role",
+      "strategies",
+      "versatility"
+    ],
+    "preposition": [
+      "across",
+      "alongside",
+      "amidst",
+      "despite",
+      "including",
+      "into",
+      "through",
+      "while"
+    ],
+    "pronoun": [
+      "their",
+      "these",
+      "this"
+    ],
+    "particle": [
+      "like"
+    ],
+    "other": [
+      "both"
+    ]
+  },
+  "entries": [
+    {
+      "word": "accentuates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.81,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "achieving",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.77,
+      "frequency_gap_2024": 0.0091
+    },
+    {
+      "word": "acknowledges",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.88,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "acknowledging",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.86,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "across",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.41,
+      "frequency_gap_2024": 0.0272
+    },
+    {
+      "word": "additionally",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.91,
+      "frequency_gap_2024": 0.0365
+    },
+    {
+      "word": "address",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.44,
+      "frequency_gap_2024": 0.013
+    },
+    {
+      "word": "addresses",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.87,
+      "frequency_gap_2024": 0.003
+    },
+    {
+      "word": "addressing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.15,
+      "frequency_gap_2024": 0.0108
+    },
+    {
+      "word": "adept",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.79,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "adhered",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.18,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "adhering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.91,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "advancement",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.01,
+      "frequency_gap_2024": 0.0038
+    },
+    {
+      "word": "advancements",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 3.61,
+      "frequency_gap_2024": 0.0096
+    },
+    {
+      "word": "advancing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.96,
+      "frequency_gap_2024": 0.0051
+    },
+    {
+      "word": "advocates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.71,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "advocating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.11,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "affirming",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.04,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "afflicted",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.5,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "aiding",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.25,
+      "frequency_gap_2024": 0.0019
+    },
+    {
+      "word": "aims",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.29,
+      "frequency_gap_2024": 0.0125
+    },
+    {
+      "word": "akin",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.79,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "align",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.9,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "aligning",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.1,
+      "frequency_gap_2024": 0.0016
+    },
+    {
+      "word": "aligns",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.94,
+      "frequency_gap_2024": 0.001
+    },
+    {
+      "word": "alongside",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 2.03,
+      "frequency_gap_2024": 0.0045
+    },
+    {
+      "word": "amidst",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "apologizes",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.62,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "approach",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.24,
+      "frequency_gap_2024": 0.0219
+    },
+    {
+      "word": "assess",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.18,
+      "frequency_gap_2024": 0.0136
+    },
+    {
+      "word": "assessed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.16,
+      "frequency_gap_2024": 0.0128
+    },
+    {
+      "word": "assessments",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.5,
+      "frequency_gap_2024": 0.0061
+    },
+    {
+      "word": "attains",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.05,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "augmenting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.38,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "avenue",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.84,
+      "frequency_gap_2024": 0.002
+    },
+    {
+      "word": "avenues",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.35,
+      "frequency_gap_2024": 0.0035
+    },
+    {
+      "word": "bolster",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.13,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "bolstered",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.48,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "bolstering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.76,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "both",
+      "part_of_speech": "other",
+      "frequency_ratio_2024": 1.15,
+      "frequency_gap_2024": 0.0269
+    },
+    {
+      "word": "broader",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.7,
+      "frequency_gap_2024": 0.0035
+    },
+    {
+      "word": "burgeoning",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.21,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "capabilities",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.85,
+      "frequency_gap_2024": 0.0056
+    },
+    {
+      "word": "capitalizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.01,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "categorized",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.54,
+      "frequency_gap_2024": 0.0046
+    },
+    {
+      "word": "categorizes",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.84,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "categorizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.28,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "challenges",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.6,
+      "frequency_gap_2024": 0.0222
+    },
+    {
+      "word": "combating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.75,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "commendable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 6.82,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "compelling",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.0,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "complex",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.17,
+      "frequency_gap_2024": 0.0107
+    },
+    {
+      "word": "complicates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.76,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "complicating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.8,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "comprehend",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.62,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "comprehending",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.74,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "comprehensive",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.76,
+      "frequency_gap_2024": 0.0264
+    },
+    {
+      "word": "comprising",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.55,
+      "frequency_gap_2024": 0.0043
+    },
+    {
+      "word": "conditions",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.13,
+      "frequency_gap_2024": 0.0104
+    },
+    {
+      "word": "conducted",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.14,
+      "frequency_gap_2024": 0.0162
+    },
+    {
+      "word": "consolidates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.35,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "contributing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.73,
+      "frequency_gap_2024": 0.0078
+    },
+    {
+      "word": "conversely",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 2.36,
+      "frequency_gap_2024": 0.006
+    },
+    {
+      "word": "correlating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.03,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "crafted",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.81,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "crafting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.87,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "crucial",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.11,
+      "frequency_gap_2024": 0.0371
+    },
+    {
+      "word": "culminating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.36,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "customizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.96,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "delineates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.6,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "delve",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 7.91,
+      "frequency_gap_2024": 0.0017
+    },
+    {
+      "word": "delved",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 12.31,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "delves",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 28.18,
+      "frequency_gap_2024": 0.0034
+    },
+    {
+      "word": "delving",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 6.95,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "demonstrated",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.31,
+      "frequency_gap_2024": 0.0254
+    },
+    {
+      "word": "demonstrates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.53,
+      "frequency_gap_2024": 0.0089
+    },
+    {
+      "word": "demonstrating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.81,
+      "frequency_gap_2024": 0.0072
+    },
+    {
+      "word": "dependability",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.93,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "dependable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.01,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "despite",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.31,
+      "frequency_gap_2024": 0.0146
+    },
+    {
+      "word": "detailing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.68,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "detrimentally",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 3.07,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "diminishes",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.97,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "diminishing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.75,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "discern",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.32,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "discerned",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.17,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "discernible",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.1,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "discerning",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.47,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "displaying",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.0014
+    },
+    {
+      "word": "disrupts",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.67,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "distinct",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.53,
+      "frequency_gap_2024": 0.0129
+    },
+    {
+      "word": "distinctions",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.04,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "distinctive",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.67,
+      "frequency_gap_2024": 0.0021
+    },
+    {
+      "word": "diverse",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.64,
+      "frequency_gap_2024": 0.0157
+    },
+    {
+      "word": "effectively",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.31,
+      "frequency_gap_2024": 0.0103
+    },
+    {
+      "word": "efficacy",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.22,
+      "frequency_gap_2024": 0.0128
+    },
+    {
+      "word": "elevate",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.92,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "elevates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.57,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "elevating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.92,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "elucidate",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.67,
+      "frequency_gap_2024": 0.0068
+    },
+    {
+      "word": "elucidates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.29,
+      "frequency_gap_2024": 0.0013
+    },
+    {
+      "word": "elucidating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.27,
+      "frequency_gap_2024": 0.0026
+    },
+    {
+      "word": "embracing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.77,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "emerged",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.79,
+      "frequency_gap_2024": 0.0112
+    },
+    {
+      "word": "emerges",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.5,
+      "frequency_gap_2024": 0.0028
+    },
+    {
+      "word": "emphasises",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.41,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "emphasising",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.99,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "emphasize",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.77,
+      "frequency_gap_2024": 0.0033
+    },
+    {
+      "word": "emphasizes",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.64,
+      "frequency_gap_2024": 0.005
+    },
+    {
+      "word": "emphasizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.67,
+      "frequency_gap_2024": 0.0092
+    },
+    {
+      "word": "employed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.68,
+      "frequency_gap_2024": 0.0187
+    },
+    {
+      "word": "employing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.3,
+      "frequency_gap_2024": 0.0082
+    },
+    {
+      "word": "employs",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.33,
+      "frequency_gap_2024": 0.0026
+    },
+    {
+      "word": "empowers",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.14,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "emulating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.6,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "emulation",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.24,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "enabling",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.85,
+      "frequency_gap_2024": 0.0067
+    },
+    {
+      "word": "encapsulates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.49,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "encompass",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.77,
+      "frequency_gap_2024": 0.0018
+    },
+    {
+      "word": "encompassed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.94,
+      "frequency_gap_2024": 0.0025
+    },
+    {
+      "word": "encompasses",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.39,
+      "frequency_gap_2024": 0.0017
+    },
+    {
+      "word": "encompassing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.7,
+      "frequency_gap_2024": 0.0062
+    },
+    {
+      "word": "endeavors",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 3.65,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "endeavours",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.52,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "enduring",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.1,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "enhance",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.76,
+      "frequency_gap_2024": 0.0225
+    },
+    {
+      "word": "enhanced",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.25,
+      "frequency_gap_2024": 0.0113
+    },
+    {
+      "word": "enhancements",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 3.01,
+      "frequency_gap_2024": 0.0013
+    },
+    {
+      "word": "enhances",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.18,
+      "frequency_gap_2024": 0.0081
+    },
+    {
+      "word": "enhancing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.43,
+      "frequency_gap_2024": 0.0204
+    },
+    {
+      "word": "ensuring",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.93,
+      "frequency_gap_2024": 0.005
+    },
+    {
+      "word": "equipping",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.0,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "escalating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 5.22,
+      "frequency_gap_2024": 0.0016
+    },
+    {
+      "word": "evaluates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.55,
+      "frequency_gap_2024": 0.0018
+    },
+    {
+      "word": "evolving",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.66,
+      "frequency_gap_2024": 0.0025
+    },
+    {
+      "word": "exacerbating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.68,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "examines",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.53,
+      "frequency_gap_2024": 0.0034
+    },
+    {
+      "word": "exceeding",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.46,
+      "frequency_gap_2024": 0.0029
+    },
+    {
+      "word": "excels",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 5.87,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "exceptional",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.8,
+      "frequency_gap_2024": 0.0039
+    },
+    {
+      "word": "exceptionally",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.98,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "exerting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.67,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "exhibit",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.8,
+      "frequency_gap_2024": 0.0123
+    },
+    {
+      "word": "exhibited",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.89,
+      "frequency_gap_2024": 0.0318
+    },
+    {
+      "word": "exhibiting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.33,
+      "frequency_gap_2024": 0.0058
+    },
+    {
+      "word": "exhibits",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.69,
+      "frequency_gap_2024": 0.008
+    },
+    {
+      "word": "expedite",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.33,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "expediting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 8.5,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "exploration",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.55,
+      "frequency_gap_2024": 0.0048
+    },
+    {
+      "word": "explores",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.05,
+      "frequency_gap_2024": 0.0074
+    },
+    {
+      "word": "facilitated",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.52,
+      "frequency_gap_2024": 0.0032
+    },
+    {
+      "word": "facilitating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.16,
+      "frequency_gap_2024": 0.0071
+    },
+    {
+      "word": "featuring",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.02,
+      "frequency_gap_2024": 0.0019
+    },
+    {
+      "word": "findings",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.31,
+      "frequency_gap_2024": 0.041
+    },
+    {
+      "word": "focusing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.76,
+      "frequency_gap_2024": 0.0089
+    },
+    {
+      "word": "formidable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 4.08,
+      "frequency_gap_2024": 0.0011
+    },
+    {
+      "word": "fostering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.12,
+      "frequency_gap_2024": 0.0026
+    },
+    {
+      "word": "fosters",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.0,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "foundational",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.07,
+      "frequency_gap_2024": 0.001
+    },
+    {
+      "word": "furnish",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.89,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "garnered",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 5.28,
+      "frequency_gap_2024": 0.003
+    },
+    {
+      "word": "garnering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.08,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "gauged",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.94,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "grappling",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 5.84,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "groundbreaking",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 4.87,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "groundwork",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.36,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "harness",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "harnesses",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.8,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "harnessing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.95,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "heighten",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.32,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "heightened",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.77,
+      "frequency_gap_2024": 0.0047
+    },
+    {
+      "word": "highlight",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.43,
+      "frequency_gap_2024": 0.0101
+    },
+    {
+      "word": "highlighting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.58,
+      "frequency_gap_2024": 0.0141
+    },
+    {
+      "word": "highlights",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.91,
+      "frequency_gap_2024": 0.0165
+    },
+    {
+      "word": "hinder",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.54,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "hinges",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.38,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "hinting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.21,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "hold",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.93,
+      "frequency_gap_2024": 0.0035
+    },
+    {
+      "word": "holds",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.21,
+      "frequency_gap_2024": 0.0072
+    },
+    {
+      "word": "identified",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.08,
+      "frequency_gap_2024": 0.0108
+    },
+    {
+      "word": "illuminates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.79,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "illuminating",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.69,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "imbalances",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "impact",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.23,
+      "frequency_gap_2024": 0.0211
+    },
+    {
+      "word": "impacting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.94,
+      "frequency_gap_2024": 0.0031
+    },
+    {
+      "word": "impede",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.61,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "impeding",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.9,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "imperative",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.99,
+      "frequency_gap_2024": 0.0032
+    },
+    {
+      "word": "impressive",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.1,
+      "frequency_gap_2024": 0.0014
+    },
+    {
+      "word": "inadequately",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 2.29,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "including",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.12,
+      "frequency_gap_2024": 0.0212
+    },
+    {
+      "word": "incorporates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.0,
+      "frequency_gap_2024": 0.0017
+    },
+    {
+      "word": "incorporating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.87,
+      "frequency_gap_2024": 0.0066
+    },
+    {
+      "word": "individuals",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.21,
+      "frequency_gap_2024": 0.0119
+    },
+    {
+      "word": "inherent",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.61,
+      "frequency_gap_2024": 0.0028
+    },
+    {
+      "word": "innovative",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.88,
+      "frequency_gap_2024": 0.0086
+    },
+    {
+      "word": "inquiries",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.85,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "insights",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.04,
+      "frequency_gap_2024": 0.0296
+    },
+    {
+      "word": "integrates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.08,
+      "frequency_gap_2024": 0.0023
+    },
+    {
+      "word": "integrating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.006
+    },
+    {
+      "word": "interconnectedness",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.78,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "interplay",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.53,
+      "frequency_gap_2024": 0.0061
+    },
+    {
+      "word": "into",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.13,
+      "frequency_gap_2024": 0.0232
+    },
+    {
+      "word": "intricacies",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 10.25,
+      "frequency_gap_2024": 0.001
+    },
+    {
+      "word": "intricate",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 7.78,
+      "frequency_gap_2024": 0.0086
+    },
+    {
+      "word": "intricately",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 4.98,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "introduces",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.21,
+      "frequency_gap_2024": 0.0046
+    },
+    {
+      "word": "invaluable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.86,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "investigates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.71,
+      "frequency_gap_2024": 0.0046
+    },
+    {
+      "word": "involves",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.61,
+      "frequency_gap_2024": 0.0056
+    },
+    {
+      "word": "juxtaposed",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.41,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "leading",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.35,
+      "frequency_gap_2024": 0.014
+    },
+    {
+      "word": "leverages",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.43,
+      "frequency_gap_2024": 0.0013
+    },
+    {
+      "word": "leveraging",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.08,
+      "frequency_gap_2024": 0.0051
+    },
+    {
+      "word": "like",
+      "part_of_speech": "particle",
+      "frequency_ratio_2024": 1.28,
+      "frequency_gap_2024": 0.0141
+    },
+    {
+      "word": "merges",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.2,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "methodologies",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.61,
+      "frequency_gap_2024": 0.0026
+    },
+    {
+      "word": "meticulous",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.83,
+      "frequency_gap_2024": 0.0013
+    },
+    {
+      "word": "meticulously",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 11.3,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "multifaceted",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.87,
+      "frequency_gap_2024": 0.0037
+    },
+    {
+      "word": "necessitate",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.31,
+      "frequency_gap_2024": 0.001
+    },
+    {
+      "word": "necessitates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.55,
+      "frequency_gap_2024": 0.0022
+    },
+    {
+      "word": "necessitating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.25,
+      "frequency_gap_2024": 0.0043
+    },
+    {
+      "word": "necessity",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.09,
+      "frequency_gap_2024": 0.0033
+    },
+    {
+      "word": "need",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.21,
+      "frequency_gap_2024": 0.0135
+    },
+    {
+      "word": "notable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.42,
+      "frequency_gap_2024": 0.0104
+    },
+    {
+      "word": "notably",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 2.63,
+      "frequency_gap_2024": 0.0219
+    },
+    {
+      "word": "noteworthy",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.66,
+      "frequency_gap_2024": 0.0027
+    },
+    {
+      "word": "nuanced",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.72,
+      "frequency_gap_2024": 0.0019
+    },
+    {
+      "word": "nuances",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 2.28,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "observed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.19,
+      "frequency_gap_2024": 0.0205
+    },
+    {
+      "word": "offer",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.79,
+      "frequency_gap_2024": 0.0116
+    },
+    {
+      "word": "offering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.25,
+      "frequency_gap_2024": 0.0145
+    },
+    {
+      "word": "offers",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.07,
+      "frequency_gap_2024": 0.0137
+    },
+    {
+      "word": "optimizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.84,
+      "frequency_gap_2024": 0.0046
+    },
+    {
+      "word": "orchestrating",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.82,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "outcomes",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.16,
+      "frequency_gap_2024": 0.0179
+    },
+    {
+      "word": "outlines",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.79,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "overlook",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.99,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "overlooking",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.42,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "overwhelmed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.87,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "particularly",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.75,
+      "frequency_gap_2024": 0.0279
+    },
+    {
+      "word": "paving",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.39,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "persist",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.52,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "pinpoint",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.18,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "pinpointed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.16,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "pinpointing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.99,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "pioneering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.55,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "pioneers",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 5.85,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "pivotal",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.08,
+      "frequency_gap_2024": 0.0117
+    },
+    {
+      "word": "poised",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.57,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "pose",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.63,
+      "frequency_gap_2024": 0.0035
+    },
+    {
+      "word": "posed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.78,
+      "frequency_gap_2024": 0.0017
+    },
+    {
+      "word": "poses",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.37,
+      "frequency_gap_2024": 0.0071
+    },
+    {
+      "word": "posing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.37,
+      "frequency_gap_2024": 0.0022
+    },
+    {
+      "word": "postponed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.5,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "potential",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.3,
+      "frequency_gap_2024": 0.0518
+    },
+    {
+      "word": "potentially",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.45,
+      "frequency_gap_2024": 0.0125
+    },
+    {
+      "word": "precise",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.73,
+      "frequency_gap_2024": 0.0085
+    },
+    {
+      "word": "predominantly",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.73,
+      "frequency_gap_2024": 0.0058
+    },
+    {
+      "word": "presents",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.54,
+      "frequency_gap_2024": 0.0099
+    },
+    {
+      "word": "preserving",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.51,
+      "frequency_gap_2024": 0.0017
+    },
+    {
+      "word": "pressing",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.14,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "primarily",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.0112
+    },
+    {
+      "word": "primary",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.12,
+      "frequency_gap_2024": 0.01
+    },
+    {
+      "word": "promise",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.68,
+      "frequency_gap_2024": 0.0111
+    },
+    {
+      "word": "promising",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.25,
+      "frequency_gap_2024": 0.0132
+    },
+    {
+      "word": "pronounced",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.53,
+      "frequency_gap_2024": 0.0034
+    },
+    {
+      "word": "propelling",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.52,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "providing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.37,
+      "frequency_gap_2024": 0.0109
+    },
+    {
+      "word": "realm",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 5.49,
+      "frequency_gap_2024": 0.0018
+    },
+    {
+      "word": "realms",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 3.16,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "recognizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.73,
+      "frequency_gap_2024": 0.0018
+    },
+    {
+      "word": "refine",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.13,
+      "frequency_gap_2024": 0.0017
+    },
+    {
+      "word": "refines",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.14,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "refining",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.71,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "remains",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.29,
+      "frequency_gap_2024": 0.0166
+    },
+    {
+      "word": "remarkable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.51,
+      "frequency_gap_2024": 0.0042
+    },
+    {
+      "word": "renowned",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 5.72,
+      "frequency_gap_2024": 0.0009
+    },
+    {
+      "word": "research",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.09,
+      "frequency_gap_2024": 0.0142
+    },
+    {
+      "word": "resulting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.28,
+      "frequency_gap_2024": 0.0106
+    },
+    {
+      "word": "revealed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.21,
+      "frequency_gap_2024": 0.0216
+    },
+    {
+      "word": "revealing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.68,
+      "frequency_gap_2024": 0.0041
+    },
+    {
+      "word": "revolutionize",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 5.23,
+      "frequency_gap_2024": 0.001
+    },
+    {
+      "word": "revolutionizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.07,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "revolves",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.14,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "role",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.1,
+      "frequency_gap_2024": 0.012
+    },
+    {
+      "word": "scrutinize",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.78,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "scrutinized",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.02,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "scrutinizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.22,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "seamless",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.18,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "seamlessly",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 3.08,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "seeks",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.75,
+      "frequency_gap_2024": 0.0014
+    },
+    {
+      "word": "serves",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.16,
+      "frequency_gap_2024": 0.0048
+    },
+    {
+      "word": "serving",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.68,
+      "frequency_gap_2024": 0.0021
+    },
+    {
+      "word": "shaping",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.52,
+      "frequency_gap_2024": 0.0016
+    },
+    {
+      "word": "shedding",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.53,
+      "frequency_gap_2024": 0.0019
+    },
+    {
+      "word": "showcased",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.82,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "showcases",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.84,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "showcasing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 10.7,
+      "frequency_gap_2024": 0.0021
+    },
+    {
+      "word": "signifying",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.82,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "solidify",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.54,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "spanned",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.17,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "spanning",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.29,
+      "frequency_gap_2024": 0.0029
+    },
+    {
+      "word": "spurred",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.69,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "standardizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.88,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "stands",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.36,
+      "frequency_gap_2024": 0.0024
+    },
+    {
+      "word": "stemming",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.72,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "strategically",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.94,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "strategies",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.29,
+      "frequency_gap_2024": 0.017
+    },
+    {
+      "word": "streamline",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.29,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "streamlined",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.83,
+      "frequency_gap_2024": 0.0005
+    },
+    {
+      "word": "streamlines",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.39,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "streamlining",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.57,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "struggle",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.84,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "substantial",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.64,
+      "frequency_gap_2024": 0.0105
+    },
+    {
+      "word": "substantiated",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.57,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "substantiates",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 4.2,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "surged",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.96,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "surmount",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.69,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "surpass",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.85,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "surpassed",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.57,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "surpasses",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.82,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "surpassing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 7.09,
+      "frequency_gap_2024": 0.0024
+    },
+    {
+      "word": "swift",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.83,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "swiftly",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.85,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "synthesizes",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.13,
+      "frequency_gap_2024": 0.0006
+    },
+    {
+      "word": "their",
+      "part_of_speech": "pronoun",
+      "frequency_ratio_2024": 1.06,
+      "frequency_gap_2024": 0.0165
+    },
+    {
+      "word": "thereby",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.72,
+      "frequency_gap_2024": 0.0126
+    },
+    {
+      "word": "these",
+      "part_of_speech": "pronoun",
+      "frequency_ratio_2024": 1.22,
+      "frequency_gap_2024": 0.063
+    },
+    {
+      "word": "this",
+      "part_of_speech": "pronoun",
+      "frequency_ratio_2024": 1.03,
+      "frequency_gap_2024": 0.0242
+    },
+    {
+      "word": "thorough",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.74,
+      "frequency_gap_2024": 0.003
+    },
+    {
+      "word": "through",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.16,
+      "frequency_gap_2024": 0.024
+    },
+    {
+      "word": "transformative",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.97,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "typically",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.55,
+      "frequency_gap_2024": 0.0061
+    },
+    {
+      "word": "ultimately",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.53,
+      "frequency_gap_2024": 0.0054
+    },
+    {
+      "word": "uncharted",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 3.58,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "uncovering",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.97,
+      "frequency_gap_2024": 0.0007
+    },
+    {
+      "word": "underexplored",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.72,
+      "frequency_gap_2024": 0.0015
+    },
+    {
+      "word": "underscore",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 6.73,
+      "frequency_gap_2024": 0.0098
+    },
+    {
+      "word": "underscored",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 5.14,
+      "frequency_gap_2024": 0.0016
+    },
+    {
+      "word": "underscores",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 13.79,
+      "frequency_gap_2024": 0.0133
+    },
+    {
+      "word": "underscoring",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 7.48,
+      "frequency_gap_2024": 0.0049
+    },
+    {
+      "word": "understanding",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.3,
+      "frequency_gap_2024": 0.0203
+    },
+    {
+      "word": "unexplored",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.57,
+      "frequency_gap_2024": 0.0018
+    },
+    {
+      "word": "unlocking",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.88,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "unparalleled",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.93,
+      "frequency_gap_2024": 0.0003
+    },
+    {
+      "word": "unraveling",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.33,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "unveil",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.48,
+      "frequency_gap_2024": 0.0012
+    },
+    {
+      "word": "unveiled",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.44,
+      "frequency_gap_2024": 0.0021
+    },
+    {
+      "word": "unveiling",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.19,
+      "frequency_gap_2024": 0.0004
+    },
+    {
+      "word": "unveils",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.72,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "uphold",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.82,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "upholding",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.71,
+      "frequency_gap_2024": 0.0001
+    },
+    {
+      "word": "urging",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 3.29,
+      "frequency_gap_2024": 0.0002
+    },
+    {
+      "word": "using",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.04,
+      "frequency_gap_2024": 0.014
+    },
+    {
+      "word": "utilized",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.46,
+      "frequency_gap_2024": 0.0104
+    },
+    {
+      "word": "utilizes",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.96,
+      "frequency_gap_2024": 0.0023
+    },
+    {
+      "word": "utilizing",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.09,
+      "frequency_gap_2024": 0.0128
+    },
+    {
+      "word": "valuable",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 2.01,
+      "frequency_gap_2024": 0.0187
+    },
+    {
+      "word": "various",
+      "part_of_speech": "adjective",
+      "frequency_ratio_2024": 1.22,
+      "frequency_gap_2024": 0.0211
+    },
+    {
+      "word": "versatility",
+      "part_of_speech": "noun",
+      "frequency_ratio_2024": 1.98,
+      "frequency_gap_2024": 0.0013
+    },
+    {
+      "word": "warranting",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 2.19,
+      "frequency_gap_2024": 0.0008
+    },
+    {
+      "word": "while",
+      "part_of_speech": "preposition",
+      "frequency_ratio_2024": 1.2,
+      "frequency_gap_2024": 0.0306
+    },
+    {
+      "word": "within",
+      "part_of_speech": "adverb",
+      "frequency_ratio_2024": 1.36,
+      "frequency_gap_2024": 0.0332
+    },
+    {
+      "word": "yielding",
+      "part_of_speech": "verb",
+      "frequency_ratio_2024": 1.6,
+      "frequency_gap_2024": 0.0019
+    }
+  ]
+}

@@ -146,6 +146,38 @@ class ReviewPacketsTests(unittest.TestCase):
         with self.assertRaisesRegex(rp.ReviewDataError, "Duplicate concept_id: K1"):
             rp.check_review(self.index, bad)
 
+    def test_find_hedges_lists_each_phrase_once_in_order(self):
+        cases = (
+            ("Counts may rise under these conditions.", ["may", "under these conditions"]),
+            ("Risk is associated with age in 3 of 5 cohorts, if the model holds.", ["associated with", "in 3 of 5", "if"]),
+            ("It may rise and it may fall.", ["may"]),
+            ("May counts rise? They may.", ["May"]),
+            ("The mayor said nothing.", []),
+            ("Sniff the gift.", []),
+            ("Counts rose.", []),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(rp.find_hedges(text), expected)
+
+    def test_find_hedges_extra_patterns_and_keys(self):
+        self.assertEqual(rp.find_hedges("We believe counts rose."), [])
+        self.assertEqual(rp.find_hedges("We believe counts rose.", ["\\bwe believe\\b"]), ["We believe"])
+        self.assertEqual(rp.find_hedges("We believe counts may rise.", ("\\bwe believe\\b",)), ["We believe", "may"])
+        self.assertEqual(rp.hedge_key("  Under  These Conditions "), "under these conditions")
+        self.assertEqual(rp.hedge_key("May"), rp.hedge_key("may"))
+        self.assertIn(r"\bmay\b", rp.HEDGE_PATTERNS)
+
+    def test_hedge_survives_through_a_listed_hedge_or_the_kept_phrase_itself(self):
+        self.assertTrue(rp.hedge_survives(["may"], "Counts might rise."))
+        self.assertTrue(rp.hedge_survives(["may"], "Counts may rise."))
+        self.assertFalse(rp.hedge_survives(["may"], "Counts rise."))
+        self.assertTrue(rp.hedge_survives(["We believe"], "We believe counts increased."), "the kept phrase itself, though not a built-in hedge")
+        self.assertTrue(rp.hedge_survives(["we believe"], "WE  BELIEVE counts increased."), "whitespace and case are normalized")
+        self.assertFalse(rp.hedge_survives(["We believe"], "We think counts increased."))
+        self.assertTrue(rp.hedge_survives(["We believe"], "We think counts increased.", ["\\bwe think\\b"]), "an extra pattern counts as a listed hedge")
+        self.assertFalse(rp.hedge_survives([], "Counts rise."))
+
     def test_write_json_atomic_refuses_existing_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "out.json"

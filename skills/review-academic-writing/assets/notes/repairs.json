@@ -5,14 +5,17 @@
     {
       "candidate_id": "",
       "kind": "",
+      "edit_scope": null,
       "action": "",
       "proposed_wording": null,
       "wording_withheld_reason": null,
+      "heavy_edit_reason": null,
       "scientific_fidelity": "",
       "new_terms_check": "",
       "affected_block_ids": [],
       "author_question": null,
-      "audit_path": null
+      "audit_path": null,
+      "compare_path": null
     }
   ]
 }

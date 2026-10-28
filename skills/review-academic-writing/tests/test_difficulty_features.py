@@ -383,6 +383,139 @@ class InputTests(unittest.TestCase):
             df.compare_pairs_from_args(args)
 
 
+class LexicalMeasureTests(unittest.TestCase):
+    def test_removing_a_hedge_and_a_clause_is_a_heavy_edit(self):
+        result = df.lexical_measures("Treatment may reduce risk in most cases.", "Treatment reduces risk.")
+        self.assertEqual((result["original_words"], result["proposed_words"], result["changed_words"]), (7, 3, 5))
+        self.assertEqual(result["edit_ratio"], 0.7143)
+        self.assertGreater(result["edit_ratio"], 0.5)
+        self.assertEqual(result["edit_weight"], "heavy")
+        self.assertIn("heavy_edit", result["advisory_flags"])
+
+    def test_one_word_synonym_is_a_light_edit(self):
+        result = df.lexical_measures("Counts rose in the sample.", "Counts increased in the sample.")
+        self.assertEqual((result["changed_words"], result["edit_ratio"], result["edit_weight"]), (1, 0.2, "light"))
+        self.assertLessEqual(result["edit_ratio"], 0.2)
+        self.assertNotIn("heavy_edit", result["advisory_flags"])
+
+    def test_edit_weight_boundaries(self):
+        self.assertEqual(df.edit_ratio(["counts", "rose"], ["counts", "fell"]), (1, 0.5))
+        self.assertEqual(df.lexical_measures("Counts rose.", "Counts fell.")["edit_weight"], "medium")
+        self.assertEqual([df.edit_weight(r) for r in (0.0, 0.2, 0.21, 0.5, 0.51, 1.8)], ["light", "light", "medium", "medium", "heavy", "heavy"])
+        self.assertIsNone(df.edit_weight(None))
+        self.assertEqual(df.edit_ratio([], ["x"]), (1, None))
+        empty = df.lexical_measures("", "x")
+        self.assertEqual((empty["original_words"], empty["edit_ratio"], empty["edit_weight"], empty["advisory_flags"]), (0, None, None, []))
+        self.assertEqual(df.word_tokens("Don't count the MSW-based 91 percent."), ["don't", "count", "the", "msw-based", "91", "percent"])
+
+    def test_type_token_ratio_and_word_length_flags_fire_only_when_strictly_worse(self):
+        lower = df.lexical_measures("Counts rose and fell.", "Counts rose and rose.")
+        self.assertEqual(lower["type_token_ratio"], {"original": 1.0, "proposed": 0.75, "proposed_is_lower": True})
+        self.assertEqual(lower["advisory_flags"], ["lower_type_token_ratio"])
+        self.assertFalse(lower["mean_word_length"]["proposed_is_longer"])
+        higher = df.lexical_measures("Counts rose and rose.", "Counts rose and fell.")
+        self.assertFalse(higher["type_token_ratio"]["proposed_is_lower"])
+        self.assertEqual(higher["advisory_flags"], [])
+        longer = df.lexical_measures("Counts rose.", "Counts increased.")
+        self.assertEqual(longer["mean_word_length"], {"original": 5.0, "proposed": 7.5, "proposed_is_longer": True})
+        self.assertEqual(longer["advisory_flags"], ["longer_words"])
+        equal = df.lexical_measures("Counts fell.", "Counts rose.")
+        self.assertEqual((equal["type_token_ratio"]["proposed_is_lower"], equal["mean_word_length"]["proposed_is_longer"], equal["advisory_flags"]), (False, False, []))
+        shorter = df.lexical_measures("Counts increased.", "Counts rose.")
+        self.assertEqual(shorter["advisory_flags"], [])
+
+
+class ExcessVocabularyTests(unittest.TestCase):
+    def test_bundled_list_loads_with_its_source_and_limits(self):
+        vocabulary = df.load_excess_vocabulary(df.EXCESS_VOCABULARY)
+        self.assertEqual(vocabulary["count"], 366)
+        self.assertEqual(len(vocabulary["words"]), 366)
+        self.assertEqual(vocabulary["path"], str(df.EXCESS_VOCABULARY))
+        self.assertEqual(vocabulary["source"]["doi"], "10.1126/sciadv.adt3813")
+        data = json.loads(Path(df.EXCESS_VOCABULARY).read_text(encoding="utf-8"))
+        self.assertIn("verb", data["groups"])
+        self.assertIn("adjective", data["groups"])
+        self.assertEqual(sum(len(words) for words in data["groups"].values()), 366, "every word belongs to one group")
+        for group, words in data["groups"].items():
+            self.assertEqual(words, [w.lower() for w in words], group)
+            self.assertEqual(len(words), len(set(words)), group)
+        self.assertEqual(len(data["limits"]), 4)
+        self.assertEqual(set(vocabulary["words"].values()), set(data["groups"]))
+        self.assertIsNone(df.load_excess_vocabulary(None))
+
+    def test_count_matches_lower_cased_exact_forms(self):
+        vocabulary = df.load_excess_vocabulary(df.EXCESS_VOCABULARY)
+        for word in ("delve", "intricate", "realm", "into"):
+            self.assertIn(word, vocabulary["words"], word)
+        for word in ("we", "the", "of", "results"):
+            self.assertNotIn(word, vocabulary["words"], word)
+        self.assertEqual((vocabulary["words"]["delve"], vocabulary["words"]["intricate"], vocabulary["words"]["realm"]), ("verb", "adjective", "noun"))
+        result = df.count_excess_vocabulary("We delve into the intricate realm of results.", vocabulary)
+        self.assertEqual(result, {"count": 4, "per_1k_words": 500.0, "matches": ["delve", "into", "intricate", "realm"]})
+        self.assertEqual(df.count_excess_vocabulary("We Delve and DELVE again.", vocabulary), {"count": 2, "per_1k_words": 400.0, "matches": ["delve"]})
+        self.assertEqual(df.count_excess_vocabulary("Counts rose.", vocabulary), {"count": 0, "per_1k_words": 0.0, "matches": []})
+        self.assertEqual(df.count_excess_vocabulary("", vocabulary), {"count": 0, "per_1k_words": None, "matches": []})
+
+    def test_malformed_list_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = (
+                ("no-groups.json", {"source": {"doi": "x"}}),
+                ("no-source.json", {"groups": {"verb": ["delve"]}}),
+                ("not-an-object.json", ["delve"]),
+                ("upper-case.json", {"source": {}, "groups": {"verb": ["Delve"]}}),
+                ("not-a-list.json", {"source": {}, "groups": {"verb": "delve"}}),
+            )
+            for name, value in cases:
+                path = Path(tmp) / name
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.subTest(name=name), self.assertRaises(df.DifficultyError):
+                    df.load_excess_vocabulary(path)
+            good = Path(tmp) / "good.json"
+            good.write_text(json.dumps({"source": {"doi": "x"}, "groups": {"verb": ["delve", "delve"], "noun": ["realm", "delve"]}}), encoding="utf-8")
+            vocabulary = df.load_excess_vocabulary(good)
+            self.assertEqual((vocabulary["count"], vocabulary["words"]), (2, {"delve": "verb", "realm": "noun"}))
+
+
+class LexicalOnlyCompareTests(unittest.TestCase):
+    def test_compare_lexical_only_runs_without_spacy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "compare.json"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = df.main(["compare", "--lexical-only", "--candidate-id", "C01", "--original", "Treatment may reduce risk in most cases.",
+                                "--proposed", "Treatment reduces risk.", "--out", str(out)])
+            self.assertEqual(code, 0)
+            result = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual((result["command"], result["lexical_only"], result["model"], result["reference"]), ("compare", True, None, None))
+            self.assertEqual(len(result["comparisons"]), 1)
+            row = result["comparisons"][0]
+            self.assertEqual((row["candidate_id"], row["original"], row["proposed_wording"]), ("C01", "Treatment may reduce risk in most cases.", "Treatment reduces risk."))
+            self.assertEqual(row["features"], {})
+            self.assertEqual((row["flagged"], row["proposed_has_more_difficulty_features"]), ([], False))
+            self.assertEqual(row["words"], {"original": 7, "proposed": 3})
+            lexical = row["lexical"]
+            for key in ("edit_ratio", "edit_weight", "type_token_ratio", "mean_word_length", "advisory_flags"):
+                self.assertIn(key, lexical, key)
+            self.assertEqual((lexical["edit_ratio"], lexical["edit_weight"]), (0.7143, "heavy"))
+            self.assertIn("heavy_edit", lexical["advisory_flags"])
+            printed = stdout.getvalue()
+            self.assertIn("none (lexical only)", printed)
+            self.assertIn("edit ratio 0.7143 (heavy)", printed)
+            self.assertIn(f"Wrote {out}", printed)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(df.main(["compare", "--lexical-only", "--candidate-id", "C01", "--original", "a", "--proposed", "b", "--out", str(out)]), 1, "an existing --out is refused")
+
+    def test_compare_lexical_only_in_isolated_subprocess(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "compare.json"
+            completed = subprocess.run([sys.executable, "-I", str(SCRIPTS / "difficulty_features.py"), "compare", "--lexical-only", "--candidate-id", "C02",
+                                        "--original", "Counts rose in the sample.", "--proposed", "Counts increased in the sample.", "--out", str(out)],
+                                       capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            row = json.loads(out.read_text(encoding="utf-8"))["comparisons"][0]
+            self.assertEqual((row["candidate_id"], row["lexical"]["edit_weight"], row["features"]), ("C02", "light", {}))
+
+
 class MissingSpacyTests(unittest.TestCase):
     def test_load_nlp_exits_2_with_install_instructions(self):
         saved = sys.modules.get("spacy", "absent")

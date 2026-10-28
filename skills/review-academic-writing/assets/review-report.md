@@ -41,7 +41,7 @@ Include central concepts and those involved in findings. Allow layered definitio
 | Location and exact original | Proposed replacement | What becomes clearer | Meaning and terminology check |
 | --- | --- | --- | --- |
 
-Identify unnecessary names that can become ordinary descriptions. Explain why any questioned technical term must remain. Give complete sentence replacements and avoid introducing new labels or abbreviations in them. Do not invent changes when the wording already meets the reader's needs.
+Identify unnecessary names that can become ordinary descriptions. Explain why any questioned technical term must remain. Give complete sentence replacements and avoid introducing new labels or abbreviations in them. Do not invent changes when the wording already meets the reader's needs. In “What becomes clearer,” describe the difference (shorter by N words, the referent is now named, one fewer undefined term, the condition is stated); do not write that the replacement is better, clearer, or improved.
 
 ## Proposed sequence, when requested
 
@@ -54,6 +54,8 @@ Record source-anchor validation, independent rechecks actually run, claim-preser
 
 - Candidates: N accepted, N author questions, N merged, N rejected (from the decisions record). If none was rejected, say in one sentence why the counterchecks rejected nothing.
 - Citations checked against their sources, with verdicts, when the citation spot-check was run; otherwise say it was not run.
+- Pairwise judgments (which of two readings, passages, or wordings), if any were made: state that each was run in both orders and list the ones that disagreed as undetermined. Nowhere in the report is one version called better than another; the report names the describable difference.
+- Fidelity audits: how many wordings were audited, how many rounds, how many hedges were compared one by one, and any wording withheld because the audit found a hedge strengthened or removed, a qualification added without basis, or an edit heavier than its stated scope.
 
 ## Supporting work notes
 

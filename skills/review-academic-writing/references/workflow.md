@@ -8,6 +8,7 @@
 - Prefix worker instructions
 - Controller records and diagnosis
 - Citation spot-check
+- Diagnosis and wording in separate calls
 - Revision and validation
 
 ## Required intermediate records
@@ -102,6 +103,10 @@ A citation that carries a comparison or a novelty claim (the checks stage marks 
 | `note` | the sentence or fact in the source that decides it, or why it could not be decided |
 
 The template is `assets/notes/citation-checks.json`. An `overstated` or `contradicted` verdict becomes a candidate in the checks or reconcile stage like any other evidence; the final report lists the checked citations and their verdicts in the verification section. The step is on by default for a research proposal (the panel reads novelty claims against the cited field) and optional for a manuscript review; say in the scope record which citations were checked and which were not. Do not fetch sources through a service the user has not authorized; `unverified` with the reason is the honest record.
+
+## Diagnosis and wording in separate calls
+
+The decisions stage (what is wrong and why) and the repairs stage (the replacement text) are separate model calls, and the fidelity audit is a third, with no shared context. A model that diagnoses and rewrites in one turn justifies the rewrite with its own diagnosis and corrects itself worse than it corrects another's text (self-correction without an external signal is unreliable; the same text presented as someone else's is corrected more often). So: record decisions, then open a new call for repairs whose input is the recorded decisions, candidates, and block text (the orchestrator's `05-repairs` call is this; by hand, start a new turn or a new worker and paste only those records); generate each wording from a scoped instruction (wording-and-sentences.md, “Output exact improvements”); send the wording to the auditor in a fresh, tool-less call that is told the rewrite was submitted by someone else and sees only the original anchors, the wording, the basis, and the hedge list. Never audit in the context that wrote the wording, never pass the editor's reasons to the auditor, and never ask one call to both choose between two wordings and improve the winner.
 
 ## Revision and validation
 
