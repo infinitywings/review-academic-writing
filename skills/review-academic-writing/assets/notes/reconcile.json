@@ -55,7 +55,9 @@
           "quote": ""
         }
       ],
-      "candidate_id": null
+      "candidate_id": null,
+      "resolved_by": null,
+      "background": null
     }
   ],
   "candidates": [

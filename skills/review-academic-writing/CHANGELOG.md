@@ -2,6 +2,39 @@
 
 ## 未发布
 
+- **报告：三级严重程度，最多十条的优先清单，每条问题只出现一次（改造计划 R4）。** 以前的报告太长，小问题太多。这次把报告的形状交给脚本生成和检查，不再靠提示词要求模型。只对 schema 7 日志生效。R4b、R2、R3、R4 四项的新要求都并入还没发布的 schema 7，不另升版本：用此前未发布版本写出的 schema 7 日志在新规则下不能重放，schema 4 到 6 的日志不受影响。
+  - **严重程度改为三级，按读者的后果定义。** `misleads`：读者很可能带着错误的理解离开（对某个论断、术语、条件或结果），或者分不清一句核心表述是两种意思中的哪一种。`hinders`：读者能弄懂，但要停下来、回头找或重读。`minor`：不妨碍理解。读者自己的观察记录仍用原来的四级，那是读者当时的印象，不进报告。独立运行的 `check-review` 不知道日志版本，两套取值都接受。
+  - **定级时用两个记录在案的事实作依据：** 这个问题在几个读者检查点被独立提出；质疑者的结论。`review_steps.candidate_support` 从记录里算出这两项；`challenge-input` 的输出多了一个 `support` 列表，给出每条候选被几个读者提出，供编辑定级时看，质疑者的输入文件里没有这一项。等所有质疑结果都回来之后，对保留的候选一次定完，不要逐条边决定边定。
+  - **结构化评审新增三个顶层字段，由 `check-final` 检查。** `scope_note`：读了什么（哪个版本、哪些章节或块、跑了哪些读者），没读什么。`not_assessed`：必须包含"论断是否为真""证据是否充分""工作是否新颖"三项，可以再加。`priority_list`：候选编号，只能是状态为 `accepted` 且严重程度不是 `minor` 的条目；不重复；最多十条；够十条就列十条，不够就全列；`misleads` 排在 `hinders` 前面；没列进去的条目不能比列进去的更严重。次要条目和要问作者的条目不能进清单。
+  - 每条问题另带 `reader_sources` 和 `challenge`，`check-final` 重新计算，对不上就拒绝。
+  - **`notes_build.py review`：** 片段里必须给 `scope_note`。脚本填入固定的三项 `not_assessed`（片段可以追加）、每条问题的 `close_criterion`、`reader_sources`、`challenge`、`initial_reader_question`（候选最初的问题）和 `priority_list`。片段没给清单时按严重程度、再按在稿件里的位置排，取前十条；片段给了就用片段的，并在生成时按规则检查。
+  - **新增 `notes_build.py report --journal J --index I --review review.json --out report.md [--appendix PATH]`：** 先再跑一遍 `check-final`，不通过就不生成。生成过程是确定的，不调用模型。报告依次是：读了什么和不评估什么；一行取自记录的计数（读了几块、各类读者检查点几个、候选接受/问作者/合并/驳回各几条、质疑有没有跑、附了几份保真审计）；优先清单；要问作者的问题；所有 `misleads` 和 `hinders` 的问题各出现一次，带读者最初的问题、诊断、做法、改稿（有才列）、含义核对、改好的判断条件和依据。次要条目只写进附录文件，默认是 `--out` 旁边的 `<名字>-minor.md`，没有次要条目就不写。输出文件已存在时拒绝。只支持 schema 7 日志。
+  - "要问作者的问题"一节列出全部作者问题，包括严重程度为 `minor` 的（它们的完整条目在附录）。条目带有作者问题时，条目里也多一行"Question for the author"。没有读者提出、只由编辑检查发现的条目，支持一行写明"raised by the editor's check, by no reader"。
+  - 报告里"读者的问题"取自日志里候选最初记录的问题，不取评审文件里的同名字段，所以事后改不了。
+  - **`server/orchestrator.py`：** 报告改由上面的脚本生成，不再让模型写，每次运行少一次编辑调用。删除 `server/prompts/report.txt`。评审步骤的模型多返回一个 `scope_note`，优先清单用默认排序。决定步骤的提示词改用三级严重程度。
+  - **文档：** `assets/review-report.md` 改写为新报告的版式说明，供不能运行脚本的环境照着手工填写；`SKILL.md` 第 7 节改为"生成评审、`check-final`、用脚本生成报告"三步，不许往报告里加章节，用使用者的语言告诉对方报告和记录在哪里；`review-rubric.md` 第 7 节、`staged-review.md` 第 5、7 节和字段表、`output-contract.md`、`workflow.md`、包内 README 同步更新。
+  - 不评估论断真假、证据是否充分、工作是否新颖，这三项写进每份评审的 `not_assessed`。
+- **每条保留的诊断写明"怎样算改好了"（改造计划 R3）。** 以后的复测（R14）要问一位新读者"问题还在不在"，需要一个事先写好的判断条件。这个条件也迫使诊断落到读者能做什么上。只对 schema 7 日志生效。
+  - 决定记录里，状态为 `accepted` 或 `needs_author` 的条目必须带 `close_criterion`：一句话，说明改好之后目标读者能说出什么、找到什么。缺了拒绝入库；与 `diagnosis` 相同也拒绝。`rejected` 和 `merged` 的条目不能带这个字段。
+  - 结构化评审的每条问题带同一句 `close_criterion`，`check-final` 要求它与已入库的决定一字不差。
+  - `assets/notes/decisions.json` 加了这个字段；`notes_build.py decisions` 把它列入必填项，`notes_build.py review` 把它抄进每条问题；`server/prompts/decisions.txt` 的返回格式和规则加了这个字段，`server/orchestrator.py` 汇编评审时照抄。
+  - `staged-review.md` 第 5 节和字段表、`output-contract.md`、`workflow.md` 补了说明。
+  - schema 6 及更早的日志不要求。
+- **"后文已解决"和"原文够用"要引出原文作证（改造计划 R2）。** 一次真实运行里，编辑把读者提的一个有效问题归为已解决，却没说在哪里解决的。现在这两种归类必须指出回答问题的那句话，脚本核对引文和位置。只对 schema 7 日志生效。
+  - reconcile 的观察记录新增两个可选字段：`resolved_by`（锚点 `{block_id, quote}` 或 null）和 `background`（字符串或 null）。
+  - `resolved_later`：必须给 `resolved_by`，引文要从该检查点锚点结束之后开始。引文落在读者已经读过的位置时拒绝入库，提示这种情况应归为 `adequate` 或 `needed_again`。
+  - `adequate`：`resolved_by` 和 `background` 必须给且只给一个。`resolved_by` 要在检查点锚点结束之前结束，也就是读者当时已经读到的文字；`background` 要逐字出自日志里冻结的读者画像，引的是覆盖这个问题的那一条。
+  - 其他归类不能带这两个字段。
+  - 观察来自分支时，记录里没有锚点可比，只核对引文确实是原文。
+  - `assets/notes/reconcile.json` 加了这两个字段；`notes_build.py reconcile` 默认填 null；`server/prompts/reconcile.txt` 的返回格式和规则加了这两个字段，编辑的输入里加了读者画像；`staged-review.md` 第 4 节和字段表、`masked-reading.md` 第 6 节的表补了说明。
+  - schema 6 及更早的日志不要求。
+- **校验脚本检查记录的语言（改造计划 R4b）。** "记录一律用英文"原来只写在规则和提示词里，现在由脚本执行。判断依据是文字系统，不是语言：记录里出现西里尔、希伯来、阿拉伯、天城、泰文、假名、谚文或汉字就算非英文；希腊字母不算，因为公式要用。
+  - 不检查的字段：`quote`、`proposed_wording`、`kept_as`、`in_context`、`term`，以及名字以 `_path` 或 `_dir` 结尾的字段。引文和改稿保持稿件原文，路径里可以有任何文字。
+  - 稿件本身含有这些文字时整项检查跳过，因为记录的任何位置都可能在引用它。
+  - `review_steps.py`：schema 7 日志的五个阶段入库时检查，`check-final` 检查结构化评审。拒绝时列出字段路径（如 `decisions[2].verification`）和开头的一段文字，最多列五处。schema 6 及更早的日志不检查，已入库的非英文读者回答照旧能重放。
+  - `review_packets.py`：命令行的 `check-observation` 和 `check-review` 检查；作为库调用时默认不检查，传 `english=True` 才检查。
+  - `dispatch_reader.py`：前缀、遮蔽、分支、审计、质疑五种调用共用一处检查。发给读者的输入里没有这些文字、回答里却有时，按更正流程退回重答，附一句语言说明，最多两次。`masked --until-complete` 把它和格式错误同样对待。
+  - 检查不出用拉丁字母写的其他语言（法语、德语等）。
 - **候选的独立质疑（改造计划 R1）。** 三次真实运行里，决定阶段几乎不驳回候选（4/46、0/65、0/52），因为反证是提出候选的编辑自己写的。新增一步：决定之前，把候选交给一个新开上下文、没有工具的质疑者。它能看到整篇稿件和读者画像，对每条候选只看到锚点和读者的问题，看不到编辑的诊断和证据。
   - `dispatch_reader.py challenge --input --index --profile --out`：一次调用可带多条候选。质疑者对每条给一个结论和理由：`stands`（成立）；`answered`（稿件已回答，必须逐字引出回答它的那句话）；`not_material`（不妨碍理解）；`duplicate`（与同一批里另一条重复）。脚本核对引文，并算出回答在锚点之前、之后还是重叠（`answer_position`）。回答格式不对或引文不在原文时，按现有的更正流程退回重答。
   - `review_steps.py` 的决定阶段：决定可以带 `challenge_path`。质疑的结论是"不妨碍理解""重复"或"读者已经读到的文字回答了它"时算否定；编辑仍要保留这条候选的话，必须在 `challenge_response` 里写明理由，否则拒绝入库。回答只出现在锚点之后的不算否定，那说明的是顺序问题。质疑文件记入决定阶段回执的附件，事后改动会被发现。
@@ -14,7 +47,7 @@
 - **报告和所有中间记录一律用英文。** 包括各阶段的笔记、读者的回答、审计备注、结构化评审和最终报告；引文和建议的改稿保持稿件原文的语言。不论使用者用什么语言对话都如此；智能体可以用使用者的语言交谈，但不把保存的文件写成那种语言，也不另出第二种语言的报告，除非使用者要求。原因：技能要交给不同的智能体用，两种语言的记录无法跨运行、跨智能体比较（10 月 27 日的对照里，一边的读者用中文作答）。
   - `SKILL.md` 第 7 节和第 3 节、`references/workflow.md`、`assets/reader-profile.json`（`response_language` 改为 English）、`assets/prompts/fidelity-audit.txt`（备注用英文）。
   - `server/orchestrator.py` 去掉 `--language` 选项，`server/prompts/report.txt` 固定为英文。这是不兼容改动：传 `--language` 会报错。
-  - 目前只是写进规则和提示词，校验脚本还不检查语言。
+  - 这一条只改了规则和提示词；脚本的检查见上面的 R4b。
 
 ## 0.20.0（2026-10-28）
 

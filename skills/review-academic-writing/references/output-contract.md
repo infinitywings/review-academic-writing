@@ -4,7 +4,9 @@
 
 For a completed review, follow staged-review.md and use `scripts/review_steps.py` to save the source/scope, reading, checks, reconcile, decisions, and repairs before final drafting. The JSON templates in `assets/notes/` are blank structures to fill during the relevant step, not completed examples. The legacy source validator below remains useful on its own, but its success does not satisfy the staged-work requirement.
 
-The stage helper enforces declared block coverage, validates conventional source anchors, binds the journal to the index and reader profile, and requires a readiness receipt before `check-final`. It binds a prefix checkpoint by its packet and observation files, a masked checkpoint by its run directory and record sequence, a branch by its run directory and branch sequence, every proposed wording by its fidelity audit file, which must report `verdict: preserved` with no property `changed` and a hedge-by-hedge report, and a `sentence`-scope edit by its feature comparison file. Every final issue adds `candidate_id` and `decision_status`. Match the candidate anchor and saved decision fields (`category`, `diagnosis`, `severity`, `confidence`) and repair fields (`action`, `scientific_fidelity`, `proposed_wording`). Include `proposed_wording` as null when absent. A `needs_author` item must also retain the saved `author_question`; do not turn it into an asserted rewrite. Include all accepted/author-question candidates in the full structured review, while prioritizing the main prose report. Do not include rejected or merged candidates as additional defects.
+The stage helper enforces declared block coverage, validates conventional source anchors, binds the journal to the index and reader profile, and requires a readiness receipt before `check-final`. It binds a prefix checkpoint by its packet and observation files, a masked checkpoint by its run directory and record sequence, a branch by its run directory and branch sequence, every proposed wording by its fidelity audit file, which must report `verdict: preserved` with no property `changed` and a hedge-by-hedge report, and a `sentence`-scope edit by its feature comparison file. Every final issue adds `candidate_id` and `decision_status`. Match the candidate anchor and saved decision fields (`category`, `diagnosis`, `close_criterion`, `severity`, `confidence`) and repair fields (`action`, `scientific_fidelity`, `proposed_wording`). Include `proposed_wording` as null when absent. A `needs_author` item must also retain the saved `author_question`; do not turn it into an asserted rewrite. Include all accepted/author-question candidates in the structured review; its `priority_list` names at most ten of them for the top of the report. Do not include rejected or merged candidates as additional defects.
+
+Every record is written in English; quotations, proposed wording, hedge terms, and file paths keep their own language. When the manuscript holds no text in another script (Cyrillic, Hebrew, Arabic, Devanagari, Thai, kana, Hangul, Chinese characters; Greek letters are allowed), `review_steps.py record` and `check-final` in a schema 7 journal, and `check-observation` and `check-review` below, refuse a record with such text elsewhere and name the fields.
 
 Raw note files and their receipts make changes and skipped stages detectable under the helper's checks. They do not authenticate the model's private process, establish that a note is thoughtful, or prove that the model did not draft a report elsewhere first. State this scope accurately.
 
@@ -44,7 +46,10 @@ Require:
 ```json
 {
   "snapshot_id": "copy from index",
-  "summary": "Overall finding and the scope actually reviewed.",
+  "summary": "Overall finding and what remains uncertain.",
+  "scope_note": "What was read (edition, sections or blocks, reader runs) and what was left out.",
+  "not_assessed": ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"],
+  "priority_list": ["C01"],
   "issues": [
     {
       "id": "W01",
@@ -53,22 +58,32 @@ Require:
       "category": "late_prerequisite",
       "anchor": {"block_id": "B0001", "quote": "exact source quotation"},
       "diagnosis": "Which meaning or relation is needed here, and where it is established.",
+      "close_criterion": "What the target reader can state or find once the passage is fixed.",
       "action": "The specific text to move, add, split, clarify, or ask the author to determine.",
       "proposed_wording": null,
       "scientific_fidelity": "Which assumptions and claim limits are preserved; name any unresolved author decision.",
-      "severity": "major",
+      "severity": "misleads",
       "confidence": "high",
+      "reader_sources": 2,
+      "challenge": "stands",
+      "initial_reader_question": "The candidate's question as first recorded.",
       "evidence": [{"block_id": "B0003", "quote": "exact source support"}]
     }
   ]
 }
 ```
 
-Use final categories `late_prerequisite`, `unavailable_prerequisite`, `ambiguous_reference`, `scattered_information`, `retrieval_burden`, `missing_relation`, `paragraph_function`, `terminology_scope_drift`, `unsupported_claim`, `unnecessary_term`, `word_choice`, `sentence_structure`, `other`. Keep the same severity/confidence values. An empty issues list with a substantive summary is valid. For wording findings, put the exact proposed replacement in `action` or an additional `proposed_wording` field, and explain scientific fidelity.
+Use final categories `late_prerequisite`, `unavailable_prerequisite`, `ambiguous_reference`, `scattered_information`, `retrieval_burden`, `missing_relation`, `paragraph_function`, `terminology_scope_drift`, `unsupported_claim`, `unnecessary_term`, `word_choice`, `sentence_structure`, `other`. Use `high`, `medium`, or `low` for confidence. An empty issues list with a substantive summary is valid. For wording findings, put the exact proposed replacement in `action` or an additional `proposed_wording` field, and explain scientific fidelity.
 
-`action` is a verb phrase with a position: it names at least one block id of the indexed source (B0003) and says what to do there (move, add, replace, split, ask). A vague comment is a defect in its own right (focused, locatable feedback is what reviewers act on), so `check-final` refuses a final issue whose action names no block id, and refuses a `needs_author` issue whose `author_question` does not end with a question mark. The same two checks run when the repairs stage is recorded, so a report drafted from recorded repairs already satisfies them.
+`action` is a verb phrase with a position: it names at least one block id of the indexed source (B0003) and says what to do there (move, add, replace, split, ask). A vague comment is a defect in its own right (focused, locatable feedback is what reviewers act on), so `check-final` refuses a final issue whose action names no block id, and refuses a `needs_author` issue whose `author_question` does not end with a question mark. The same two checks run when the repairs stage is recorded, so a review compiled from recorded repairs already satisfies them.
 
-Add other fields such as `initial_reader_question`, `reader_observation_id`, `affected_locations`, `execution_mode`, `coverage`, or `concept_ledger` when useful. Include `author_question` for a staged item that requires the author's decision. Keep quotations in additional fields accurate too; do not assume the validator checks arbitrary added data. Use `evidence` for all machine-validated supporting anchors.
+`close_criterion` is the decision's one-sentence test of the repair: what the target reader can state or find once the passage is fixed. In a schema 7 journal every accepted and needs_author decision records one, and `check-final` requires the final issue to repeat it exactly; the standalone `check-review` does not look at it.
+
+`severity` is one of three levels named by what happens to the target reader: `misleads` (likely to leave with a wrong understanding of a claim, term, condition, or result, or unable to tell which of two meanings a central statement has), `hinders` (can recover the meaning but must stop, search, or reread), `minor` (does not hinder understanding). Decisions of a schema 7 journal use these three; earlier journals use `critical`, `major`, `minor`, `optional`, and the standalone `check-review` accepts either set because it does not know the journal. `reader_sources` and `challenge` are the two recorded facts behind the level: the number of distinct reader checkpoints and branches whose reconciled observations name the candidate, and the verdict of its independent challenge (`stands`, `answered`, `not_material`, `duplicate`) or null when none was run. `check-final` recomputes both from the journal and refuses a different value.
+
+A review of a schema 7 journal carries three more top-level fields, which `check-final` checks. `scope_note` is a nonempty statement of what was read and what was left out. `not_assessed` is a list that includes the three entries shown, because the review is about clarity only; more may be added. `priority_list` holds candidate ids of accepted issues whose severity is `misleads` or `hinders`: each once, at most ten, all of them when there are ten or fewer, `misleads` entries before `hinders` entries, and no `hinders` entry while a `misleads` issue is left off. A `minor` issue or a `needs_author` issue cannot be listed. `notes_build.py review` fills in these fields and each issue's support, and `notes_build.py report` renders the report from the checked review (`assets/review-report.md` shows the layout).
+
+Add other fields such as `reader_observation_id`, `affected_locations`, `execution_mode`, `coverage`, or `concept_ledger` when useful. Include `author_question` for a staged item that requires the author's decision. Keep quotations in additional fields accurate too; do not assume the validator checks arbitrary added data. Use `evidence` for all machine-validated supporting anchors.
 
 For a staged review, the final `evidence` may use the candidate anchor or evidence already recorded for that candidate or its decision. Check and record new evidence before including it in a final finding. The stage helper rejects an unrecorded addition even when the quotation is real.
 

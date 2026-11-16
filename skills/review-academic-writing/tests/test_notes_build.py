@@ -124,7 +124,7 @@ class NotesBuildTests(unittest.TestCase):
             return self.decisions_fragment()
         if stage == "repairs":
             return self.repairs_fragment()
-        return {"summary": "Three findings.", "coverage": "all four paragraphs read"}
+        return {"summary": "Three findings.", "scope_note": "All four paragraphs were read; no reader was dispatched.", "coverage": "all four paragraphs read"}
 
     def reading_fragment(self, blocks=INCLUDED):
         paragraphs = {b: {"paraphrase": f"paraphrase of {b}", "role": "r", "required_context": [], "new_information": [], "open_questions": []} for b in blocks}
@@ -145,10 +145,13 @@ class NotesBuildTests(unittest.TestCase):
         common = {"verification": "v", "countercheck": "c"}
         return {"summary": "Decided.", "no_challenge_reason": "this test journal runs no challenger", "decisions": {
             "C01": {**common, "status": "accepted", "evidence": [DEFINITION, SETTING], "category": "late_prerequisite",
-                    "diagnosis": "RVG is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
-            "C02": {**common, "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The visit count has no stated source.", "severity": "minor", "confidence": "medium"},
+                    "diagnosis": "RVG is used in B0003 before B0004 defines it.", "close_criterion": "The reader can say what the RVG is on reaching the merging rule in B0003.",
+                    "severity": "misleads", "confidence": "high"},
+            "C02": {**common, "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The visit count has no stated source.",
+                    "close_criterion": "The reader can say how the 1284 visits were counted.", "severity": "minor", "confidence": "medium"},
             "C03": {**common, "status": "rejected"},
-            "C04": {**common, "status": "accepted", "category": "unsupported_claim", "diagnosis": "The share of repeated visitors has no comparison.", "severity": "minor", "confidence": "medium"}}}
+            "C04": {**common, "status": "accepted", "category": "unsupported_claim", "diagnosis": "The share of repeated visitors has no comparison.",
+                    "close_criterion": "The reader can name the share that 63 percent is compared with.", "severity": "hinders", "confidence": "medium"}}}
 
     def repairs_fragment(self):
         return {"summary": "Repaired.", "repairs": {
@@ -211,10 +214,26 @@ class NotesBuildTests(unittest.TestCase):
 
         result, review = self.build("review", [self.write("drafts/review.json", self.fragment("review"))])
         self.assertEqual(result["counts"], {"issues": 3, "accepted": 2, "needs_author": 1, "concept_ledger": 1})
-        self.assertEqual(result["next"], "run review_steps.py ready, then check-final with this file")
+        self.assertEqual(result["next"], "run review_steps.py ready, check-final with this file, then notes_build.py report")
         self.assertEqual(rs.ready_run(self.journal, self.index)["ready_to_draft"], True)
         final = rs.check_final(self.journal, self.index, review)
         self.assertEqual((final["command"], final["issue_count"]), ("check-final", 3))
+        review_path = self.write("review.json", review)
+        code, stdout, stderr = self.run_cli(["report", "--journal", str(self.journal), "--index", str(self.index_path), "--review", str(review_path), "--out", str(self.root / "report.md")])
+        self.assertEqual((code, stderr), (0, ""))
+        report = (self.root / "report.md").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(report[report.index("## Priority list"):report.index("## Findings")], [
+            "## Priority list",
+            '1. [misleads] B0003 "Visits shorter than the RVG" — Is RVG defined before this use? (W01)',
+            '2. [hinders] B0005 "63 percent" — Compared with what rate? (W03)',
+            "",
+            "## Questions for the author",
+            "- W02, B0005: How were the 1284 visits counted?",
+            "",
+        ])
+        self.assertIn("- Proposed wording: Visits shorter than the five-second gap between visits were merged into the preceding visit.", report)
+        self.assertEqual(report[-3:], ["## Minor items", "1 minor item does not hinder understanding; it is listed in report-minor.md.", ""])
+        self.assertIn("- Question for the author: How were the 1284 visits counted?", (self.root / "report-minor.md").read_text(encoding="utf-8").split("\n"))
 
     def test_fragments_from_python_modules(self):
         self.write("py/01-paragraphs.py", "\n".join([
@@ -340,6 +359,9 @@ class NotesBuildTests(unittest.TestCase):
         decisions = self.decisions_fragment()
         decisions["decisions"]["C02"]["diagnosis"] = ""
         self.assertRefused(r"Decision C02 \(needs_author\) lacks diagnosis\.", "decisions", [self.write("drafts/d3.json", decisions)])
+        decisions = self.decisions_fragment()
+        del decisions["decisions"]["C04"]["close_criterion"]
+        self.assertRefused(r"Decision C04 \(accepted\) lacks close_criterion\.", "decisions", [self.write("drafts/d4.json", decisions)])
 
     def test_repairs(self):
         self.through("decisions")
@@ -439,6 +461,7 @@ class NotesBuildTests(unittest.TestCase):
         self.assertEqual((point["anchor"], point["mode"], point["figure_policy"], point["limitation"]), (CRITICAL, "fresh-prefix", "text-only", "the reader saw text only"))
         self.assertIn("1 issue(s), 1 cannot_place entry; understanding: Visits are merged by a gap", point["result"])
         self.assertEqual(reconcile["observations"][0]["id"], "O01")
+        self.assertEqual((reconcile["observations"][0]["resolved_by"], reconcile["observations"][0]["background"]), (None, None))
         self.assertNotIn("no_checkpoints_reason", reconcile)
         # build already ran the record validator (rs.validate_notes reads the packet and observation), so the output records
         self.assertEqual(self.record("reconcile", result["output"])["next_stage"], "decisions")
@@ -456,6 +479,12 @@ class NotesBuildTests(unittest.TestCase):
         clash = fragment()
         clash["candidates"][0]["id"] = "C02"
         self.assertRefused(r"Reconcile candidates reuse checks ids: C02; give new ids \(the checks stage used up to C03\)", "reconcile", [self.write("drafts/rc6.json", clash)])
+        unproved = fragment()
+        unproved["observations"][0]["classification"] = "resolved_later"
+        self.assertRefused("Observation O01 is resolved_later, so resolved_by must quote the later manuscript words", "reconcile", [self.write("drafts/rc8.json", unproved)])
+        unproved["observations"][0]["resolved_by"] = DEFINITION
+        _, proved = self.build("reconcile", [self.write("drafts/rc9.json", unproved)])
+        self.assertEqual((proved["observations"][0]["resolved_by"], proved["observations"][0]["background"]), (DEFINITION, None))
         self.assertRefused("reconcile with no checkpoints needs no_checkpoints_reason", "reconcile",
                            [self.write("drafts/rc7.json", {"summary": "s", "candidates": []})])
         (events / "P01.observation.json").unlink()
@@ -503,17 +532,23 @@ class NotesBuildTests(unittest.TestCase):
 
     def test_review_stage(self):
         self.through("repairs")
-        fragment = {"summary": "Three findings.", "coverage": "all four paragraphs read", "issues": [{"id": "ignored"}], "snapshot_id": "ignored"}
+        fragment = {**self.fragment("review"), "issues": [{"id": "ignored"}], "snapshot_id": "ignored"}
         result, review = self.build("review", [self.write("drafts/review.json", fragment)])
         self.assertEqual(result["counts"], {"issues": 3, "accepted": 2, "needs_author": 1, "concept_ledger": 1})
         self.assertEqual((review["snapshot_id"], review["summary"], review["coverage"]), (self.sid, "Three findings.", "all four paragraphs read"))
-        self.assertEqual(set(review), {"snapshot_id", "summary", "issues", "coverage", "concept_ledger"})
+        self.assertEqual(set(review), {"snapshot_id", "summary", "scope_note", "not_assessed", "priority_list", "issues", "coverage", "concept_ledger"})
+        self.assertEqual((review["scope_note"], review["not_assessed"], review["priority_list"]),
+                         ("All four paragraphs were read; no reader was dispatched.", ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"], ["C01", "C04"]))
         issues = review["issues"]
         self.assertEqual([(i["id"], i["candidate_id"], i["decision_status"]) for i in issues], [("W01", "C01", "accepted"), ("W02", "C02", "needs_author"), ("W03", "C04", "accepted")])
+        self.assertEqual([(i["reader_sources"], i["challenge"], i["initial_reader_question"]) for i in issues],
+                         [(0, None, "Is RVG defined before this use?"), (0, None, "How were the visits counted?"), (0, None, "Compared with what rate?")])
         self.assertEqual(issues[0]["evidence"], [DEFINITION, SETTING])
-        self.assertEqual((issues[0]["anchor"], issues[0]["category"], issues[0]["severity"], issues[0]["confidence"]), (CRITICAL, "late_prerequisite", "major", "high"))
+        self.assertEqual((issues[0]["anchor"], issues[0]["category"], issues[0]["severity"], issues[0]["confidence"]), (CRITICAL, "late_prerequisite", "misleads", "high"))
         self.assertEqual((issues[0]["proposed_wording"], issues[0]["action"], issues[0]["scientific_fidelity"]), (WORDING, "Replace the RVG in B0003 with the gap it names.", "threshold preserved"))
         self.assertNotIn("author_question", issues[0])
+        self.assertEqual([i["close_criterion"] for i in issues], ["The reader can say what the RVG is on reaching the merging rule in B0003.",
+                                                                  "The reader can say how the 1284 visits were counted.", "The reader can name the share that 63 percent is compared with."])
         self.assertEqual(issues[1]["author_question"], "How were the 1284 visits counted?")
         self.assertNotIn("evidence", issues[1])
         self.assertNotIn("author_question", issues[2])

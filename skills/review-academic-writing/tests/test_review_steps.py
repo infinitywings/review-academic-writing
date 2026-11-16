@@ -96,15 +96,17 @@ class ReviewStepsTests(unittest.TestCase):
                     "candidates": [{"id": "C05", "anchor": A("B0005", "91 percent"), "question": "Is 91 percent compared with anything?", "evidence": []}]}
         if stage == "decisions":
             common = {"verification": "v", "countercheck": "c", "evidence": []}
+            # Every severity here is minor, the one value the schema 7 vocabulary shares with the earlier one, so these notes record in a journal of any schema.
             return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [
                 {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite",
-                 "diagnosis": "MSW is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
+                 "diagnosis": "MSW is used in B0003 before B0004 defines it.", "close_criterion": "The reader can say what the MSW measures on reaching the threshold in B0003.",
+                 "severity": "minor", "confidence": "high"},
                 {**common, "candidate_id": "C02", "status": "needs_author", "category": "unsupported_claim",
-                 "diagnosis": "The pair count has no stated source.", "severity": "minor", "confidence": "medium"},
+                 "diagnosis": "The pair count has no stated source.", "close_criterion": "The reader can say how the 412 pairs were selected.", "severity": "minor", "confidence": "medium"},
                 {**common, "candidate_id": "C03", "status": "rejected"},
                 {**common, "candidate_id": "C04", "status": "merged", "merged_into": "C01"},
                 {**common, "candidate_id": "C05", "status": "accepted", "category": "unsupported_claim",
-                 "diagnosis": "The agreement rate has no comparison.", "severity": "minor", "confidence": "medium"}]}
+                 "diagnosis": "The agreement rate has no comparison.", "close_criterion": "The reader can name the rate that 91 percent is compared with.", "severity": "minor", "confidence": "medium"}]}
         return {**base, "repairs": [
             {"candidate_id": "C01", "kind": "move", "action": "Move the definition ahead of B0003.", "proposed_wording": WORDING,
              "scientific_fidelity": "threshold preserved", "new_terms_check": "drops MSW", "affected_block_ids": ["B0003", "B0004"], "author_question": None,
@@ -158,10 +160,12 @@ class ReviewStepsTests(unittest.TestCase):
         for n, key in enumerate(("C01", "C02", "C05"), 1):
             d, r = decisions[key], repairs[key]
             issues.append({"id": f"W0{n}", "candidate_id": key, "decision_status": d["status"], "anchor": anchors[key],
-                           **{f: d[f] for f in ("category", "diagnosis", "severity", "confidence")},
-                           **{f: r[f] for f in ("action", "scientific_fidelity", "proposed_wording", "author_question")}})
+                           **{f: d[f] for f in ("category", "diagnosis", "close_criterion", "severity", "confidence")},
+                           **{f: r[f] for f in ("action", "scientific_fidelity", "proposed_wording", "author_question")},
+                           "reader_sources": 0, "challenge": None})
         issues[0]["evidence"] = [DEFINITION]
-        return {"snapshot_id": self.sid, "summary": "Three findings.", "issues": issues}
+        return {"snapshot_id": self.sid, "summary": "Three findings.", "scope_note": "All four paragraphs of the excerpt were read; no reader was run.",
+                "not_assessed": ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"], "priority_list": [], "issues": issues}
 
     def assertRefused(self, message, call, *args):
         before = self.names()
@@ -238,6 +242,25 @@ class ReviewStepsTests(unittest.TestCase):
         for value, message in cases:
             with self.subTest(message=message):
                 self.assertRefused(message, self.record, "decisions", value)
+
+    def test_decision_severity_names_what_happens_to_the_reader_in_schema_7(self):
+        self.record_through("reconcile")
+        self.assertRefused("decision\\.severity must be one of: hinders, minor, misleads\\.", self.record, "decisions", self.decisions_with({"C01": {"severity": "major"}}))
+        self.assertEqual(self.record("decisions", self.decisions_with({"C01": {"severity": "misleads"}, "C05": {"severity": "hinders"}}))["next_stage"], "repairs")
+        older = self.fresh_journal("severity-schema6", through="reconcile", schema=6)
+        with self.assertRaisesRegex(rp.ReviewDataError, "decision\\.severity must be one of: critical, major, minor, optional\\."):
+            self.record("decisions", self.decisions_with({"C01": {"severity": "misleads"}}), older)
+        self.assertEqual(self.record("decisions", self.decisions_with({"C01": {"severity": "major"}}), older)["next_stage"], "repairs")
+        issue = self.final_review()["issues"][0]
+        for severity in ("misleads", "major"):
+            review = {"snapshot_id": self.sid, "summary": "One finding.", "issues": [{**issue, "severity": severity}]}
+            self.assertEqual(rp.check_review(self.index, review)["issue_count"], 1, "the standalone validator does not know the journal, so a final review may use either vocabulary")
+        # A reader's own impression keeps the earlier four values; it never reaches the report.
+        packet = rp.build_packet(self.index, PROFILE, through_block="B0003")
+        observation = {**{k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}, "understanding": "The MSW is not defined yet.",
+                       "issues": [{"id": "R1", "category": "other", "anchor": CRITICAL, "reader_question": "What is the MSW?", "consequence": "The threshold cannot be read.", "severity": "misleads", "confidence": "low"}]}
+        with self.assertRaisesRegex(rp.ReviewDataError, "issues\\[0\\]\\.severity must be one of: critical, major, minor, optional\\."):
+            rp.check_observation(packet, observation)
 
     def test_repairs(self):
         self.record_through("decisions")
@@ -668,7 +691,8 @@ class ReviewStepsTests(unittest.TestCase):
         reconcile["branches"] = [{"id": "R1", "run_path": str(run), "branch_sequence": 1, "result": "undetermined at event 2", "limitation": "question chosen with full text"}]
         observation = {"id": "O1", "source_id": "R1", "reader_question": "What is the MSW?", "classification": "absent_at_critical_use",
                        "editor_check": "B0004 defines it after B0003.", "evidence": [DEFINITION], "candidate_id": "C01"}
-        reconcile["observations"] = [observation, {**observation, "id": "O2", "classification": "adequate", "evidence": [], "candidate_id": "C05"}]
+        # A branch has no anchor in the record, so an adequate observation of it may quote words from anywhere in the source.
+        reconcile["observations"] = [observation, {**observation, "id": "O2", "classification": "adequate", "evidence": [], "candidate_id": "C05", "resolved_by": DEFINITION}]
         return reconcile
 
     def test_branch_attachment_and_observations(self):
@@ -678,6 +702,8 @@ class ReviewStepsTests(unittest.TestCase):
                               (lambda r: r["observations"][0].update(source_id="K9"), "observation.source_id must name a checkpoint or branch recorded in this stage"),
                               (lambda r: r["observations"][1].update(classification="confusing"), "observation.classification must be one of: absent_at_critical_use, adequate, asset_lookup, inferred_connection, interpretation_changed, lost_in_notes, needed_again, resolved_later\\."),
                               (lambda r: r["observations"][1].update(candidate_id="C99"), "observation.candidate_id must name a candidate from checks or this stage"),
+                              (lambda r: r["observations"][1].update(resolved_by=A("B0004", "We define the MSW")), "observation\\.resolved_by\\.quote is not an exact substring of its supplied block"),
+                              (lambda r: r["observations"][1].update(resolved_by=None), "Observation O2 is adequate, so it needs exactly one proof: .* Neither was given\\."),
                               (lambda r: r["candidates"][0].update(id="C01"), "Reconcile candidates must use ids not already used in checks"),
                               (lambda r: r.update(checkpoints=self.masked_reconcile(run, id="R1")["checkpoints"]), "Checkpoint and branch ids must not collide")):
             reconcile = self.branch_reconcile(run)
@@ -991,7 +1017,7 @@ class ReviewStepsTests(unittest.TestCase):
             self.assertTrue(rs.names_a_block(text, blocks), text)
         for text in ("B00031", "AB0003", "b0003", "B003", "在B00031处加一句说明", "1B0003"):
             self.assertFalse(rs.names_a_block(text, blocks), text)
-        journal = self.fresh_journal("cjk-action")
+        journal = self.fresh_journal("cjk-action", schema=6)  # schema 7 notes are English; the block-id rule itself reads any script
         self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"action": "在B0003处加一句说明"}}), journal)["next_stage"], "ready")
         self.assertEqual(json.loads((journal / "05-repairs.notes.json").read_text(encoding="utf-8"))["repairs"][0]["action"], "在B0003处加一句说明")
         self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"action": "Move B0004's first sentence ahead of B0003."}}))["next_stage"], "ready")
@@ -1182,6 +1208,153 @@ class ReviewStepsTests(unittest.TestCase):
         original = json.loads(path.read_text())
         path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": version})))
 
+    # ------------------------------------------------------------ proof for a dismissed reader question (schema 7)
+
+    def observed(self, classification, **proof):
+        """Reconcile notes with the prefix checkpoint K1 at CRITICAL (in B0003) and one observation O1 of it."""
+        reconcile, _packet_path, _obs_path = self.prefix_reconcile()
+        reconcile["observations"] = [{"id": "O1", "source_id": "K1", "reader_question": "What is the MSW?", "classification": classification,
+                                      "editor_check": "read B0002 to B0004 again", "evidence": [], "candidate_id": None, **proof}]
+        return reconcile
+
+    def test_resolved_later_and_adequate_quote_the_words_that_answer_the_question(self):
+        self.record_through("checks")
+        earlier, later_in_block = A("B0002", "two independent records agreed"), A("B0003", "so we restricted the analysis")
+        no_later_words = "Observation O1 is resolved_later, so resolved_by must quote the later manuscript words that answer the reader's question, as \\{block_id, quote\\}\\."
+        passed = ("Observation O1: resolved_by quotes words that begin before the end of checkpoint K1's anchor\\. Words the reader had already passed make the observation "
+                  "adequate or needed_again, not resolved_later; quote the later words that answer the question, or change the classification\\.")
+        refused = (
+            ("resolved_later", {}, no_later_words),
+            ("resolved_later", {"resolved_by": None, "background": None}, no_later_words),
+            ("resolved_later", {"resolved_by": A("B0004", "We define the MSW")}, "observation\\.resolved_by\\.quote is not an exact substring of its supplied block\\."),
+            ("resolved_later", {"resolved_by": earlier}, passed),
+            ("resolved_later", {"resolved_by": A("B0003", "exceeded two seconds, so we restricted")}, passed),
+            ("resolved_later", {"resolved_by": DEFINITION, "background": PROFILE["audience"]}, "Observation O1: background belongs only to an adequate observation; resolved_later points at manuscript words in resolved_by\\."),
+            ("adequate", {}, "Observation O1 is adequate, so it needs exactly one proof: resolved_by quoting manuscript words the reader had at that point, "
+                             "or background quoting the reader profile entry that covers the question\\. Neither was given\\."),
+            ("adequate", {"resolved_by": earlier, "background": PROFILE["audience"]}, "Both were given; keep the one that answers the question\\."),
+            ("adequate", {"resolved_by": DEFINITION}, "Observation O1: resolved_by quotes words that end after checkpoint K1's anchor, which the reader had not reached\\. "
+                                                      "Words that answer the question only later make the observation resolved_later, not adequate"),
+            ("adequate", {"background": "A reader who already knows the MSW"}, "Observation O1: background is not an exact quotation from the journal's reader profile; "
+                                                                               "copy the profile entry that covers the question character for character\\."),
+            ("adequate", {"background": " "}, "observation\\.background must be a nonempty string\\."),
+            ("absent_at_critical_use", {"resolved_by": DEFINITION}, "Observation O1 is absent_at_critical_use, so resolved_by and background must be null: they are the proof of resolved_later and adequate only\\."),
+            ("needed_again", {"background": PROFILE["audience"]}, "Observation O1 is needed_again, so resolved_by and background must be null"),
+        )
+        for classification, proof, message in refused:
+            with self.subTest(classification=classification, proof=proof):
+                self.assertRefused(message, self.record, "reconcile", self.observed(classification, **proof))
+        recorded = (
+            ("resolved_later", {"resolved_by": DEFINITION}),
+            ("resolved_later", {"resolved_by": later_in_block}),
+            ("adequate", {"resolved_by": earlier}),
+            ("adequate", {"resolved_by": CRITICAL}),
+            ("adequate", {"background": "trained researcher"}),
+            ("absent_at_critical_use", {"resolved_by": None, "background": None}),
+        )
+        for n, (classification, proof) in enumerate(recorded):
+            with self.subTest(classification=classification, proof=proof):
+                journal = self.fresh_journal(f"proof-{n}", through="checks")
+                self.assertEqual(self.record("reconcile", self.observed(classification, **proof), journal)["next_stage"], "decisions")
+        older = self.fresh_journal("proof-schema6", through="checks", schema=6)
+        self.assertEqual(self.record("reconcile", self.observed("resolved_later"), older)["next_stage"], "decisions", "journals before schema 7 need no proof")
+
+    # ------------------------------------------------------------ close criterion (schema 7)
+
+    def test_every_kept_decision_states_a_close_criterion_that_the_final_issue_repeats(self):
+        self.record_through("reconcile")
+        absent = self.notes("decisions")
+        del absent["decisions"][0]["close_criterion"]
+        cases = (
+            (absent, "Decision C01 \\(accepted\\) needs close_criterion: one sentence saying what the target reader can state or find once the passage is fixed\\."),
+            (self.decisions_with({"C01": {"close_criterion": None}}), "Decision C01 \\(accepted\\) needs close_criterion"),
+            (self.decisions_with({"C02": {"close_criterion": " "}}), "Decision C02 \\(needs_author\\) needs close_criterion"),
+            (self.decisions_with({"C01": {"close_criterion": "MSW is used in B0003 before B0004 defines it. "}}),
+             "Decision C01: close_criterion repeats the diagnosis\\. Say what the target reader can state or find once the passage is fixed, not what is wrong now\\."),
+            (self.decisions_with({"C03": {"close_criterion": "The reader can name the observer."}}),
+             "Decision C03 is rejected, so it carries no close_criterion: nothing of it remains to be closed\\. Remove the field or set it to null\\."),
+            (self.decisions_with({"C04": {"close_criterion": "The reader can say what the MSW measures."}}), "Decision C04 is merged, so it carries no close_criterion"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "decisions", value)
+        # A rejected or merged decision may leave the field null or as the blank string of the template.
+        self.assertEqual(self.record("decisions", self.decisions_with({"C03": {"close_criterion": None}, "C04": {"close_criterion": ""}}))["next_stage"], "repairs")
+        self.record("repairs")
+        rs.ready_run(self.journal, self.index)
+        changed = self.final_review()
+        changed["issues"][0]["close_criterion"] = "The reader can define the MSW."
+        dropped = self.final_review()
+        del dropped["issues"][1]["close_criterion"]
+        self.assertRefused("Final issue C01\\.close_criterion differs from the saved decision; revise notes in a new run\\.", rs.check_final, self.journal, self.index, changed)
+        self.assertRefused("Final issue C02\\.close_criterion differs from the saved decision", rs.check_final, self.journal, self.index, dropped)
+        self.assertEqual(rs.check_final(self.journal, self.index, self.final_review())["issue_count"], 3)
+
+    def test_close_criterion_is_not_required_before_schema_7(self):
+        older = self.fresh_journal("criterion-schema6", through="reconcile", schema=6)
+        bare = self.notes("decisions")
+        for row in bare["decisions"]:
+            row.pop("close_criterion", None)
+        bare["decisions"][2]["close_criterion"] = "The reader can name the observer."
+        self.assertEqual(self.record("decisions", bare, older)["next_stage"], "repairs")
+        self.record("repairs", journal=older)
+        rs.ready_run(older, self.index)
+        review = self.final_review()
+        for issue in review["issues"]:
+            del issue["close_criterion"]
+        self.assertEqual(rs.check_final(older, self.index, review)["issue_count"], 3)
+
+    # ------------------------------------------------------------ records in English (schema 7)
+
+    def test_schema_7_notes_and_the_final_review_are_written_in_english(self):
+        self.record_through("reconcile")
+        decisions = self.notes("decisions")
+        decisions["decisions"][2]["verification"] = "定义出现在首次使用之后。"
+        self.assertRefused("^decisions: records are written in English; copy quotations and proposed wording exactly as they are in the manuscript\\. "
+                           "Text in another script at: decisions\\[2\\]\\.verification \\('定义出现在首次使用之后。'\\)\\.$", self.record, "decisions", decisions)
+        older = self.fresh_journal("english-schema6", through="reconcile", schema=6)
+        self.assertEqual(self.record("decisions", decisions, older)["next_stage"], "repairs", "journals before schema 7 are not checked")
+        self.record("decisions")
+        self.record("repairs")
+        rs.ready_run(self.journal, self.index)
+        review = self.final_review()
+        review["summary"] = "三处问题。"
+        self.assertRefused("^review: records are written in English; .* Text in another script at: summary \\('三处问题。'\\)\\.$", rs.check_final, self.journal, self.index, review)
+        self.assertEqual(rs.check_final(self.journal, self.index, self.final_review())["issue_count"], 3)
+
+    def test_copied_wording_and_paths_are_exempt_from_the_english_check(self):
+        self.record_through("decisions")
+        wording = "Agreement fell sharply when consecutive measurements (连续测量) were more than two seconds apart."
+        folder = self.root / "审计"
+        folder.mkdir()
+        audit = folder / "audit-C01.json"
+        audit.write_text(json.dumps(self.audit(proposed_wording=wording)), encoding="utf-8")
+        copied = {"proposed_wording": wording, "audit_path": str(audit)}
+        self.assertRefused("Text in another script at: repairs\\[0\\]\\.new_terms_check \\('去掉缩写'\\)\\.$", self.record, "repairs",
+                           self.repairs_with({"C01": {**copied, "new_terms_check": "去掉缩写"}}))
+        self.assertEqual(self.record("repairs", self.repairs_with({"C01": copied}))["next_stage"], "ready")
+        saved = json.loads((self.journal / "05-repairs.notes.json").read_text(encoding="utf-8"))["repairs"][0]
+        self.assertEqual((saved["proposed_wording"], saved["audit_path"]), (wording, str(audit)))
+
+    def test_a_manuscript_with_text_in_another_script_is_not_checked(self):
+        index = rp.build_index(TEXT.replace("a separate observer.", "a separate observer (观察者)."))
+        journal = self.root / "mixed-source"
+        rs.start_run(index, PROFILE, self.scope(), journal)
+        reading = {**self.notes("reading"), "snapshot_id": index["snapshot_id"]}
+        reading["paragraphs"][0]["paraphrase"] = "两份记录由不同的观察者完成。"
+        self.assertEqual(rs.record_stage(journal, index, "reading", json.dumps(reading).encode("utf-8"))["next_stage"], "checks")
+
+    def test_a_stored_observation_in_another_language_still_replays(self):
+        self.reseal_schema(self.journal, 6)
+        self.record_through("checks")
+        reconcile, _packet_path, obs_path = self.prefix_reconcile()
+        observation = json.loads(obs_path.read_text(encoding="utf-8"))
+        observation["understanding"] = "MSW 还没有定义。"
+        obs_path.write_text(json.dumps(observation), encoding="utf-8")
+        self.assertEqual(self.record("reconcile", reconcile)["next_stage"], "decisions")
+        replayed = rs.load_run(self.journal, self.index)[1]["reconcile"]
+        self.assertEqual([p["observation_path"] for p in replayed["checkpoints"]], [str(obs_path)])
+
     def legacy_audit(self):
         audit = self.term_level(self.audit())
         del audit["audit_round"]
@@ -1276,7 +1449,8 @@ class HedgedJournal(unittest.TestCase):
         if stage == "reconcile":
             return {**base, "checkpoints": [], "no_checkpoints_reason": "none run", "branches": [], "observations": [], "candidates": []}
         return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [{"candidate_id": "C01", "status": "accepted", "verification": "v", "countercheck": "c", "evidence": [], "category": "unsupported_claim",
-                                       "diagnosis": "The hedged effect reads as established.", "severity": "minor", "confidence": "medium"}]}
+                                       "diagnosis": "The hedged effect reads as established.", "close_criterion": "The reader can say that the effect is a possibility, not a result.",
+                                       "severity": "minor", "confidence": "medium"}]}
 
     def audit(self, wording, hedges, verdict="preserved", audit_round=1, anchor=HEDGED_ANCHOR, **checks):
         base = {name: "same" for name in rs.AUDIT_CHECKS}

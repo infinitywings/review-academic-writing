@@ -161,17 +161,20 @@ class FakeLLM:
                 "observations": [{"id": "O01", "source_id": "K01", "reader_question": "What is the MSW?", "classification": "absent_at_critical_use",
                                   "editor_check": "B0004 defines it after B0003.", "evidence": [DEFINITION], "candidate_id": "C01"},
                                  {"id": "O02", "source_id": "R01", "reader_question": "What does MSW stand for?", "classification": "adequate",
-                                  "editor_check": "the threshold alone was usable", "evidence": [], "candidate_id": None}],
+                                  "editor_check": "the threshold alone was usable", "evidence": [], "candidate_id": None, "resolved_by": CRITICAL, "background": None}],
                 "candidates": [{"id": data["next_candidate_id"], "anchor": A("B0005", "91 percent"), "question": "Is 91 percent compared with anything?", "evidence": []}]}
 
     def step_decisions(self, data, batch, attempt):
         common = {"verification": "v", "countercheck": "c", "evidence": []}
         return {"summary": "five decisions", "decisions": [
-            {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite", "diagnosis": "MSW is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
+            {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite", "diagnosis": "MSW is used in B0003 before B0004 defines it.",
+             "close_criterion": "The reader can say what the MSW measures on reaching the threshold in B0003.", "severity": "misleads", "confidence": "high"},
             {**common, "candidate_id": "C02", "status": "rejected"},
             {**common, "candidate_id": "C03", "status": "merged", "merged_into": "C01"},
-            {**common, "candidate_id": "C04", "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The pair count has no stated source.", "severity": "minor", "confidence": "medium"},
-            {**common, "candidate_id": "C05", "status": "accepted", "category": "unsupported_claim", "diagnosis": "The agreement rate has no comparison.", "severity": "minor", "confidence": "medium"}]}
+            {**common, "candidate_id": "C04", "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The pair count has no stated source.",
+             "close_criterion": "The reader can say how the 412 pairs were selected.", "severity": "minor", "confidence": "medium"},
+            {**common, "candidate_id": "C05", "status": "accepted", "category": "unsupported_claim", "diagnosis": "The agreement rate has no comparison.",
+             "close_criterion": "The reader can name the rate that 91 percent is compared with.", "severity": "hinders", "confidence": "medium"}]}
 
     def step_repairs(self, data, batch, attempt):
         if "audit_feedback" in data:
@@ -189,10 +192,8 @@ class FakeLLM:
              "scientific_fidelity": "rate preserved", "new_terms_check": "none", "affected_block_ids": ["B0005"], "author_question": None}]}
 
     def step_review(self, data, batch, attempt):
-        return {"summary": "Three findings on a four-block excerpt; one reader checkpoint, one masked run.", "issue_order": ["C01", "C05", "C04"]}
-
-    def step_report(self, data, batch, attempt):
-        return {"report_markdown": "# Academic writing review\n\n## Scope and reader\n\n- English\n"}
+        return {"summary": "Three findings on a four-block excerpt; one reader checkpoint, one masked run.",
+                "scope_note": "All four paragraphs were read; one prefix reader, a two-window masked run, and one branch question were run.", "issue_order": ["C01", "C05", "C04"]}
 
     # ------------------------------------------------------------ readers and auditor
 
@@ -375,6 +376,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(reconcile["checkpoints"][0]["packet_path"], str(self.out / "readers" / "P01" / "P01.packet.json"))
         self.assertEqual(reconcile["branches"][0]["branch_sequence"], 1)
         self.assertEqual([c["id"] for c in reconcile["candidates"]], ["C05"])
+        self.assertEqual([(o["id"], o["classification"], o.get("resolved_by")) for o in reconcile["observations"]], [("O01", "absent_at_critical_use", None), ("O02", "adequate", CRITICAL)])
+        reconcile_input = json.loads((self.out / "editor" / "03-reconcile.prompt.txt").read_text(encoding="utf-8").rsplit("\n=== INPUT (one JSON object) ===\n", 1)[1])
+        self.assertEqual(reconcile_input["reader_profile"], rp.load_json(self.out / "reader-profile.json"), "the editor can quote the profile as background")
         receipt3 = json.loads((self.out / "journal" / "03-reconcile.receipt.json").read_text())
         self.assertEqual(len(receipt3["attachments"]), 2 + 4 + 4)
         # Audit gate: C01 kept its wording; C05 failed twice and became an author question.
@@ -412,20 +416,47 @@ class OrchestratorTests(unittest.TestCase):
         review = json.loads((self.out / "review.json").read_text(encoding="utf-8"))
         self.assertEqual([(i["id"], i["candidate_id"], i["decision_status"]) for i in review["issues"]], [("W01", "C01", "accepted"), ("W02", "C05", "accepted"), ("W03", "C04", "needs_author")])
         self.assertEqual(review["issues"][0]["proposed_wording"], WORDING)
+        self.assertEqual(review["issues"][0]["close_criterion"], "The reader can say what the MSW measures on reaching the threshold in B0003.")
         self.assertEqual(review["issues"][2]["author_question"], "How were the 412 pairs selected?")
         self.assertEqual(review["concept_ledger"][0]["term"], "MSW")
         self.assertEqual(rs.check_final(self.out / "journal", rp.load_json(self.out / "index.json"), review)["issue_count"], 3)
-        self.assertTrue((self.out / "report.md").read_text(encoding="utf-8").startswith("# Academic writing review"))
+        self.assertEqual((review["scope_note"], review["not_assessed"], review["priority_list"]),
+                         ("All four paragraphs were read; one prefix reader, a two-window masked run, and one branch question were run.",
+                          ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"], ["C01", "C05"]))
+        self.assertEqual([(i["candidate_id"], i["severity"], i["reader_sources"], i["challenge"]) for i in review["issues"]],
+                         [("C01", "misleads", 1, None), ("C05", "hinders", 0, None), ("C04", "minor", 0, None)])
+        # The report is rendered from the checked review, not written by the editor model.
+        report = (self.out / "report.md").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(report[:10], [
+            "# Writing review",
+            "",
+            "## What was reviewed",
+            "All four paragraphs were read; one prefix reader, a two-window masked run, and one branch question were run.",
+            "",
+            "Not assessed: whether the claims are true; whether the evidence is sufficient; whether the work is novel.",
+            "",
+            "Records: 4 of 5 blocks read; reader checkpoints: 1 bounded-request, 1 masked-sequential; candidates: 2 accepted, 1 author question, 1 merged, 1 rejected; "
+            "independent challenge: not run (server/orchestrator.py does not run the independent challenge yet); fidelity audits attached: 1.",
+            "",
+            "## Priority list",
+        ])
+        self.assertEqual(report[10:12], ['1. [misleads] B0003 "the MSW exceeded two seconds" — Is MSW defined first? (W01)', '2. [hinders] B0005 "91 percent" — Is 91 percent compared with anything? (W02)'])
+        self.assertEqual([line for line in report if line.startswith("### ")], ["### W01 · misleads · confidence high · B0003", "### W02 · hinders · confidence medium · B0005"])
+        self.assertEqual(report[-3:], ["## Minor items", "1 minor item does not hinder understanding; it is listed in report-minor.md.", ""])
+        self.assertIn("### W03 · minor · confidence medium · B0005", (self.out / "report-minor.md").read_text(encoding="utf-8").split("\n"))
+        self.assertFalse((self.out / "editor" / "07-report.prompt.txt").exists())
+        self.assertEqual(json.loads((self.out / "summary.json").read_text(encoding="utf-8"))["stages"]["report"],
+                         {"status": "written", "path": str(self.out / "report.md"), "appendix": str(self.out / "report-minor.md"), "priority_list": 2, "findings": 2, "minor": 1})
         # Summary with literal counts.
         summary = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
         self.assertTrue(summary["ok"])
-        self.assertEqual(summary["totals"]["editor"]["calls"], 13)
+        self.assertEqual(summary["totals"]["editor"]["calls"], 12)
         self.assertEqual(summary["totals"]["readers"]["calls"], 7)
         self.assertEqual(summary["totals"]["readers"]["by_kind"], {"prefix": 1, "masked": 2, "branch": 1, "audit": 3})
-        self.assertEqual(summary["totals"]["calls"], 20)
+        self.assertEqual(summary["totals"]["calls"], 19)
         self.assertEqual(summary["totals"]["retries"], 2)
-        self.assertEqual(summary["totals"]["editor"]["input_tokens"], 1300)
-        self.assertEqual([c["label"] for c in summary["editor_calls"]], ["00-scope", "01-reading-batch01", "01-reading-batch01-b", "01-reading-batch01-c", "01-reading-batch02", "02-checks-batch01", "02-checks-batch02", "03-reconcile", "04-decisions", "05-repairs", "05-repairs-audit", "06-review", "07-report"])
+        self.assertEqual(summary["totals"]["editor"]["input_tokens"], 1200)
+        self.assertEqual([c["label"] for c in summary["editor_calls"]], ["00-scope", "01-reading-batch01", "01-reading-batch01-b", "01-reading-batch01-c", "01-reading-batch02", "02-checks-batch01", "02-checks-batch02", "03-reconcile", "04-decisions", "05-repairs", "05-repairs-audit", "06-review"])
         self.assertEqual([c["status"] for c in summary["editor_calls"]][:4], ["ok", "rejected", "rejected", "ok"])
         self.assertEqual(summary["stages"]["decisions"], {"status": "recorded", "accepted": 2, "needs_author": 1, "rejected": 1, "merged": 1})
         self.assertEqual(summary["stages"]["repairs"], {"status": "recorded", "repairs": 3, "with_wording": 1, "author_questions": 2, "audits": 3, "converted_by_audit": ["C05"], "withheld_heavy_edits": []})
@@ -433,7 +464,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertNotIn("edit_withheld", [e["event"] for e in self.log_events()])
         self.assertEqual(summary["stages"]["review"]["issues"], 3)
         self.assertEqual([(a["label"], a["verdict"], a["accepted"]) for a in summary["audits"]], [("C01", "preserved", True), ("C05", "changed", False), ("C05-2", "changed", False)])
-        self.assertEqual(len(self.server.requests), 20)
+        self.assertEqual(len(self.server.requests), 19)
         # Prompts: the system prompt names the role; editor prompts embed the reference sections; no file holds the key.
         self.assertEqual(self.server.requests[0]["body"]["messages"][0]["content"], orch.llm.EDITOR_SYSTEM_PROMPT)
         first = (self.out / "editor" / "00-scope.prompt.txt").read_text(encoding="utf-8")
@@ -495,9 +526,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(summary["ok"])
         self.assertEqual(summary["stages"]["repairs"], {"status": "recorded", "repairs": 3, "with_wording": 1, "author_questions": 1, "audits": 3, "converted_by_audit": [], "withheld_heavy_edits": ["C05"]})
         self.assertEqual([(a["label"], a["verdict"], a["accepted"]) for a in summary["audits"]], [("C01", "preserved", True), ("C05", "preserved", True), ("C05-2", "preserved", True)])
-        self.assertEqual([c["label"] for c in summary["editor_calls"]], ["00-scope", "01-reading-batch01", "01-reading-batch01-b", "01-reading-batch01-c", "01-reading-batch02", "02-checks-batch01", "02-checks-batch02", "03-reconcile", "04-decisions", "05-repairs", "05-repairs-audit", "06-review", "07-report"])
+        self.assertEqual([c["label"] for c in summary["editor_calls"]], ["00-scope", "01-reading-batch01", "01-reading-batch01-b", "01-reading-batch01-c", "01-reading-batch02", "02-checks-batch01", "02-checks-batch02", "03-reconcile", "04-decisions", "05-repairs", "05-repairs-audit", "06-review"])
         self.assertEqual(summary["totals"]["readers"]["by_kind"], {"prefix": 1, "masked": 2, "branch": 1, "audit": 3})
-        self.assertEqual(summary["totals"]["calls"], 20)
+        self.assertEqual(summary["totals"]["calls"], 19)
 
     def test_a_wording_that_is_heavy_and_changed_gets_both_feedback_lists_and_a_light_retry_is_kept(self):
         self.use_server(HeavyAndChangedLLM())
@@ -540,7 +571,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(summary["stages"]["repairs"], {"status": "recorded", "repairs": 3, "with_wording": 2, "author_questions": 1, "audits": 3, "converted_by_audit": [], "withheld_heavy_edits": []})
         self.assertEqual([(a["label"], a["verdict"], a["accepted"]) for a in summary["audits"]], [("C01", "preserved", True), ("C05", "changed", False), ("C05-2", "preserved", True)])
         self.assertEqual(summary["totals"]["readers"]["by_kind"], {"prefix": 1, "masked": 2, "branch": 1, "audit": 3})
-        self.assertEqual(summary["totals"]["calls"], 20)
+        self.assertEqual(summary["totals"]["calls"], 19)
 
     def test_a_step_that_never_validates_stops_with_the_journal_intact(self):
         self.server.break_step = "decisions"
@@ -591,7 +622,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertNotIn("## 4. Definition versus evidence", paragraphs)
         with self.assertRaises(KeyError):
             orch.section_of(rubric, "## No such heading")
-        for step in orch.STEPS:
+        prompts = sorted(path.stem for path in (PACKAGE / "server" / "prompts").glob("*.txt"))
+        self.assertEqual(prompts, sorted(set(orch.STEPS) - {"report"}), "every step but the report has an editor prompt; the report is rendered by notes_build.py")
+        for step in prompts:
             text = orch.render(step, {"batch": 1, "batches": 1, "block_range": "x", "input": {}})
             self.assertNotIn("{{", text, step)
             self.assertTrue(text.startswith(f"Editor step: {step}"), step)

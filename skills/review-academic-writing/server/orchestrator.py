@@ -10,7 +10,8 @@ note they record is validated by them, never by this file. Order:
      over the first windows, one branch)
   -> reconcile -> decisions -> repairs (every proposed wording audited; a failed audit is
      re-prompted once, then converted to an author question) -> ready
-  -> review.json (check-review, check-final) -> report.md -> summary.json
+  -> review.json (check-review, check-final) -> report.md (rendered by notes_build.py
+     report from the checked review, without a model call) -> summary.json
 
 The reconcile, decisions, and repairs prompts can only run after 02-checks.receipt.json
 exists; the code asserts the file before dispatching any reader and before each of those
@@ -46,6 +47,7 @@ import dispatch_reader as dr  # noqa: E402
 import extract_pdf as ep  # noqa: E402
 import llm  # noqa: E402
 import masked_reader as mr  # noqa: E402
+import notes_build as nb  # noqa: E402
 import review_packets as rp  # noqa: E402
 import review_steps as rs  # noqa: E402
 
@@ -578,7 +580,7 @@ class Run:
                       "answer": json.loads((record / "response.json").read_text(encoding="utf-8"))}
         next_candidate = len(checks["candidates"]) + 1
         values = {"input": {"snapshot_id": self.index["snapshot_id"], "execution_mode": EXECUTION_MODE, "reader_endpoint": llm.load_config(self.reader_config).get("base_url"),
-                            "checks_notes": checks, "blocks": self.block_rows(self.included), "prefix_checkpoints": prefix_rows,
+                            "reader_profile": self.profile, "checks_notes": checks, "blocks": self.block_rows(self.included), "prefix_checkpoints": prefix_rows,
                             "failed_reader_calls": self.failed_readers, "masked_run": masked, "branch": branch, "next_candidate_id": f"C{next_candidate:02d}"}}
 
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
@@ -826,21 +828,25 @@ class Run:
         values = {"input": {"snapshot_id": self.index["snapshot_id"], "scope": rp.load_json(self.out / "scope.json"), "execution_mode": EXECUTION_MODE,
                             "readers": self.stages.get("readers"), "retained_candidates": retained, "rejected_or_merged": [d["candidate_id"] for d in notes["decisions"]["decisions"] if d["status"] not in rs.FINAL_STATUSES]}}
 
+        support = rs.candidate_support(notes, self.blocks, self.index["snapshot_id"])
+
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
             require(isinstance(parsed, dict) and isinstance(parsed.get("issue_order"), list), "The response must be an object with issue_order.")
             require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
+            require(isinstance(parsed.get("scope_note"), str) and parsed["scope_note"].strip(), "scope_note must be a nonempty string: what was read and what was left out.")
             require(sorted(parsed["issue_order"]) == sorted(repairs) and len(parsed["issue_order"]) == len(repairs), f"issue_order must list exactly {', '.join(repairs)} once each.")
             issues = []
             for n, key in enumerate(parsed["issue_order"], 1):
                 decision, repair, candidate = decisions[key], repairs[key], candidates[key]
                 issue = {"id": f"W{n:02d}", "candidate_id": key, "decision_status": decision["status"], "category": decision["category"], "anchor": candidate["anchor"],
-                         "diagnosis": decision["diagnosis"], "action": repair["action"], "proposed_wording": repair["proposed_wording"], "scientific_fidelity": repair["scientific_fidelity"],
+                         "diagnosis": decision["diagnosis"], "close_criterion": decision["close_criterion"], "action": repair["action"], "proposed_wording": repair["proposed_wording"], "scientific_fidelity": repair["scientific_fidelity"],
                          "severity": decision["severity"], "confidence": decision["confidence"], "evidence": dedupe_anchors(decision["evidence"] + candidate["evidence"]),
-                         "initial_reader_question": candidate["question"], "affected_locations": repair["affected_block_ids"]}
+                         "initial_reader_question": candidate["question"], **support[key], "affected_locations": repair["affected_block_ids"]}
                 if repair["author_question"] is not None:
                     issue["author_question"] = repair["author_question"]
                 issues.append(issue)
-            review = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "issues": issues, "concept_ledger": notes["checks"]["concepts"],
+            review = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "scope_note": parsed["scope_note"], "not_assessed": list(rs.NOT_ASSESSED),
+                      "priority_list": rs.default_priority(issues, self.blocks), "issues": issues, "concept_ledger": notes["checks"]["concepts"],
                       "execution_mode": EXECUTION_MODE, "coverage": {"included_block_ids": self.included, "prefix_checkpoints": len(self.prefix_results), "masked_run": bool(self.masked_summary and self.masked_summary["ok"])}}
             try:
                 rp.check_review(self.index, review)
@@ -854,25 +860,16 @@ class Run:
         self.stages["review"] = {"status": "checked", "issues": len(review["issues"])}
         self.log("review_checked", issues=len(review["issues"]))
         self.say(f"review: {len(review['issues'])} issues passed check-review and check-final")
-        return review
 
-    def step_report(self, review: dict[str, Any]) -> None:
-        _start, notes = self.start_and_notes()
-        values = {"input": {"review": review, "scope": rp.load_json(self.out / "scope.json"), "reader_profile": self.profile,
-                            "execution_mode": EXECUTION_MODE, "concepts": notes["checks"]["concepts"], "reader_observations": notes["reconcile"]["observations"],
-                            "checkpoints": [{k: v for k, v in c.items() if k not in ("packet_path", "observation_path", "run_path")} for c in notes["reconcile"]["checkpoints"]],
-                            "repairs": notes["repairs"]["repairs"], "audits": self.audit_rows, "rejected_candidates": [d for d in notes["decisions"]["decisions"] if d["status"] == "rejected"],
-                            "decision_counts": {status: sum(1 for d in notes["decisions"]["decisions"] if d["status"] == status) for status in ("accepted", "needs_author", "rejected", "merged")},
-                            "run_statistics": self.statistics()}}
-
-        def accept(parsed: Any, call: llm.Call) -> str:
-            require(isinstance(parsed, dict) and isinstance(parsed.get("report_markdown"), str) and parsed["report_markdown"].strip(), "report_markdown must be a nonempty string.")
-            return parsed["report_markdown"]
-
-        report = self.ask("report", "07-report", values, accept)
-        (self.out / "report.md").write_text(report.rstrip("\n") + "\n", encoding="utf-8")
-        self.stages["report"] = {"status": "written", "path": str(self.out / "report.md")}
-        self.say(f"report: {self.out / 'report.md'}")
+    def step_report(self) -> None:
+        """Render report.md from the checked review.json; no model writes the report."""
+        try:
+            result = nb.report(self.journal, self.out / "index.json", self.out / "review.json", self.out / "report.md", None)
+        except rp.ReviewDataError as exc:
+            raise StopRun("report", helper_message(exc), "The review passed the final check but the renderer refused it; inspect review.json.") from exc
+        self.stages["report"] = {"status": "written", "path": result["output"], "appendix": result["appendix"], **result["counts"]}
+        self.log("report_rendered", path=result["output"], appendix=result["appendix"])
+        self.say(f"report: {result['output']}" + (f" (minor items in {result['appendix']})" if result["appendix"] else ""))
 
     # ------------------------------------------------------------ summary
 
@@ -903,8 +900,8 @@ class Run:
             self.step_decisions()
             self.step_repairs()
             self.step_ready()
-            review = self.step_review()
-            self.step_report(review)
+            self.step_review()
+            self.step_report()
         except StopRun as exc:
             self.log("stopped", stage=exc.stage, message=str(exc))
             self.write_summary(False, f"Stopped at {exc.stage}: {exc}", {"stage": exc.stage, "message": str(exc), "fix": exc.fix})

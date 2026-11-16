@@ -23,10 +23,12 @@ Four subcommands:
 
 Every call writes <label>.prompt.txt, <label>.cli.json, <label>.response.raw,
 <label>.response.json (when parsable) and <label>.provenance.json under the events
-directory. A rejection that names the note budget, or a response that is not one JSON
-object, keeps the original files, writes <label>.invalid-reason.txt, and re-dispatches the
-same packet with one correction sentence (labels b and c); after two corrections the
-command stops with a clear message. The summary is printed and written as summary.json.
+directory. A rejection that names the note budget, a quotation that is not exact text, a
+response that is not one JSON object, or a response written in another language when the
+input held only Latin-script text, keeps the original files, writes
+<label>.invalid-reason.txt, and re-dispatches the same packet with one correction sentence
+(labels b and c); after two corrections the command stops with a clear message. The
+summary is printed and written as summary.json.
 
 This program records what was sent and what came back. It cannot prove that the model
 used nothing else; the isolation note in each provenance file says what the runtime
@@ -86,7 +88,7 @@ MAX_CORRECTIONS = 2
 ATTEMPT_SUFFIXES = ("", "b", "c")
 LOOKUP_STALL_LIMIT = 3
 # masked --until-complete: automatic restarts after a stop whose cause was correctable (format,
-# budget, anchor) but exhausted its two corrections; a helper rejection never restarts.
+# budget, anchor, language) but exhausted its two corrections; a helper rejection never restarts.
 MASKED_DEFAULT_RESTARTS = 5
 BUDGET_MESSAGE =re.compile(r"carry_memory has (\d+) (words|characters); limit is (\d+)")
 ANCHOR_MESSAGE = re.compile(r"(?i)quote is not (?:exact text|an exact substring)")
@@ -111,7 +113,8 @@ class Failure(Exception):
 
     kind is `budget` (the helper named the note budget; correctable), `anchor` (a quoted
     anchor is not exact text of its block; correctable), `format` (no single JSON object or
-    wrong shape; correctable), or `rejected` (any other helper rejection; not re-dispatched).
+    wrong shape; correctable), `language` (text in another script although the input held
+    none; correctable), or `rejected` (any other helper rejection; not re-dispatched).
     """
 
     def __init__(self, kind: str, message: str) -> None:
@@ -719,6 +722,14 @@ def anchor_note(errors: list[str]) -> str:
     )
 
 
+def language_note(errors: list[str]) -> str:
+    return (
+        "Language note from the controller: a previous attempt at this same input wrote text in a language other than English "
+        f"({'; '.join(errors)}). Write every explanation, note, and reason in English; copy quotations character for character from the text; "
+        "keep every other part of the response as before."
+    )
+
+
 def classify_helper_error(exc: BaseException) -> Failure:
     """budget and anchor failures are correctable with the same packet; anything else is rejected."""
     message = str(exc)
@@ -730,11 +741,18 @@ def classify_helper_error(exc: BaseException) -> Failure:
 
 
 def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generic: str, payload: bytes, packet_file: Path, accept: Callable[[dict[str, Any]], Any]) -> tuple[dict[str, Any] | None, Any, Failure | None]:
-    """Dispatch, validate, and correct up to MAX_CORRECTIONS times. Returns (call, accepted value, failure)."""
+    """Dispatch, validate, and correct up to MAX_CORRECTIONS times. Returns (call, accepted value, failure).
+
+    Every answer is written in English. An answer that holds text in another script is sent
+    back for correction, unless the input itself held such text (manuscript or reader profile),
+    in which case the answer may be quoting it and is not checked.
+    """
     budget_sizes: list[int] = []
     format_errors: list[str] = []
     anchor_errors: list[str] = []
+    language_errors: list[str] = []
     note: str | None = None
+    check_language = rp.OTHER_SCRIPT.search(payload.decode("utf-8", "replace")) is None
     for number, suffix in enumerate(ATTEMPT_SUFFIXES):
         label = base + suffix
         call = events.dispatch(runtime, role, label, generic, payload, packet_file, note, base if suffix else None)
@@ -742,6 +760,9 @@ def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generi
             failure = Failure("rejected" if call.get("rejected_by_runtime") else "format", call["parse_error"] or "no response")
         else:
             try:
+                foreign = rp.other_script_strings(call["parsed"]) if check_language else []
+                if foreign:
+                    raise Failure("language", rp.language_paths(foreign))
                 accepted = accept(call)
                 call["status"] = "ok"
                 return call, accepted, None
@@ -760,6 +781,9 @@ def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generi
         elif failure.kind == "anchor":
             anchor_errors.append(str(failure))
             note = anchor_note(anchor_errors)
+        elif failure.kind == "language":
+            language_errors.append(str(failure))
+            note = language_note(language_errors)
         else:
             format_errors.append(str(failure))
             note = format_note(format_errors)
@@ -1200,7 +1224,7 @@ def _parser() -> argparse.ArgumentParser:
     masked.add_argument("--case")
     masked.add_argument("--profile")
     masked.add_argument("--max-events", type=int, default=40, help="Maximum model calls in this invocation, corrections included (default 40).")
-    masked.add_argument("--until-complete", action="store_true", help="After a stop caused by a format, budget, or anchor failure that used up its corrections, resume the same run in this process (resume labels E06r1, ...) until it reports Run complete, --max-events, or --max-restarts. A helper rejection still stops.")
+    masked.add_argument("--until-complete", action="store_true", help="After a stop caused by a format, budget, anchor, or language failure that used up its corrections, resume the same run in this process (resume labels E06r1, ...) until it reports Run complete, --max-events, or --max-restarts. A helper rejection still stops.")
     masked.add_argument("--max-restarts", type=int, default=MASKED_DEFAULT_RESTARTS, help=f"Automatic restarts allowed with --until-complete (default {MASKED_DEFAULT_RESTARTS}).")
     masked.add_argument("--recall-every", type=int, default=0, help="Every N recorded windows, send the reader a recall packet: its carry_memory and the due questions, no manuscript text (default 0, off). Questions become due once their after_block has been seen; a final recall covers the rest when the run completes.")
     masked.add_argument("--recall-questions", help="JSON array of {id, after_block, question, options, answer} (options include one 'I don't know'), or a checks notes file whose checkpoint_plan entries carry recall_questions. Answers never enter a packet.")
