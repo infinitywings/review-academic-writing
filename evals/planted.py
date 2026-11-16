@@ -10,9 +10,11 @@ Standard library only (plus the skill's review_packets.py for block ids).
          findings fell on control blocks
 
 A defect is a list of exact replacements; each must match the text exactly once, so planting
-is deterministic. A defect counts as found when the anchor of at least one finding lies in
-one of its expected blocks. A finding on a control block (a passage written to have no
-problem and left untouched) is a false alarm. No model judges anything here.
+is deterministic. A defect counts as found when the quotation of at least one finding
+overlaps one of its expected quotations in the same block, so a different question about the
+same paragraph does not count (a finding that gives a block and no quotation counts by block).
+A finding on a control block (a passage written to have no problem and left untouched) is a
+false alarm. No model judges anything here.
 
 What the numbers mean: recall on planted defects and false alarms on control passages of one
 short invented manuscript. Planted defects are easier to find than real ones, and the score
@@ -59,11 +61,13 @@ def load_spec(path: Path) -> dict[str, Any]:
 def choose(spec: dict[str, Any], wanted: str) -> list[dict[str, Any]]:
     if wanted == "all":
         return list(spec["defects"])
+    if wanted == "none":
+        return []
     ids = [part.strip() for part in wanted.split(",") if part.strip()]
     by_id = {d["id"]: d for d in spec["defects"]}
     unknown = [i for i in ids if i not in by_id]
     if unknown or not ids or len(ids) != len(set(ids)):
-        raise Error("--defects must be 'all' or a comma-separated list of distinct ids from the defects file" + (f"; unknown: {', '.join(unknown)}." if unknown else "."))
+        raise Error("--defects must be 'all', 'none', or a comma-separated list of distinct ids from the defects file" + (f"; unknown: {', '.join(unknown)}." if unknown else "."))
     return [by_id[i] for i in ids]
 
 
@@ -138,17 +142,29 @@ def score(key: dict[str, Any], text: str, findings: list[dict[str, str]]) -> dic
         if row["quote"] and row["quote"] not in blocks[row["block_id"]]:
             raise Error(f"Finding {row['id']} quotes text that is not in {row['block_id']}; it was made on a different text.")
     controls = {c["block_id"] for c in key["controls"]}
+
+    def span(block_id: str, quote: str) -> tuple[int, int]:
+        start = blocks[block_id].find(quote)
+        return start, start + len(quote)
+
+    def hits(row: dict[str, str], anchor: dict[str, str]) -> bool:
+        if row["block_id"] != anchor["block_id"]:
+            return False
+        if not row["quote"]:
+            return True
+        (a, b), (c, d) = span(row["block_id"], row["quote"]), span(anchor["block_id"], anchor["quote"])
+        return a < d and c < b
+
     defects = []
     for defect in key["defects"]:
-        expected = {a["block_id"] for a in defect["expect"]}
-        by = [row["id"] for row in findings if row["block_id"] in expected]
+        by = [row["id"] for row in findings if any(hits(row, anchor) for anchor in defect["expect"])]
         defects.append({"id": defect["id"], "type": defect["type"], "found": bool(by), "by": by})
-    on_defect = {a["block_id"] for d in key["defects"] for a in d["expect"]}
+    counted = {i for d in defects for i in d["by"]}
     false_alarms = [row["id"] for row in findings if row["block_id"] in controls]
     found = sum(1 for d in defects if d["found"])
     return {"ok": True, "command": "score", "planted": len(defects), "found": found, "missed": [d["id"] for d in defects if not d["found"]],
             "defects": defects, "findings": len(findings), "control_blocks": len(controls), "false_alarms": false_alarms,
-            "elsewhere": sum(1 for row in findings if row["block_id"] not in on_defect and row["block_id"] not in controls),
+            "elsewhere": sum(1 for row in findings if row["id"] not in counted and row["block_id"] not in controls),
             "note": "Recall on planted defects and false alarms on control passages of an invented manuscript; not a measure of findings on real manuscripts."}
 
 
@@ -159,7 +175,7 @@ def parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("--defects-file", default=str(HERE / "defects.json"), help="The defects file (default: evals/defects.json); its manuscript is read from the same directory.")
         if name == "plant":
-            command.add_argument("--defects", default="all", help="'all' (default) or a comma-separated list of defect ids, planted in that order.")
+            command.add_argument("--defects", default="all", help="'all' (default), 'none' (the clean manuscript, to see what is flagged without any planted defect), or a comma-separated list of defect ids, planted in that order.")
             command.add_argument("--out", required=True, help="New directory for the planted manuscript.md and key.json.")
     scoring = commands.add_parser("score")
     scoring.add_argument("--key", required=True, help="key.json written by plant.")

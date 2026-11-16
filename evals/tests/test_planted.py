@@ -72,13 +72,26 @@ class PlantedTests(unittest.TestCase):
         for block in controls:
             self.assertIn(blocks[block], clean_blocks, "a control passage is the same in the clean and the planted text")
 
-    def test_expected_quotes_exist_only_after_planting(self):
-        # A moved definition leaves the sentence that uses the term unchanged, so its expected quotes are in the clean text too.
+    def test_expected_quotes_of_inserted_words_exist_only_after_planting(self):
+        # A moved definition and a deleted paragraph leave the sentence a reader stumbles on unchanged; the other defects insert the words they expect.
         for defect in self.spec["defects"]:
-            if defect["type"] == "definition_after_use":
+            if defect["type"] in ("definition_after_use", "result_without_method"):
                 continue
             for quote in defect["expect"]:
                 self.assertNotIn(quote, self.clean, defect["id"])
+
+    def test_a_different_question_about_the_same_paragraph_does_not_count(self):
+        key, text = self.planted("D06", "drift")
+        anchor = key["defects"][0]["expect"][0]
+        block = anchor["block_id"]
+        cases = (([{"block_id": block, "quote": "the revisit interval"}], True),
+                 ([{"block_id": block, "quote": "less sensitive to the revisit"}], True),
+                 ([{"block_id": block, "quote": "it stayed between 60 and 66 percent"}], False),
+                 ([{"block_id": block}], True))
+        for findings, found in cases:
+            with self.subTest(findings=findings):
+                result = pl.score(key, text, pl.anchors_from(findings, "f"))
+                self.assertEqual((result["found"] == 1, result["elsewhere"]), (found, 0 if found else 1))
 
     def test_score_counts_found_missed_false_alarms_and_elsewhere(self):
         key, text = self.planted()
@@ -87,7 +100,7 @@ class PlantedTests(unittest.TestCase):
         findings = self.root / "findings.json"
         findings.write_text(json.dumps({"candidates": [
             {"id": "C01", "anchor": by["D02"]},
-            {"id": "C02", "anchor": {"block_id": by["D02"]["block_id"], "quote": "IRB"}},
+            {"id": "C02", "anchor": {"block_id": by["D02"]["block_id"], "quote": "BLS"}},
             {"id": "C03", "anchor": by["D08"]},
             {"id": "C04", "anchor": key["controls"][0]},
             {"id": "C05", "anchor": {"block_id": "B0001", "quote": "Counting repeat visits"}},
@@ -114,7 +127,7 @@ class PlantedTests(unittest.TestCase):
         cases = (
             (str(clean), ok, [key["defects"][0]["expect"][0]], "The manuscript is not the planted copy this key was written for."),
             (str(self.root / "two" / "manuscript.md"), self.root / "ghost.json", [{"block_id": "B0999", "quote": "x"}], "points at B0999, which is not a block of the planted manuscript."),
-            (str(self.root / "two" / "manuscript.md"), self.root / "stale.json", [{"block_id": "B0009", "quote": "an infrared break-beam (IRB) sensor"}], "quotes text that is not in B0009; it was made on a different text."),
+            (str(self.root / "two" / "manuscript.md"), self.root / "stale.json", [{"block_id": "B0009", "quote": "a beam sensor recorded the time"}], "quotes text that is not in B0009; it was made on a different text."),
             (str(self.root / "two" / "manuscript.md"), self.root / "bare.json", [{"quote": "no block"}], "finding 1 has no anchor with a block_id."),
         )
         for manuscript, path, value, message in cases:
@@ -142,6 +155,17 @@ class PlantedTests(unittest.TestCase):
         code, out, err = self.main(["plant", "--defects-file", str(broken / "defects.json"), "--out", str(self.root / "broken-out")])
         self.assertEqual(code, 2)
         self.assertIn("Defect X1: the text to replace occurs 2 times, not once", json.loads(err)["error"]["message"])
+
+    def test_none_plants_the_clean_manuscript_with_controls_only(self):
+        key, text = self.planted("none", "clean")
+        self.assertEqual((key["planted"], key["defects"], len(key["controls"])), ([], [], 4))
+        self.assertEqual(text, self.clean)
+        findings = self.root / "baseline.json"
+        findings.write_text(json.dumps([key["controls"][0], {"block_id": "B0001"}]))
+        code, out, err = self.main(["score", "--key", str(self.root / "clean" / "key.json"), "--manuscript", str(self.root / "clean" / "manuscript.md"), "--findings", str(findings)])
+        self.assertEqual(code, 0, err)
+        result = json.loads(out)
+        self.assertEqual((result["planted"], result["found"], result["false_alarms"], result["elsewhere"]), (0, 0, ["baseline.json#1"], 1))
 
     def test_list_names_every_defect(self):
         code, out, err = self.main(["list"])
