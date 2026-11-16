@@ -10,5 +10,5 @@
   ],
   "reading_goal": "Understand the research question, central claims, necessary assumptions, and argument as introduced",
   "profile_basis": "Provisional general reader assumption; replace with user-specified background when available",
-  "response_language": "Match the user's language; retain source-language quotations"
+  "response_language": "English; copy quotations exactly as they appear in the text"
 }

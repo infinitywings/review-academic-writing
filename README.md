@@ -28,7 +28,7 @@ Throughout, the review prefers common words and ordinary sentences, and flags co
 
 ## What you get
 
-A report in the language you ask for (quotations and suggested wording stay in the manuscript's language), containing:
+A report in English (quotations and suggested wording stay in the manuscript's language), containing:
 
 - the few findings that matter most, each with its location, the reader's question, and a concrete fix;
 - replacement wording for each fix the text can support, with a note on what the meaning check found;

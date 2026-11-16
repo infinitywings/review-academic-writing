@@ -192,7 +192,7 @@ class FakeLLM:
         return {"summary": "Three findings on a four-block excerpt; one reader checkpoint, one masked run.", "issue_order": ["C01", "C05", "C04"]}
 
     def step_report(self, data, batch, attempt):
-        return {"report_markdown": "# Academic writing review\n\n## Scope and reader\n\n- " + data["report_language"] + "\n"}
+        return {"report_markdown": "# Academic writing review\n\n## Scope and reader\n\n- English\n"}
 
     # ------------------------------------------------------------ readers and auditor
 

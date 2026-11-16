@@ -856,7 +856,7 @@ class Run:
 
     def step_report(self, review: dict[str, Any]) -> None:
         _start, notes = self.start_and_notes()
-        values = {"input": {"report_language": self.args.language, "review": review, "scope": rp.load_json(self.out / "scope.json"), "reader_profile": self.profile,
+        values = {"input": {"review": review, "scope": rp.load_json(self.out / "scope.json"), "reader_profile": self.profile,
                             "execution_mode": EXECUTION_MODE, "concepts": notes["checks"]["concepts"], "reader_observations": notes["reconcile"]["observations"],
                             "checkpoints": [{k: v for k, v in c.items() if k not in ("packet_path", "observation_path", "run_path")} for c in notes["reconcile"]["checkpoints"]],
                             "repairs": notes["repairs"]["repairs"], "audits": self.audit_rows, "rejected_candidates": [d for d in notes["decisions"]["decisions"] if d["status"] == "rejected"],
@@ -884,7 +884,7 @@ class Run:
         editor_config, reader_config = llm.load_config(self.config), llm.load_config(self.reader_config)
         summary = {"ok": ok, "outcome": outcome, "manuscript": str(self.manuscript), "snapshot_id": self.index.get("snapshot_id"), "out": str(self.out),
                    "editor": {"base_url": editor_config.get("base_url"), "model": editor_config.get("model")}, "readers_config": {"base_url": reader_config.get("base_url"), "model": reader_config.get("model")},
-                   "options": {"batch_blocks": self.args.batch_blocks, "prefix_checkpoints": self.args.prefix_checkpoints, "masked_windows": self.args.masked_windows, "masked_budget": self.args.masked_budget, "language": self.args.language},
+                   "options": {"batch_blocks": self.args.batch_blocks, "prefix_checkpoints": self.args.prefix_checkpoints, "masked_windows": self.args.masked_windows, "masked_budget": self.args.masked_budget},
                    "stages": self.stages, "editor_calls": [c.row() for c in self.client.calls], "reader_calls": self.reader_calls, "audits": self.audit_rows,
                    "totals": self.statistics(), "failure": failure, "recorded_at": utc_now()}
         self.write_json(self.out / "summary.json", summary)
@@ -931,7 +931,6 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--profile", help="Prefix reader profile JSON (default assets/reader-profile.json).")
     run.add_argument("--masked-profile", help="Masked reader profile JSON (default assets/masked-reader-profile.json).")
     run.add_argument("--extraction-notes", help="Text file with extraction notes for the scope record.")
-    run.add_argument("--language", default="English", help="Language of the user-facing report (default English).")
     run.add_argument("--masked-windows", type=int, default=4, help="Windows of the masked run over the first sections; 0 disables it (default 4).")
     run.add_argument("--masked-budget", type=int, default=250, help="Approximate words per masked window (default 250).")
     run.add_argument("--max-events", type=int, default=40, help="Maximum masked reader calls, corrections included (default 40).")
