@@ -43,7 +43,9 @@ JOURNAL_SCHEMA = 7
 # attached reader files are not rechecked here, dispatch_reader.py holds them to it when they are made.
 # A schema 7 observation classified resolved_later or adequate quotes the words that answer the
 # reader's question (observation_proof), and every kept schema 7 decision states a close_criterion
-# that the final issue repeats.
+# that the final issue repeats. Schema 7 decisions take their severity from
+# review_packets.REPORT_SEVERITIES, and a schema 7 final review carries the frame check_frame holds
+# it to (scope_note, not_assessed, priority_list) and the recorded support of each issue.
 SUPPORTED_SCHEMAS = {4, 5, 6, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
 # An optional passage.proposition_checks entry: what one suspected sentence actually states.
@@ -62,6 +64,9 @@ BLOCK_ID = re.compile(r"(?<![A-Za-z0-9])B\d{4}(?![A-Za-z0-9])")
 QUESTION_END = re.compile(r"[?？][\s\"'”’)\]）】」』]*$")
 READY = f"{len(STAGES) + 1:02d}-ready.json"
 FINAL_STATUSES = {"accepted", "needs_author"}
+# The review is about clarity only; every schema 7 review says so in not_assessed.
+NOT_ASSESSED = ("whether the claims are true", "whether the evidence is sufficient", "whether the work is novel")
+PRIORITY_LIMIT = 10
 PREFIX_MODES = {"fresh-prefix", "bounded-request"}
 CHECKPOINT_MODES = {"full-context", "masked-sequential"} | PREFIX_MODES
 READER_EVIDENCE_KEYS = ("checkpoints", "branches", "observations")
@@ -496,7 +501,7 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             if row["status"] in FINAL_STATUSES:
                 fields(row, {"category", "diagnosis", "severity", "confidence"}, "accepted decision")
                 rp._enum(row["category"], rp.REVIEW_CATEGORIES, "decision.category")
-                rp._enum(row["severity"], rp.SEVERITIES, "decision.severity")
+                rp._enum(row["severity"], set(rp.REPORT_SEVERITIES) if start["schema_version"] >= 7 else rp.SEVERITIES, "decision.severity")
                 rp._enum(row["confidence"], rp.CONFIDENCES, "decision.confidence")
                 string(row["diagnosis"], "decision.diagnosis")
             elif row["status"] == "merged":
@@ -850,19 +855,22 @@ def challenge_inputs(journal: Path, index: Any, out: Path, batch: int) -> dict:
     if batch < 1:
         raise Error("--batch must be at least 1.")
     with locked(journal):
-        _start, notes, _previous = load_run(journal, index)
+        start, notes, _previous = load_run(journal, index)
     if "reconcile" not in notes:
         raise Error("Challenge the candidates after the reconcile stage is recorded, so that the readers' candidates are included.")
     rows = [{"candidate_id": c["id"], "anchor": c["anchor"], "question": c["question"]} for c in notes["checks"]["candidates"] + notes["reconcile"]["candidates"]]
     if not rows:
-        return {"ok": True, "command": "challenge-input", "candidates": 0, "inputs": [], "note": "No candidates were recorded; record decisions with no_challenge_reason."}
+        return {"ok": True, "command": "challenge-input", "candidates": 0, "inputs": [], "support": [], "note": "No candidates were recorded; record decisions with no_challenge_reason."}
     out.mkdir(parents=True, exist_ok=False)
     paths = []
     for n in range(0, len(rows), batch):
         path = out / f"challenge-input-{n // batch + 1:02d}.json"
         rp.write_json_atomic(path, {"candidates": rows[n:n + batch]})
         paths.append(str(path))
-    return {"ok": True, "command": "challenge-input", "candidates": len(rows), "inputs": paths}
+    # For the editor, not the challenger: how many readers raised each candidate, one of the two facts a severity rests on.
+    counts = candidate_support(notes, {b["block_id"]: b for b in index["blocks"]}, start["snapshot_id"])
+    return {"ok": True, "command": "challenge-input", "candidates": len(rows), "inputs": paths,
+            "support": [{"candidate_id": key, "reader_sources": value["reader_sources"]} for key, value in counts.items()]}
 
 
 def start_run(index: Any, profile: Any, scope: Any, out: Path) -> dict:
@@ -1041,6 +1049,81 @@ def overlapping_wordings(repairs: list[dict]) -> list[dict]:
     return [{"block_id": block, "candidate_ids": ids} for block, ids in sorted(by_block.items()) if len(ids) > 1]
 
 
+def candidate_support(notes: dict, blocks: dict, snapshot_id: str) -> dict[str, dict]:
+    """The two recorded facts a severity rests on, for every candidate.
+
+    reader_sources counts the distinct checkpoints and branches whose reconciled observations
+    name the candidate: how many readers raised the question independently. challenge is the
+    verdict of the candidate's independent challenge, or None when its decision carries no
+    challenge_path or no decision is recorded yet.
+    """
+    sources: dict[str, set[str]] = {key: set() for key in all_candidates(notes)}
+    for row in notes["reconcile"]["observations"]:
+        if row["candidate_id"] is not None:
+            sources[row["candidate_id"]].add(row["source_id"])
+    files: dict[str, dict[str, str]] = {}
+    verdicts: dict[str, str] = {}
+    for row in notes.get("decisions", {}).get("decisions", []):
+        if row.get("challenge_path") is not None:
+            path = Path(row["challenge_path"]).resolve()
+            if str(path) not in files:
+                files[str(path)] = {entry["candidate_id"]: entry["verdict"] for entry in rp.check_challenge_file(parse(read_raw(path)), blocks, snapshot_id)}
+            verdicts[row["candidate_id"]] = files[str(path)][row["candidate_id"]]
+    return {key: {"reader_sources": len(found), "challenge": verdicts.get(key)} for key, found in sources.items()}
+
+
+def eligible_for_priority(issue: dict) -> bool:
+    return issue.get("decision_status") == "accepted" and issue.get("severity") in rp.REPORT_SEVERITIES[:-1]
+
+
+def default_priority(issues: list[dict], blocks: dict) -> list[str]:
+    """The priority list when the editor gives none: accepted findings that mislead or hinder, the more severe first, then in document order, at most PRIORITY_LIMIT."""
+    eligible = sorted((issue for issue in issues if eligible_for_priority(issue)),
+                      key=lambda issue: (rp.REPORT_SEVERITIES.index(issue["severity"]), rp._absolute_span(issue["anchor"], blocks)[0]))
+    return [issue["candidate_id"] for issue in eligible[:PRIORITY_LIMIT]]
+
+
+def check_frame(review: dict) -> None:
+    """Hold a schema 7 final review to its frame: what was read, what is not assessed, and a short priority list.
+
+    The priority list names accepted findings that mislead or hinder: all of them up to
+    PRIORITY_LIMIT, the more severe first, and never a less severe finding in place of a more
+    severe one. Minor items and author questions are reported elsewhere, so the list stays short.
+    """
+    note = review.get("scope_note")
+    if not isinstance(note, str) or not note.strip():
+        raise Error("review.scope_note must say, as a nonempty string, what was read (edition, sections or blocks, reader runs) and what was left out.")
+    stated = strings(review.get("not_assessed"), "review.not_assessed")
+    missing = [entry for entry in NOT_ASSESSED if entry not in stated]
+    if missing:
+        raise Error("review.not_assessed must include: " + "; ".join(missing) + ". The review is about clarity only; add the entries (notes_build.py review inserts them).")
+    priority = strings(review.get("priority_list"), "review.priority_list")
+    issues = {issue["candidate_id"]: issue for issue in review["issues"]}
+    if len(priority) != len(set(priority)):
+        raise Error("review.priority_list names a candidate twice; list each finding once.")
+    for key in priority:
+        if key not in issues:
+            raise Error(f"review.priority_list names {key}, which is not a final issue of this review.")
+        if not eligible_for_priority(issues[key]):
+            raise Error(f"review.priority_list names {key} ({issues[key]['decision_status']}, {issues[key]['severity']}); a minor item or an author question cannot be on the priority list.")
+    eligible = [key for key, issue in issues.items() if eligible_for_priority(issue)]
+    if len(priority) > PRIORITY_LIMIT:
+        raise Error(f"review.priority_list holds {len(priority)} entries; the limit is {PRIORITY_LIMIT}. Keep the most consequential; the report lists every finding under Findings.")
+    if len(priority) != min(PRIORITY_LIMIT, len(eligible)):
+        raise Error(f"review.priority_list holds {len(priority)} of the {len(eligible)} accepted findings that mislead or hinder; it must hold "
+                    + ("all of them." if len(eligible) <= PRIORITY_LIMIT else f"{PRIORITY_LIMIT} of them."))
+
+    def severity(key: str) -> str:
+        return issues[key]["severity"]
+
+    for first, second in zip(priority, priority[1:]):
+        if rp.REPORT_SEVERITIES.index(severity(first)) > rp.REPORT_SEVERITIES.index(severity(second)):
+            raise Error(f"review.priority_list puts {first} ({severity(first)}) before {second} ({severity(second)}); misleads entries come before hinders entries.")
+    left_out = [key for key in eligible if key not in priority and rp.REPORT_SEVERITIES.index(severity(key)) < rp.REPORT_SEVERITIES.index(severity(priority[-1]))]
+    if left_out:
+        raise Error(f"review.priority_list leaves out {left_out[0]} ({severity(left_out[0])}) while it lists {priority[-1]} ({severity(priority[-1])}); list the more severe finding instead.")
+
+
 def check_final(journal: Path, index: Any, review: Any) -> dict:
     with locked(journal):
         start, notes, previous_hash = load_run(journal, index)
@@ -1053,7 +1136,7 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
         if final.keys() != repairs.keys():
             raise Error("Final issues must match all accepted/needs_author candidates exactly; rejected/merged or new issues cannot appear.")
         strict = start["schema_version"] >= 5
-        blocks = {b["block_id"] for b in index["blocks"]}
+        blocks = {b["block_id"]: b for b in index["blocks"]}
         for key, issue in final.items():
             decision, repair = decisions[key], repairs[key]
             if issue.get("decision_status") != decision["status"]:
@@ -1077,9 +1160,17 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
             allowed = {rp._canonical_hash(a) for a in decision["evidence"] + candidates[key]["evidence"] + [candidates[key]["anchor"]]}
             if any(rp._canonical_hash(a) not in allowed for a in issue.get("evidence", [])):
                 raise Error(f"Final issue {key} adds evidence not recorded during checking.")
+        if start["schema_version"] >= 7:
+            support = candidate_support(notes, blocks, start["snapshot_id"])
+            for key, issue in final.items():
+                for field, recorded in support[key].items():
+                    if field not in issue or type(issue[field]) is not type(recorded) or issue[field] != recorded:
+                        raise Error(f"Final issue {key}.{field} is {json.dumps(issue.get(field))}, but the records give {json.dumps(recorded)}; copy the recorded value (notes_build.py review fills it in).")
+            check_frame(review)
     return {"ok": True, "command": "check-final", "issue_count": len(final),
             "verified": ["ready receipt and saved-stage consistency", "final review schema and exact source anchors", "final issues exactly linked to saved decisions and repairs", "needs_author status and author question retained",
-                         "every action names a block id and every author question is a question (schema 5 journals)"],
+                         "every action names a block id and every author question is a question (schema 5 journals)",
+                         "scope note, not-assessed list, priority list, and each issue's recorded reader sources and challenge verdict (schema 7 journals)"],
             "not_verified": LIMITS + ["whether final prose preserves the implications of its structured status"]}
 
 

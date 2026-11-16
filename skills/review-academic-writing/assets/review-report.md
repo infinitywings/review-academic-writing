@@ -1,66 +1,47 @@
-# Academic writing review
+# Layout of the writing review report
 
-## Scope and reader
+`scripts/notes_build.py report --journal run/journal --index run/index.json --review run/review.json --out run/report.md` writes this report from a review that passes `check-final`. No model writes any of it. Use the layout by hand only when the helper cannot be run, fill every placeholder from the recorded review and stage notes, and say in the scope note that the report was assembled by hand.
 
-- Document and source version:
-- Reading edition/path:
-- Target reader and allowed background:
-- Requested task and constraints:
-- Actual execution mode, checkpoints, and coverage:
-- Extraction or figure limitations, if any:
+```
+# Writing review
 
-## Most consequential findings
+## What was reviewed
+<scope_note: what was read (edition, sections or blocks, reader runs) and what was left out>
 
-State the central writing problem and the proposed repair. If no substantive issue was found, state what was reviewed and what remains uncertain. Do not invent findings to fill the template.
+Not assessed: <not_assessed entries joined with "; ">.
 
-| ID | Priority / confidence | Exact location | Reader difficulty | Specific repair |
-| --- | --- | --- | --- | --- |
+Records: <included> of <total> blocks read; reader checkpoints: <count per mode, or "none">; candidates: <a> accepted, <q> author questions, <g> merged, <r> rejected; independent challenge: run on all <n> candidates | not run (<no_challenge_reason>); fidelity audits attached: <count of repairs with an audit>.
 
-## Detailed recommendations
+## Priority list
+1. [misleads] B0007 "<first 60 characters of the anchor quote>…" — <the reader's question as first recorded> (W03)
+2. [hinders] B0012 "<anchor quote>" — <the reader's question> (W01)
 
-For each accepted issue, provide:
+The list shows the 10 most consequential of <N>; all are under Findings.
 
-1. Exact source quotation and block/page location.
-2. Information available at that reading point.
-3. Original reader question, if an independent checkpoint was run.
-4. Full-document diagnosis and supporting locations.
-5. Predicted consequence for understanding or retrieval.
-6. Specific edit or move; proposed wording when justified.
-7. Claim-strength, assumptions, evidence, and numerical-fidelity check.
-8. Affected downstream passages and any author decision required.
+## Questions for the author
+- W05, B0012: <author_question>
 
-## Concept introduction map
+## Findings
+### W03 · misleads · confidence high · B0007
+> <anchor quote>
 
-| Concept | First mention M | Usable explanation E | First critical use U | Required relation or condition | Action, if needed |
-| --- | --- | --- | --- | --- | --- |
+- Reader's question: <the candidate's question>
+- Diagnosis: <diagnosis>
+- Action: <action>
+- Proposed wording: <proposed_wording>
+- Question for the author: <author_question>
+- Meaning check: <scientific_fidelity>
+- Done when: <close_criterion>
+- Support: raised at <n> reader checkpoints; challenger: <verdict, or "not run">.
 
-Include central concepts and those involved in findings. Allow layered definitions and reasonable inference. Distinguish missing explanation from costly retrieval.
+## Minor items
+<N> minor items do not hinder understanding; they are listed in <appendix file name>.
+```
 
-## Words and sentences
+Rules of the layout:
 
-| Location and exact original | Proposed replacement | What becomes clearer | Meaning and terminology check |
-| --- | --- | --- | --- |
-
-Identify unnecessary names that can become ordinary descriptions. Explain why any questioned technical term must remain. Give complete sentence replacements and avoid introducing new labels or abbreviations in them. Do not invent changes when the wording already meets the reader's needs. In “What becomes clearer,” describe the difference (shorter by N words, the referent is now named, one fewer undefined term, the condition is stated); do not write that the replacement is better, clearer, or improved.
-
-## Proposed sequence, when requested
-
-| Order | Reader's question | Knowledge required | Concepts established | Claim and evidence | Figure/table role |
-| --- | --- | --- | --- | --- | --- |
-
-## Verification and remaining uncertainty
-
-Record source-anchor validation, independent rechecks actually run, claim-preservation checks, sampled coverage, and unresolved scientific questions. Distinguish model predictions from observed human reading results.
-
-- Reader model and its questioning tendency: the model, runtime, and effort setting of the prefix and masked readers (from `summary.json` and the provenance files), and one sentence on what kind of question that reader tended to ask in this run (for example first-reading obstacles and undefined terms; or claim strength, formula edge cases, and citations). State it as the tendency observed in this run, so that a run with another reader model can be compared; it is not a property of the model.
-- Recall events, when the masked run had them: how many were issued, how many questions were answered wrong or with I don't know, and which of those became `lost_in_notes` observations; a wrong answer shows what the notes did not carry, not what a human would forget.
-- Candidates: N accepted, N author questions, N merged, N rejected (from the decisions record). If none was rejected, say in one sentence why the counterchecks rejected nothing.
-- Citations checked against their sources, with verdicts, when the citation spot-check was run; otherwise say it was not run.
-- Pairwise judgments (which of two readings, passages, or wordings), if any were made: state that each was run in both orders and list the ones that disagreed as undetermined. Nowhere in the report is one version called better than another; the report names the describable difference.
-- Fidelity audits: how many wordings were audited, how many rounds, how many hedges were compared one by one, and any wording withheld because the audit found a hedge strengthened or removed, a qualification added without basis, or an edit heavier than its stated scope.
-
-## Supporting work notes
-
-Provide the saved reading notes, concept/paragraph/wording checks, reconciled reader observations, candidate decisions, and repair comparisons in an accessible accompanying document or clearly labeled appendix. Summarize actual coverage and point to the records; do not expose internal bookkeeping in the main recommendations.
-
-Show why questioned text was retained when this is useful. Distinguish an inspected passage with no issue from a passage not inspected. Every final recommendation must correspond to a completed candidate decision and repair record. If the helper was unavailable, state which sequential records were kept and which automatic checks were not run. Do not call reconstructed notes original observations.
+- The priority list holds the accepted findings that mislead or hinder, in the order of `priority_list` in the review: at most ten, `misleads` before `hinders`. The sentence under the list appears only when more such findings exist than are listed. When there is none, the list is the one sentence “No finding that misleads or hinders was accepted.”
+- “Questions for the author” lists every finding above minor that carries an author question, and is left out when there is none.
+- “Findings” holds every finding that misleads or hinders, accepted or put to the author, exactly once: the priority list first, then the rest in the order of the review. The lines “Proposed wording” and “Question for the author” appear only when the issue has one. When there is no such finding, the section says “None.”
+- Minor items appear only in the appendix file (`<report name>-minor.md` beside the report), each with the same block as a finding. The “Minor items” section and the appendix are left out when there is no minor item.
+- Nothing else is added: no overall score, no grade of a version as better or clearer, no finding that is not in the checked review. The stage notes, receipts, reader files, and audits stay in the run directory as the supporting record; tell the user where they are.

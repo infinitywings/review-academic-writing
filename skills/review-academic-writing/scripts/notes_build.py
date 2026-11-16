@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the six review records from fragments, with the checks a hand-written builder forgets.
+"""Build the six review records from fragments, with the checks a hand-written builder forgets, and render the report.
 
 Standard library only. Every run of the staged review used to need its own builder script
 that assembled reading, checks, reconcile, decisions, repairs, and review JSON from
@@ -13,7 +13,10 @@ This program is that builder, once:
   decisions  one decision per candidate from checks and reconcile
   repairs    one repair per accepted or needs_author candidate; for an edit, the latest
              audit of the candidate decides whether its wording is recorded
-  review     the final review from the five recorded stages and a summary
+  review     the final review from the five recorded stages, a summary, and a scope note;
+             the priority list and each issue's recorded support are filled in
+  report     report.md, rendered from a review.json that passes check-final (--review,
+             no fragment); minor items go to a separate appendix file
 
 Fragments come from --source paths: a JSON file holding one object, a Python module that
 defines FRAGMENT (a dict) or build(ctx) returning one, or a directory of such files read
@@ -522,6 +525,8 @@ def build_review(fragment: dict, journal: Journal, ctx: Context) -> dict:
     candidates = journal.candidates()
     decisions = journal.decisions()
     repairs = rs.by_id(journal.notes["repairs"]["repairs"], "candidate_id", "repairs")
+    framed = journal.start["schema_version"] >= 7
+    support = rs.candidate_support(journal.notes, journal.blocks, journal.start["snapshot_id"]) if framed else {}
     issues = []
     for n, key in enumerate([c for c in candidates if decisions[c]["status"] in rs.FINAL_STATUSES], 1):
         decision, repair, candidate = decisions[key], repairs[key], candidates[key]
@@ -531,6 +536,8 @@ def build_review(fragment: dict, journal: Journal, ctx: Context) -> dict:
                  "proposed_wording": repair["proposed_wording"]}
         if "close_criterion" in decision:
             issue["close_criterion"] = decision["close_criterion"]
+        if framed:
+            issue.update(support[key], initial_reader_question=candidate["question"])
         if repair.get("author_question") is not None:
             issue["author_question"] = repair["author_question"]
         evidence = []
@@ -545,9 +552,143 @@ def build_review(fragment: dict, journal: Journal, ctx: Context) -> dict:
         ledger.append({k: concept[k] for k in ("concept_id", "term", "first_mention", "earliest_usable_explanation", "first_critical_use", "assessment")})
     extra = {k: v for k, v in fragment.items() if k not in ("summary", "issues", "concept_ledger", "snapshot_id")}
     review = {"snapshot_id": journal.start["snapshot_id"], "summary": summary_of(fragment, "review"), "issues": issues, **extra}
+    if framed:
+        review.update(review_frame(fragment, issues, journal))
     if ledger:
         review["concept_ledger"] = ledger
     return review
+
+
+def review_frame(fragment: dict, issues: list[dict], journal: Journal) -> dict:
+    """The frame of a schema 7 review: the fragment's scope_note, the fixed not_assessed entries plus the fragment's own, and the priority list.
+
+    A priority_list in the fragment is taken as given (review_steps.check_frame then holds it
+    to the rules); without one the default order is used.
+    """
+    scope_note = fragment.get("scope_note")
+    if not isinstance(scope_note, str) or not scope_note.strip():
+        raise BuildError("review fragments need scope_note: what was read (edition, sections or blocks, reader runs) and what was left out.")
+    added = fragment.get("not_assessed", [])
+    if not isinstance(added, list) or any(not isinstance(entry, str) or not entry.strip() for entry in added):
+        raise BuildError("not_assessed in a review fragment must be a list of nonempty strings; the three fixed entries are inserted for you.")
+    priority = fragment.get("priority_list")
+    return {"scope_note": scope_note, "not_assessed": [*rs.NOT_ASSESSED, *(entry for entry in added if entry not in rs.NOT_ASSESSED)],
+            "priority_list": rs.default_priority(issues, journal.blocks) if priority is None else priority}
+
+
+# ---------------------------------------------------------------- report
+
+CHECKPOINT_MODE_ORDER = ("fresh-prefix", "bounded-request", "masked-sequential", "full-context")
+PRIORITY_QUOTE_CHARS = 60
+
+
+def one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def finding_block(issue: dict, question: str) -> list[str]:
+    sources = issue["reader_sources"]
+    lines = [f"### {issue['id']} · {issue['severity']} · confidence {issue['confidence']} · {issue['anchor']['block_id']}",
+             *("> " + line for line in issue["anchor"]["quote"].split("\n")), "",
+             f"- Reader's question: {one_line(question)}", f"- Diagnosis: {one_line(issue['diagnosis'])}", f"- Action: {one_line(issue['action'])}"]
+    if issue.get("proposed_wording") is not None:
+        lines.append(f"- Proposed wording: {one_line(issue['proposed_wording'])}")
+    if issue.get("author_question") is not None:
+        lines.append(f"- Question for the author: {one_line(issue['author_question'])}")
+    lines += [f"- Meaning check: {one_line(issue['scientific_fidelity'])}", f"- Done when: {one_line(issue['close_criterion'])}",
+              f"- Support: raised at {sources} reader checkpoint{'' if sources == 1 else 's'}; challenger: {issue['challenge'] or 'not run'}."]
+    return lines
+
+
+def records_line(notes: dict, index: dict) -> str:
+    decisions = notes["decisions"]["decisions"]
+    modes = [point["mode"] for point in notes["reconcile"]["checkpoints"]]
+    by_mode = ", ".join(f"{modes.count(mode)} {mode}" for mode in CHECKPOINT_MODE_ORDER if mode in modes) or "none"
+    reason = notes["decisions"].get("no_challenge_reason")
+    if reason is not None:
+        challenge = f"not run ({one_line(reason)})"
+    else:
+        challenge = f"run on all {len(decisions)} candidates" if decisions else "no candidates to challenge"
+    counts = {status: sum(1 for row in decisions if row["status"] == status) for status in ("accepted", "needs_author", "merged", "rejected")}
+    audits = sum(1 for row in notes["repairs"]["repairs"] if row.get("audit_path") is not None)
+    return (f"Records: {len(notes['reading']['paragraphs'])} of {len(index['blocks'])} blocks read; reader checkpoints: {by_mode}; "
+            f"candidates: {counts['accepted']} accepted, {counts['needs_author']} author question{'' if counts['needs_author'] == 1 else 's'}, {counts['merged']} merged, {counts['rejected']} rejected; "
+            f"independent challenge: {challenge}; fidelity audits attached: {audits}.")
+
+
+def render_report(review: dict, notes: dict, index: dict, appendix_name: str) -> tuple[str, str | None]:
+    """The user-facing report of a checked schema 7 review, and the appendix of minor items (None when there is none).
+
+    Deterministic and English; no model writes any of it. The reader's question of each finding
+    is the recorded candidate's, so the report shows the question as it was first asked. Every
+    finding that misleads or hinders appears once under Findings, the priority list first;
+    minor items appear only in the appendix.
+    """
+    questions = {key: row["question"] for key, row in rs.all_candidates(notes).items()}
+    by_candidate = {issue["candidate_id"]: issue for issue in review["issues"]}
+    priority = [by_candidate[key] for key in review["priority_list"]]
+    findings = priority + [issue for issue in review["issues"] if issue["severity"] != "minor" and issue["candidate_id"] not in review["priority_list"]]
+    minor = [issue for issue in review["issues"] if issue["severity"] == "minor"]
+    eligible = sum(1 for issue in review["issues"] if rs.eligible_for_priority(issue))
+    lines = ["# Writing review", "", "## What was reviewed", review["scope_note"].strip(), "",
+             "Not assessed: " + "; ".join(review["not_assessed"]) + ".", "", records_line(notes, index), "", "## Priority list"]
+    for number, issue in enumerate(priority, 1):
+        quote = one_line(issue["anchor"]["quote"])
+        shown = quote if len(quote) <= PRIORITY_QUOTE_CHARS else quote[:PRIORITY_QUOTE_CHARS] + "…"
+        lines.append(f"{number}. [{issue['severity']}] {issue['anchor']['block_id']} \"{shown}\" — {one_line(questions[issue['candidate_id']])} ({issue['id']})")
+    if not priority:
+        lines.append("No finding that misleads or hinders was accepted.")
+    elif eligible > len(priority):
+        lines += ["", f"The list shows the {len(priority)} most consequential of {eligible}; all are under Findings."]
+    asked = [issue for issue in findings if issue.get("author_question") is not None]
+    if asked:
+        lines += ["", "## Questions for the author", *(f"- {issue['id']}, {issue['anchor']['block_id']}: {one_line(issue['author_question'])}" for issue in asked)]
+    lines += ["", "## Findings"]
+    for issue in findings:
+        lines += [*finding_block(issue, questions[issue["candidate_id"]]), ""]
+    if not findings:
+        lines += ["None.", ""]
+    if not minor:
+        return "\n".join(lines), None
+    lines += ["## Minor items", (f"1 minor item does not hinder understanding; it is listed in {appendix_name}." if len(minor) == 1
+                                 else f"{len(minor)} minor items do not hinder understanding; they are listed in {appendix_name}."), ""]
+    appendix = ["# Writing review: minor items", ""]
+    for issue in minor:
+        appendix += [*finding_block(issue, questions[issue["candidate_id"]]), ""]
+    return "\n".join(lines), "\n".join(appendix)
+
+
+def write_text_new(path: Path, text: str) -> None:
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+    except FileExistsError as exc:
+        raise Error(f"Output already exists: {path}; choose a new path.", "output_exists") from exc
+
+
+def report(journal_path: Path, index_path: Path, review_path: Path, out: Path, appendix: Path | None) -> dict:
+    """Render report.md from a review that passes check-final; a review that fails it is not rendered."""
+    appendix = appendix or out.with_name(out.stem + "-minor.md")
+    if appendix.resolve() == out.resolve():
+        raise BuildError("--appendix must be a different file from --out.")
+    index = rp.load_json(index_path)
+    review = rp.load_json(review_path)
+    rs.check_final(journal_path, index, review)
+    start, notes, _ = rs.load_run(journal_path, index)
+    if start["schema_version"] < 7:
+        raise BuildError(f"notes_build.py report renders the review of a schema 7 journal; this journal is schema {start['schema_version']}, "
+                         "whose review has no scope note or priority list. Start a new run to get a rendered report.")
+    text, minor = render_report(review, notes, index, appendix.name)
+    for path in (out, appendix) if minor is not None else (out,):
+        if os.path.lexists(path):
+            raise Error(f"Output already exists: {path}; choose a new path.", "output_exists")
+    write_text_new(out, text)
+    if minor is not None:
+        write_text_new(appendix, minor)
+    severities = [issue["severity"] for issue in review["issues"]]
+    return {"ok": True, "command": "report", "output": str(out), "appendix": str(appendix) if minor is not None else None, "journal": str(journal_path),
+            "counts": {"priority_list": len(review["priority_list"]), "findings": len(severities) - severities.count("minor"), "minor": severities.count("minor")},
+            "next": "tell the user, in their language, where the report and the records are; do not add sections to the report"}
 
 
 # ---------------------------------------------------------------- driver
@@ -582,7 +723,10 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
     if failures:
         raise BuildError(f"{len(failures)} quotation(s) are not exact text of the index: " + "; ".join(failures[:12]) + ("; ..." if len(failures) > 12 else ""))
     if stage == "review":
-        rp.check_review(index, value)
+        framed = journal.start["schema_version"] >= 7
+        rp.check_review(index, value, english=framed)
+        if framed:
+            rs.check_frame(value)
         counts = {"issues": len(value["issues"]), "accepted": sum(1 for i in value["issues"] if i["decision_status"] == "accepted"),
                   "needs_author": sum(1 for i in value["issues"] if i["decision_status"] == "needs_author"), "concept_ledger": len(value.get("concept_ledger", []))}
     else:
@@ -591,12 +735,13 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
     rp.write_json_atomic(out, value)
     result = {"ok": True, "command": stage, "output": str(out), "journal": str(journal_path), "counts": counts,
               "checked": ["every quotation is exact text of its block", "coverage of the included blocks (reading, checks)",
-                          "field vocabularies and record shape through review_steps.validate_notes" if stage != "review" else "final review schema through review_packets.check_review",
+                          "field vocabularies and record shape through review_steps.validate_notes" if stage != "review"
+                          else "final review schema through review_packets.check_review, and the scope note, not-assessed list, and priority list through review_steps.check_frame (schema 7 journals)",
                           "needs_author repairs carry a question", "edit wording taken from the latest audit only when it found the meaning preserved"]}
     if selection is not None:
         result["audit_selection"] = selection
     if stage == "review":
-        result["next"] = "run review_steps.py ready, then check-final with this file"
+        result["next"] = "run review_steps.py ready, check-final with this file, then notes_build.py report"
     else:
         result["next"] = f"review_steps.py record --stage {stage} --notes {out}"
     return result
@@ -604,11 +749,13 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
 
 def parser() -> argparse.ArgumentParser:
     p = rp.JsonArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("stage", choices=STAGES)
+    p.add_argument("stage", choices=(*STAGES, "report"))
     p.add_argument("--journal", required=True, help="The review_steps journal (00-start.json and the stages recorded so far).")
     p.add_argument("--index", required=True)
-    p.add_argument("--source", required=True, action="append", help="A fragment: .json, .py (FRAGMENT or build(ctx)), or a directory of them; repeatable, merged in order.")
-    p.add_argument("--out", required=True, help="The notes file to write (new path).")
+    p.add_argument("--source", action="append", help="A fragment: .json, .py (FRAGMENT or build(ctx)), or a directory of them; repeatable, merged in order. Required for every stage; not used by report.")
+    p.add_argument("--out", required=True, help="The notes file to write, or report.md for report (new path).")
+    p.add_argument("--review", help="report: the review.json that passed check-final; it is checked again before anything is rendered.")
+    p.add_argument("--appendix", help="report: where the minor items go when there are any (default: <out stem>-minor.md beside --out).")
     p.add_argument("--audits", help="repairs: directory of fidelity audits named <cid>.audit.json, <cid>-2.audit.json, ...; the latest round of each candidate decides its wording.")
     p.add_argument("--compare", help="repairs: directory of <cid>.features.json compare results (default: --audits).")
     p.add_argument("--challenge", action="append", help="decisions: a challenge file from dispatch_reader.py challenge; repeatable. Each decision gets the challenge_path of the file that holds its candidate.")
@@ -618,7 +765,14 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
-        result = build(args.stage, Path(args.journal), Path(args.index), args.source, Path(args.out), Path(args.audits) if args.audits else None, Path(args.compare) if args.compare else None, args.challenge)
+        if args.stage == "report":
+            if not args.review:
+                raise Error("report needs --review PATH: the review.json that passed check-final.", "cli_error")
+            result = report(Path(args.journal), Path(args.index), Path(args.review), Path(args.out), Path(args.appendix) if args.appendix else None)
+        elif not args.source:
+            raise Error(f"{args.stage} needs --source: a fragment file or a directory of fragments.", "cli_error")
+        else:
+            result = build(args.stage, Path(args.journal), Path(args.index), args.source, Path(args.out), Path(args.audits) if args.audits else None, Path(args.compare) if args.compare else None, args.challenge)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
     except Error as exc:

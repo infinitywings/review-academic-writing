@@ -118,7 +118,7 @@ Preserve these properties unless the author explicitly changes the underlying sc
 - Allow layered definitions and purposeful reminders; do not merge all mentions of one concept merely because they recur.
 - Respect genre and author intent; inverted-pyramid and topic-sentence-first arrangements are options, not universal rules.
 - Do not call a previously supplied concept undefined, or mistake unfamiliarity to the model for unfamiliarity to the intended reader.
-- Separate severity from confidence, and label optional stylistic preferences as optional.
+- Separate severity from confidence, and label a stylistic preference `minor`.
 
 ## 7. Findings and editing priority
 
@@ -130,10 +130,14 @@ Each substantive finding must include:
 4. A separate full-document diagnosis if later material is inspected.
 5. A concrete minimal edit or move, the reader benefit, scientific-fidelity check, and affected locations.
 
-- Critical: blocks interpretation or evaluation of a central contribution, method, hypothesis, or inference.
-- Major: requires substantial backtracking, reconstruction, or an unsupported conceptual leap.
-- Minor: creates local ambiguity or avoidable retrieval burden without blocking the main argument.
-- Optional: a preference with uncertain comprehension benefit.
+Severity names what happens to the target reader, in three levels:
+
+- `misleads`: the reader is likely to leave with a wrong understanding of a claim, term, condition, or result, or cannot tell which of two meanings a central statement has.
+- `hinders`: the reader can recover the meaning but must stop, search, or reread to do it.
+- `minor`: the passage does not hinder understanding; this includes a preference with uncertain benefit.
+
+Assign severity in one pass over all kept candidates, after every challenge result is in, not candidate by candidate while deciding. Use two recorded facts as evidence: at how many reader checkpoints the question was raised independently (`review_steps.py challenge-input` prints the count per candidate, and the final review records it as `reader_sources`), and the challenger's verdict. A question that several readers raised on their own and the challenger let stand is stronger evidence than one only the editor saw. Neither fact sets the level: the level is the consequence for the reader, and a single reader can be misled by a sentence the others passed. The report lists at most ten findings that mislead or hinder as priorities and moves minor items to an appendix, so a level raised without evidence pushes a real priority off the list. A reader's own observation keeps the earlier scale (`critical`, `major`, `minor`, `optional`); it is that reader's impression and does not reach the report.
+
 - Consolidate repeated symptoms caused by the same missing prerequisite; prioritize consequences, not issue counts.
 - Preserve scientific meaning first; then repair central prerequisites and argument dependencies, paragraph organization, local retrieval cues, and finally wording.
 - Prefer a small explanation, condition, bridge, reminder, or text move; justify larger restructuring with the dependency it repairs.

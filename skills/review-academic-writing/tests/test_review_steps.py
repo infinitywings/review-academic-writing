@@ -96,10 +96,11 @@ class ReviewStepsTests(unittest.TestCase):
                     "candidates": [{"id": "C05", "anchor": A("B0005", "91 percent"), "question": "Is 91 percent compared with anything?", "evidence": []}]}
         if stage == "decisions":
             common = {"verification": "v", "countercheck": "c", "evidence": []}
+            # Every severity here is minor, the one value the schema 7 vocabulary shares with the earlier one, so these notes record in a journal of any schema.
             return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [
                 {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite",
                  "diagnosis": "MSW is used in B0003 before B0004 defines it.", "close_criterion": "The reader can say what the MSW measures on reaching the threshold in B0003.",
-                 "severity": "major", "confidence": "high"},
+                 "severity": "minor", "confidence": "high"},
                 {**common, "candidate_id": "C02", "status": "needs_author", "category": "unsupported_claim",
                  "diagnosis": "The pair count has no stated source.", "close_criterion": "The reader can say how the 412 pairs were selected.", "severity": "minor", "confidence": "medium"},
                 {**common, "candidate_id": "C03", "status": "rejected"},
@@ -160,9 +161,11 @@ class ReviewStepsTests(unittest.TestCase):
             d, r = decisions[key], repairs[key]
             issues.append({"id": f"W0{n}", "candidate_id": key, "decision_status": d["status"], "anchor": anchors[key],
                            **{f: d[f] for f in ("category", "diagnosis", "close_criterion", "severity", "confidence")},
-                           **{f: r[f] for f in ("action", "scientific_fidelity", "proposed_wording", "author_question")}})
+                           **{f: r[f] for f in ("action", "scientific_fidelity", "proposed_wording", "author_question")},
+                           "reader_sources": 0, "challenge": None})
         issues[0]["evidence"] = [DEFINITION]
-        return {"snapshot_id": self.sid, "summary": "Three findings.", "issues": issues}
+        return {"snapshot_id": self.sid, "summary": "Three findings.", "scope_note": "All four paragraphs of the excerpt were read; no reader was run.",
+                "not_assessed": ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"], "priority_list": [], "issues": issues}
 
     def assertRefused(self, message, call, *args):
         before = self.names()
@@ -239,6 +242,25 @@ class ReviewStepsTests(unittest.TestCase):
         for value, message in cases:
             with self.subTest(message=message):
                 self.assertRefused(message, self.record, "decisions", value)
+
+    def test_decision_severity_names_what_happens_to_the_reader_in_schema_7(self):
+        self.record_through("reconcile")
+        self.assertRefused("decision\\.severity must be one of: hinders, minor, misleads\\.", self.record, "decisions", self.decisions_with({"C01": {"severity": "major"}}))
+        self.assertEqual(self.record("decisions", self.decisions_with({"C01": {"severity": "misleads"}, "C05": {"severity": "hinders"}}))["next_stage"], "repairs")
+        older = self.fresh_journal("severity-schema6", through="reconcile", schema=6)
+        with self.assertRaisesRegex(rp.ReviewDataError, "decision\\.severity must be one of: critical, major, minor, optional\\."):
+            self.record("decisions", self.decisions_with({"C01": {"severity": "misleads"}}), older)
+        self.assertEqual(self.record("decisions", self.decisions_with({"C01": {"severity": "major"}}), older)["next_stage"], "repairs")
+        issue = self.final_review()["issues"][0]
+        for severity in ("misleads", "major"):
+            review = {"snapshot_id": self.sid, "summary": "One finding.", "issues": [{**issue, "severity": severity}]}
+            self.assertEqual(rp.check_review(self.index, review)["issue_count"], 1, "the standalone validator does not know the journal, so a final review may use either vocabulary")
+        # A reader's own impression keeps the earlier four values; it never reaches the report.
+        packet = rp.build_packet(self.index, PROFILE, through_block="B0003")
+        observation = {**{k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}, "understanding": "The MSW is not defined yet.",
+                       "issues": [{"id": "R1", "category": "other", "anchor": CRITICAL, "reader_question": "What is the MSW?", "consequence": "The threshold cannot be read.", "severity": "misleads", "confidence": "low"}]}
+        with self.assertRaisesRegex(rp.ReviewDataError, "issues\\[0\\]\\.severity must be one of: critical, major, minor, optional\\."):
+            rp.check_observation(packet, observation)
 
     def test_repairs(self):
         self.record_through("decisions")

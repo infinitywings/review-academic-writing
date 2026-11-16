@@ -30,6 +30,12 @@ SCHEMA_VERSION = 1
 OFFSET_UNIT = "unicode_code_points"
 NORMALIZATION = "CRLF-to-LF"
 SEVERITIES = {"critical", "major", "minor", "optional"}
+# The severity of a decision and its final issue in a schema 7 journal, most consequential first,
+# named by what happens to the target reader: `misleads` (likely leaves with a wrong understanding
+# of a claim, term, condition, or result, or cannot tell which of two meanings a central statement
+# has), `hinders` (can recover the meaning but must stop, search, or reread), `minor` (does not
+# hinder understanding). Reader observations and earlier journals keep SEVERITIES.
+REPORT_SEVERITIES = ("misleads", "hinders", "minor")
 CONFIDENCES = {"high", "medium", "low"}
 OBSERVATION_CATEGORIES = {
     "unavailable_prerequisite", "ambiguous_reference", "missing_relation",
@@ -671,7 +677,8 @@ def _issues(value: Any, blocks: dict[str, dict[str, Any]], *, final: bool) -> in
             raise ReviewDataError(f"Duplicate issue id: {issue_id}.")
         seen.add(issue_id)
         _enum(issue["category"], REVIEW_CATEGORIES if final else OBSERVATION_CATEGORIES, label + ".category")
-        _enum(issue["severity"], SEVERITIES, label + ".severity")
+        # A final review may come from a journal of either vocabulary; review_steps.check_final holds it to its decision.
+        _enum(issue["severity"], SEVERITIES | set(REPORT_SEVERITIES) if final else SEVERITIES, label + ".severity")
         _enum(issue["confidence"], CONFIDENCES, label + ".confidence")
         _anchor(issue["anchor"], blocks, label + ".anchor")
         for field in required - {"id", "category", "anchor", "severity", "confidence"}:
