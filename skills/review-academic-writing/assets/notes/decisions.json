@@ -1,6 +1,7 @@
 {
   "snapshot_id": "",
   "summary": "",
+  "no_challenge_reason": null,
   "decisions": [
     {
       "candidate_id": "",
@@ -12,7 +13,9 @@
       "diagnosis": "",
       "severity": "",
       "confidence": "",
-      "merged_into": null
+      "merged_into": null,
+      "challenge_path": null,
+      "challenge_response": null
     }
   ]
 }

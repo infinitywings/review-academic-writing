@@ -1,0 +1,22 @@
+{
+  "snapshot_id": "",
+  "challenges": [
+    {
+      "candidate_id": "",
+      "anchor": {
+        "block_id": "",
+        "quote": ""
+      },
+      "question": "",
+      "verdict": "",
+      "answer": null,
+      "answer_position": null,
+      "duplicate_of": null,
+      "reason": ""
+    }
+  ],
+  "challenger": {
+    "mode": "",
+    "agent_id": ""
+  }
+}

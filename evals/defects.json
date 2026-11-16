@@ -24,7 +24,9 @@
       "expect": [
         "Detections separated by a pause shorter than the return visit gap are merged into one visit.",
         "The choice of gap changes the result."
-      ]
+      ],
+      "question": "What is the return visit gap?",
+      "challenge_expected": "kept"
     },
     {
       "id": "D02",
@@ -38,7 +40,9 @@
       ],
       "expect": [
         "the BLS unit"
-      ]
+      ],
+      "question": "What is the BLS unit?",
+      "challenge_expected": "kept"
     },
     {
       "id": "D03",
@@ -52,7 +56,9 @@
       ],
       "expect": [
         "Its clock drifted by less than 0.01 seconds per day, and we reset it each morning against the other clock"
-      ]
+      ],
+      "question": "Whose clock is 'Its clock': the beam sensor's or the tag reader's?",
+      "challenge_expected": "kept"
     },
     {
       "id": "D04",
@@ -66,7 +72,9 @@
       ],
       "expect": [
         "Before counting, we applied the two exclusion rules."
-      ]
+      ],
+      "question": "Which two exclusion rules are meant?",
+      "challenge_expected": "kept"
     },
     {
       "id": "D05",
@@ -80,7 +88,9 @@
       ],
       "expect": [
         "A gap of 2 seconds gave 1,655 visits and a gap of 10 seconds gave 1,102 visits"
-      ]
+      ],
+      "question": "Where do the 2-second and 10-second gaps come from? Were they part of the analysis the Methods describe?",
+      "challenge_expected": "kept"
     },
     {
       "id": "D06",
@@ -94,7 +104,9 @@
       ],
       "expect": [
         "the revisit interval"
-      ]
+      ],
+      "question": "Is the revisit interval the same thing as the return visit gap?",
+      "challenge_expected": "kept"
     },
     {
       "id": "D07",
@@ -108,7 +120,9 @@
       ],
       "expect": [
         "At the chosen setting"
-      ]
+      ],
+      "question": "What is the chosen setting?",
+      "challenge_expected": "disputed"
     },
     {
       "id": "D08",
@@ -122,7 +136,36 @@
       ],
       "expect": [
         "all three feeders"
-      ]
+      ],
+      "question": "Were there three feeders or four?",
+      "challenge_expected": "kept"
+    }
+  ],
+  "adequate": [
+    {
+      "id": "K01",
+      "quote": "We set the return visit gap to 5 seconds for the main analysis.",
+      "question": "What is the return visit gap?"
+    },
+    {
+      "id": "K02",
+      "quote": "leaving 4,110 detections of tagged great tits",
+      "question": "What is a detection?"
+    },
+    {
+      "id": "K03",
+      "quote": "which the pilot recording showed to be leaves or insects crossing the beam",
+      "question": "What pilot recording is this?"
+    },
+    {
+      "id": "K04",
+      "quote": "The study covers tagged great tits in one garden over ten days in one season.",
+      "question": "How did the study know which birds were tagged?"
+    },
+    {
+      "id": "K05",
+      "quote": "The two exclusion rules removed 1,010 of them",
+      "question": "What are the two exclusion rules?"
     }
   ]
 }

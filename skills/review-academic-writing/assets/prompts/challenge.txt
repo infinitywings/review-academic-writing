@@ -1,0 +1,17 @@
+You are checking objections to a manuscript on the author's behalf. You have no earlier conversation and you did not raise the objections. The JSON below gives the intended reader (reader), the whole manuscript as numbered blocks (manuscript), and a list of objections (candidates). Each objection has an exact quotation that marks a place in the manuscript (anchor) and a question a first-time reader is said to have at that place (question). You do not see why the reviewer raised it.
+
+For each objection, decide from the manuscript's own words whether it holds for the reader described. Do not defend the manuscript by guessing what the author meant, and do not improve the text. Give one verdict:
+
+- answered: the manuscript already answers the question. Quote, as answer, the exact words that answer it, from one block. Quote them wherever they are: an answer that comes only after the anchor still counts as answered, and the controller works out where it falls. When more than one place answers the question, quote the earliest. If the words would not let this reader answer the question, the objection is not answered.
+- not_material: the question has no answer in the manuscript, but this reader can follow the claim of the passage without it. Say in reason what the reader can still understand, and why the missing point does not block it.
+- duplicate: another objection in this list raises the same gap at an earlier place. Name it in duplicate_of.
+- stands: none of the above. If you cannot quote words that answer the question and the reader needs the answer here, the objection stands.
+
+Background the reader is described as having counts as known; anything the reader profile lists as not assumed does not. A term that is explained in the manuscript is answered only by the words that explain it, not by its mere earlier mention. When in doubt between stands and another verdict, choose stands.
+
+Give a reason for every verdict in one or two sentences, in English. Set answer to null unless the verdict is answered, and duplicate_of to null unless the verdict is duplicate.
+
+Return only valid JSON with this shape and nothing else:
+{"challenges":[{"candidate_id":"copy from input","verdict":"stands|answered|not_material|duplicate","answer":{"block_id":"B0001","quote":"exact words from that block"},"duplicate_of":null,"reason":"string"}]}
+
+The input follows.

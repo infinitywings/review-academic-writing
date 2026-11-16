@@ -489,6 +489,113 @@ def _anchor(value: Any, blocks: dict[str, dict[str, Any]], label: str) -> None:
         raise ReviewDataError(f"{label}.quote is not an exact substring of its supplied block.")
 
 
+CHALLENGE_VERDICTS = {"stands", "answered", "not_material", "duplicate"}
+CHALLENGE_ANSWER_KEYS = {"candidate_id", "verdict", "answer", "duplicate_of", "reason"}
+# A verdict that disputes the candidate: a decision that keeps the candidate must say why.
+CHALLENGE_DISPUTES = {"not_material", "duplicate"}
+
+
+def challenge_requests(value: Any, blocks: dict[str, dict[str, Any]], label: str = "challenge candidates") -> list[dict[str, Any]]:
+    """The candidates put to a challenger: an id, the exact anchor, and the reader's question; nothing of the editor's reasoning."""
+    if not isinstance(value, list) or not value:
+        raise ReviewDataError(f"{label} must be a nonempty array of {{candidate_id, anchor, question}} objects.")
+    seen: set[str] = set()
+    for n, row in enumerate(value):
+        row = _object(row, f"{label}[{n}]")
+        _keys(row, {"candidate_id", "anchor", "question"}, set(), f"{label}[{n}]")
+        key = _nonempty_string(row["candidate_id"], f"{label}[{n}].candidate_id")
+        if key in seen:
+            raise ReviewDataError(f"{label} lists {key} twice.")
+        seen.add(key)
+        _anchor(row["anchor"], blocks, f"{label}[{n}].anchor")
+        _nonempty_string(row["question"], f"{label}[{n}].question")
+    return value
+
+
+def _absolute_span(anchor: dict[str, str], blocks: dict[str, dict[str, Any]]) -> tuple[int, int]:
+    block = blocks[anchor["block_id"]]
+    start = block["start_offset"] + block["text"].find(anchor["quote"])
+    return start, start + len(anchor["quote"])
+
+
+def check_challenges(requests: list[dict[str, Any]], answers: Any, blocks: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hold a challenger's answers to the text, and return them joined to their candidates.
+
+    Every candidate is answered exactly once. `answered` must quote the manuscript words that
+    answer the reader's question, as an exact anchor; the helper works out whether those words
+    come before the candidate's anchor, after it, or overlap it (`answer_position`), because
+    an answer that comes later confirms a problem of order rather than removing the candidate.
+    `duplicate` names another candidate of the same request that is not itself a duplicate.
+    Every answer gives a reason. The check is about correspondence with the text; it cannot
+    show that a verdict is right.
+    """
+    if not isinstance(answers, list):
+        raise ReviewDataError("challenges must be an array with one {candidate_id, verdict, answer, duplicate_of, reason} object per candidate.")
+    by_id = {row["candidate_id"]: row for row in requests}
+    seen: dict[str, dict[str, Any]] = {}
+    for n, item in enumerate(answers):
+        label = f"challenges[{n}]"
+        if not isinstance(item, dict) or set(item) != CHALLENGE_ANSWER_KEYS:
+            raise ReviewDataError(f"{label} must be an object with exactly candidate_id, verdict, answer, duplicate_of, and reason.")
+        key = item["candidate_id"]
+        if key not in by_id:
+            raise ReviewDataError(f"{label} answers {key!r}, which is not a candidate of this request.")
+        if key in seen:
+            raise ReviewDataError(f"challenges answers {key} twice; one entry per candidate.")
+        if item["verdict"] not in CHALLENGE_VERDICTS:
+            raise ReviewDataError(f"{label}.verdict must be one of: answered, duplicate, not_material, stands.")
+        _nonempty_string(item["reason"], f"{label}.reason")
+        if item["verdict"] == "answered":
+            _anchor(item["answer"], blocks, f"{label}.answer")
+        elif item["answer"] is not None:
+            raise ReviewDataError(f"{label}.answer must be null unless the verdict is answered.")
+        if item["verdict"] != "duplicate" and item["duplicate_of"] is not None:
+            raise ReviewDataError(f"{label}.duplicate_of must be null unless the verdict is duplicate.")
+        seen[key] = item
+    missing = [key for key in by_id if key not in seen]
+    if missing:
+        raise ReviewDataError("challenges does not answer every candidate; missing: " + ", ".join(missing) + ".")
+    joined = []
+    for key, request in by_id.items():
+        item = seen[key]
+        position = None
+        if item["verdict"] == "answered":
+            (a, b), (c, d) = _absolute_span(item["answer"], blocks), _absolute_span(request["anchor"], blocks)
+            position = "before" if b <= c else "after" if a >= d else "at"
+        if item["verdict"] == "duplicate":
+            target = item["duplicate_of"]
+            if target == key or target not in seen or seen[target]["verdict"] == "duplicate":
+                raise ReviewDataError(f"Challenge of {key}: duplicate_of must name another candidate of this request that is not itself reported as a duplicate.")
+        joined.append({"candidate_id": key, "anchor": request["anchor"], "question": request["question"], "verdict": item["verdict"],
+                       "answer": item["answer"], "answer_position": position, "duplicate_of": item["duplicate_of"], "reason": item["reason"]})
+    return joined
+
+
+def challenge_disputes(entry: dict[str, Any]) -> bool:
+    """Whether a challenge entry disputes its candidate: not material, a duplicate, or answered by text the reader has already seen."""
+    return entry["verdict"] in CHALLENGE_DISPUTES or (entry["verdict"] == "answered" and entry["answer_position"] in ("before", "at"))
+
+
+def check_challenge_file(value: Any, blocks: dict[str, dict[str, Any]], snapshot_id: str) -> list[dict[str, Any]]:
+    """A saved challenge file (dispatch_reader.py challenge): its entries re-derived from the text, so the recorded positions cannot differ from it."""
+    record = _object(value, "challenge file")
+    _keys(record, {"snapshot_id", "challenges", "challenger"}, set(), "challenge file")
+    if record["snapshot_id"] != snapshot_id:
+        raise ReviewDataError("The challenge file was made for a different source snapshot.")
+    challenger = _object(record["challenger"], "challenge.challenger")
+    _keys(challenger, {"mode", "agent_id"}, set(), "challenge.challenger")
+    _enum(challenger["mode"], {"bounded-request", "fresh-prefix"}, "challenge.challenger.mode")
+    _nonempty_string(challenger["agent_id"], "challenge.challenger.agent_id")
+    entries = record["challenges"]
+    if not isinstance(entries, list) or any(not isinstance(e, dict) or set(e) != CHALLENGE_ANSWER_KEYS | {"anchor", "question", "answer_position"} for e in entries):
+        raise ReviewDataError("challenge.challenges must be an array of entries with candidate_id, anchor, question, verdict, answer, answer_position, duplicate_of, and reason.")
+    requests = challenge_requests([{k: e[k] for k in ("candidate_id", "anchor", "question")} for e in entries], blocks, "challenge.challenges")
+    joined = check_challenges(requests, [{k: e[k] for k in CHALLENGE_ANSWER_KEYS} for e in entries], blocks)
+    if joined != entries:
+        raise ReviewDataError("challenge.challenges records an answer_position that the text does not give; rerun the challenge with dispatch_reader.py.")
+    return joined
+
+
 def _evidence(value: Any, blocks: dict[str, dict[str, Any]], label: str) -> None:
     if not isinstance(value, list):
         raise ReviewDataError(f"{label} must be an array of exact text anchors.")

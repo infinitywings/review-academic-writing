@@ -273,5 +273,73 @@ class HedgeReportTests(unittest.TestCase):
         self.check("X may reduce errors. Y increases latency.", "X reduces errors. Y may increase latency.", ["may"])
 
 
+
+class ChallengeTests(unittest.TestCase):
+    """review_packets.check_challenges: a challenger's answers held to the text."""
+
+    TEXT = "# Study\n\nWe report counts of agreement. Counts rose.\n\nWe define agreement as matching records.\n"
+
+    def setUp(self):
+        self.blocks = {b["block_id"]: b for b in rp.build_index(self.TEXT)["blocks"]}
+        self.requests = [
+            {"candidate_id": "C01", "anchor": {"block_id": "B0002", "quote": "counts of agreement"}, "question": "What is agreement?"},
+            {"candidate_id": "C02", "anchor": {"block_id": "B0003", "quote": "matching records"}, "question": "Which records?"},
+            {"candidate_id": "C03", "anchor": {"block_id": "B0002", "quote": "Counts rose."}, "question": "Counts of what?"},
+        ]
+
+    def answer(self, key, verdict, answer=None, duplicate_of=None, reason="r"):
+        return {"candidate_id": key, "verdict": verdict, "answer": answer, "duplicate_of": duplicate_of, "reason": reason}
+
+    def test_positions_are_worked_out_from_the_text(self):
+        later = {"block_id": "B0003", "quote": "We define agreement as matching records."}
+        earlier = {"block_id": "B0002", "quote": "We report counts of agreement."}
+        joined = rp.check_challenges(self.requests, [self.answer("C01", "answered", later), self.answer("C02", "answered", later), self.answer("C03", "answered", earlier)], self.blocks)
+        self.assertEqual([(e["candidate_id"], e["verdict"], e["answer_position"]) for e in joined], [("C01", "answered", "after"), ("C02", "answered", "at"), ("C03", "answered", "before")])
+        self.assertEqual([rp.challenge_disputes(e) for e in joined], [False, True, True])
+        self.assertEqual(joined[0]["question"], "What is agreement?")
+        other = rp.check_challenges(self.requests, [self.answer("C03", "duplicate", duplicate_of="C01"), self.answer("C01", "stands"), self.answer("C02", "not_material")], self.blocks)
+        self.assertEqual([(e["candidate_id"], e["verdict"], e["answer_position"], rp.challenge_disputes(e)) for e in other],
+                         [("C01", "stands", None, False), ("C02", "not_material", None, True), ("C03", "duplicate", None, True)])
+
+    def test_malformed_answers_are_refused(self):
+        stands = [self.answer(k, "stands") for k in ("C01", "C02", "C03")]
+        cases = (
+            ({"C01": "stands"}, "challenges must be an array with one"),
+            (stands[:2], "challenges does not answer every candidate; missing: C03\\."),
+            ([*stands, self.answer("C01", "stands")], "challenges answers C01 twice; one entry per candidate\\."),
+            ([*stands[:2], self.answer("C09", "stands")], "challenges\\[2\\] answers 'C09', which is not a candidate of this request\\."),
+            ([*stands[:2], {**stands[2], "note": "x"}], "challenges\\[2\\] must be an object with exactly candidate_id, verdict, answer, duplicate_of, and reason\\."),
+            ([*stands[:2], self.answer("C03", "adequate")], "challenges\\[2\\]\\.verdict must be one of: answered, duplicate, not_material, stands\\."),
+            ([*stands[:2], self.answer("C03", "stands", reason=" ")], "challenges\\[2\\]\\.reason must be a nonempty string"),
+            ([*stands[:2], self.answer("C03", "answered")], "challenges\\[2\\]\\.answer must be a JSON object"),
+            ([*stands[:2], self.answer("C03", "answered", {"block_id": "B0003", "quote": "We define agreement elsewhere"})], "challenges\\[2\\]\\.answer\\.quote is not an exact substring of its supplied block\\."),
+            ([*stands[:2], self.answer("C03", "stands", {"block_id": "B0002", "quote": "Counts"})], "challenges\\[2\\]\\.answer must be null unless the verdict is answered\\."),
+            ([*stands[:2], self.answer("C03", "stands", duplicate_of="C01")], "challenges\\[2\\]\\.duplicate_of must be null unless the verdict is duplicate\\."),
+            ([*stands[:2], self.answer("C03", "duplicate", duplicate_of="C03")], "Challenge of C03: duplicate_of must name another candidate"),
+            ([stands[0], self.answer("C02", "duplicate", duplicate_of="C03"), self.answer("C03", "duplicate", duplicate_of="C02")], "duplicate_of must name another candidate of this request that is not itself reported as a duplicate\\."),
+        )
+        for answers, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(rp.ReviewDataError, message):
+                    rp.check_challenges(self.requests, answers, self.blocks)
+
+    def test_requests_and_saved_files_are_checked(self):
+        for value, message in (([], "must be a nonempty array"), ([{**self.requests[0], "diagnosis": "x"}], "has unsupported fields: diagnosis"),
+                               ([self.requests[0], self.requests[0]], "lists C01 twice"), ([{**self.requests[0], "anchor": {"block_id": "B0002", "quote": "nowhere"}}], "quote is not an exact substring")):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(rp.ReviewDataError, message):
+                    rp.challenge_requests(value, self.blocks)
+        snapshot = rp.build_index(self.TEXT)["snapshot_id"]
+        joined = rp.check_challenges(self.requests[:1], [self.answer("C01", "answered", {"block_id": "B0003", "quote": "We define agreement"})], self.blocks)
+        saved = {"snapshot_id": snapshot, "challenges": joined, "challenger": {"mode": "bounded-request", "agent_id": "x-1"}}
+        self.assertEqual(rp.check_challenge_file(saved, self.blocks, snapshot), joined)
+        moved = {**saved, "challenges": [{**joined[0], "answer_position": "before"}]}
+        for value, message in ((moved, "records an answer_position that the text does not give"), ({**saved, "snapshot_id": "sha256:" + "0" * 64}, "made for a different source snapshot"),
+                               ({**saved, "challenger": {"mode": "full-context", "agent_id": "x"}}, "challenge\\.challenger\\.mode must be one of")):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(rp.ReviewDataError, message):
+                    rp.check_challenge_file(value, self.blocks, snapshot)
+
+
 if __name__ == "__main__":
     unittest.main()

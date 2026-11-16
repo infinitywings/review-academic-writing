@@ -61,10 +61,11 @@ import review_packets as rp  # noqa: E402
 
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "prompts"
-PROMPT_FILES = {"prefix": "prefix.txt", "masked": "masked.txt", "branch": "branch.txt", "audit": "fidelity-audit.txt"}
+PROMPT_FILES = {"prefix": "prefix.txt", "masked": "masked.txt", "branch": "branch.txt", "audit": "fidelity-audit.txt", "challenge": "challenge.txt"}
 SYSTEM_PROMPTS = {
     "reader": "You are the reader described in the user's message. Return only the JSON the message asks for, with no code fence and no commentary.",
     "auditor": "You are the auditor described in the user's message. Return only the JSON the message asks for, with no code fence and no commentary.",
+    "challenger": "You are the checker described in the user's message. Return only the JSON the message asks for, with no code fence and no commentary.",
 }
 RUNTIME_FLAGS = ["-p", "--restricted", "--strict-mcp-config", "--tools", "", "--setting-sources", "", "--no-session-persistence", "--permission-prompts", "none"]
 ISOLATION_NOTE = "claude -p --restricted --strict-mcp-config --tools '' --setting-sources '' : tools disabled by the runtime, MCP and settings skipped; not an OS sandbox"
@@ -1124,6 +1125,45 @@ def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dic
     return events.finish("audit", f"{call['label']} verdict {audit['verdict']}" + (f" (changed: {', '.join(changed)})" if changed else "") + f"; written to {out}.", True, {"label": call["label"], "audit": str(out), "verdict": audit["verdict"]})
 
 
+def run_challenge(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
+    """Put candidates to an independent challenger that sees the manuscript and the reader profile, not the editor's reasons."""
+    input_file = Path(args.input)
+    request = rp.load_json(input_file)
+    index = rp.validate_index(rp.load_json(args.index))
+    blocks = {b["block_id"]: b for b in index["blocks"]}
+    if not isinstance(request, dict) or set(request) != {"candidates"}:
+        raise DispatchError("--input must be a JSON object with exactly one key, candidates: a list of {candidate_id, anchor, question}.")
+    try:
+        candidates = rp.challenge_requests(request["candidates"], blocks, "candidates")
+    except rp.ReviewDataError as exc:
+        raise DispatchError(f"--input: {exc}") from exc
+    out = Path(args.out)
+    if out.exists():
+        raise DispatchError(f"Refusing to overwrite: {out}")
+    label = args.label or "CH-" + str(candidates[0]["candidate_id"])
+    payload = {"reader": rp._profile(rp.load_json(args.profile)), "manuscript": [{"block_id": b["block_id"], "text": b["text"]} for b in index["blocks"]], "candidates": candidates}
+
+    def accept(call: dict[str, Any]) -> dict[str, Any]:
+        answer = call["parsed"]
+        if not isinstance(answer, dict) or set(answer) != {"challenges"}:
+            raise Failure("format", "the answer must be a JSON object with exactly one key, challenges")
+        try:
+            joined = rp.check_challenges(candidates, answer["challenges"], blocks)
+        except rp.ReviewDataError as exc:
+            raise Failure("anchor" if ANCHOR_MESSAGE.search(str(exc)) else "format", str(exc)) from exc
+        record = {"snapshot_id": index["snapshot_id"], "challenges": joined, "challenger": {"mode": "bounded-request", "agent_id": runtime.agent_id(call["session_id"])}}
+        write_new(out, encoded(record))
+        return record
+
+    call, record, failure = attempt_chain(events, runtime, "challenger", label, events.generic_prompt("challenge"), encoded(payload), input_file, accept)
+    if failure is not None:
+        return events.finish("challenge", stop_message(label, failure), False, {"label": label})
+    counts = {v: sum(1 for c in record["challenges"] if c["verdict"] == v) for v in sorted(rp.CHALLENGE_VERDICTS)}
+    disputed = [c["candidate_id"] for c in record["challenges"] if rp.challenge_disputes(c)]
+    return events.finish("challenge", f"{call['label']} challenged {len(record['challenges'])} candidate(s): " + ", ".join(f"{n} {v}" for v, n in counts.items()) + f"; disputed: {', '.join(disputed) or 'none'}; written to {out}.",
+                         True, {"label": call["label"], "challenge": str(out), "verdicts": counts, "disputed": disputed})
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -1178,6 +1218,12 @@ def _parser() -> argparse.ArgumentParser:
     audit.add_argument("--out", required=True, help="Audit file to write (shape of assets/notes/fidelity-audit.json).")
     audit.add_argument("--round", type=int, default=1, help="Which wording of this candidate is audited: 1 for the first, 2 for a revision after a failed audit, and so on. Every round is audited against the manuscript text, never against the previous wording (default 1).")
     audit.add_argument("--hedge-list", help="JSON array of regular expressions added to the built-in hedge patterns when listing hedges_in_original.")
+    challenge = commands.add_parser("challenge", help="Put candidates to an independent challenger before the decisions stage.")
+    common(challenge)
+    challenge.add_argument("--input", required=True, help="JSON {candidates: [{candidate_id, anchor: {block_id, quote}, question}]}; the question is the reader's, without the editor's diagnosis.")
+    challenge.add_argument("--index", required=True, help="index.json of the manuscript; every block is shown to the challenger.")
+    challenge.add_argument("--profile", required=True, help="The reader profile the candidates were judged for.")
+    challenge.add_argument("--out", required=True, help="Challenge file to write (shape of assets/notes/challenge.json).")
     return parser
 
 
@@ -1209,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         events = Events(Path(args.events), Path(args.prompts_dir) if args.prompts_dir else PROMPTS_DIR)
         runtime = build_runtime(args)
-        handler = {"prefix": run_prefix, "masked": run_masked, "branch": run_branch, "audit": run_audit}[args.command]
+        handler = {"prefix": run_prefix, "masked": run_masked, "branch": run_branch, "audit": run_audit, "challenge": run_challenge}[args.command]
         summary = handler(args, events, runtime)
         print_summary(summary)
         return 0 if summary["ok"] else 1

@@ -151,7 +151,7 @@ class PlantedTests(unittest.TestCase):
         broken.mkdir()
         (broken / "manuscript.md").write_text("The cat sat. The cat sat.\n")
         (broken / "defects.json").write_text(json.dumps({"manuscript": "manuscript.md", "controls": [], "defects": [
-            {"id": "X1", "type": "t", "description": "d", "replace": [{"find": "The cat sat.", "with": "It sat."}], "expect": ["It sat."]}]}))
+            {"id": "X1", "type": "t", "description": "d", "question": "Who sat?", "challenge_expected": "kept", "replace": [{"find": "The cat sat.", "with": "It sat."}], "expect": ["It sat."]}]}))
         code, out, err = self.main(["plant", "--defects-file", str(broken / "defects.json"), "--out", str(self.root / "broken-out")])
         self.assertEqual(code, 2)
         self.assertIn("Defect X1: the text to replace occurs 2 times, not once", json.loads(err)["error"]["message"])
@@ -166,6 +166,18 @@ class PlantedTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         result = json.loads(out)
         self.assertEqual((result["planted"], result["found"], result["false_alarms"], result["elsewhere"]), (0, 0, ["baseline.json#1"], 1))
+
+    def test_key_carries_the_material_for_a_challenger(self):
+        key, text = self.planted()
+        blocks = {b["block_id"]: b["text"] for b in rp.build_index(text)["blocks"]}
+        self.assertEqual({d["id"]: d["challenge_expected"] for d in key["defects"]}["D07"], "disputed", "a value stated earlier answers the question")
+        self.assertEqual(sum(1 for d in key["defects"] if d["challenge_expected"] == "kept"), 7)
+        self.assertTrue(all(d["question"].endswith("?") for d in key["defects"]))
+        self.assertEqual([a["id"] for a in key["adequate"]], ["K01", "K02", "K03", "K04", "K05"])
+        for row in key["adequate"]:
+            self.assertIn(row["anchor"]["quote"], blocks[row["anchor"]["block_id"]])
+        clean_key, _ = self.planted("none", "clean-key")
+        self.assertEqual(len(clean_key["adequate"]), 5, "the adequate objections hold on the clean manuscript too")
 
     def test_list_names_every_defect(self):
         code, out, err = self.main(["list"])

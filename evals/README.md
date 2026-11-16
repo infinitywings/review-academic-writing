@@ -10,7 +10,7 @@ A small test set for the parts of the skill that look for clarity problems. It g
 | `defects.json` | Eight clarity defects, each a list of exact replacements in the manuscript, with the passages a finding should point at; and four control passages that no defect touches. |
 | `planted.py` | `list`, `plant`, and `score`. Standard library plus the skill's `review_packets.py`. |
 | `audit-cases.json` | Fifteen sentence pairs for the fidelity auditor, each with the verdict it should reach: ten rewrites that change the meaning (a dropped hedge, a hedge moved to another claim, an added quantifier, a plan stated as done, and so on) and five that keep it. |
-| `run.py` | `audit` and `prefix`: run those parts of the skill with a real model and count the outcomes. |
+| `run.py` | `audit`, `prefix`, and `challenge`: run those parts of the skill with a real model and count the outcomes. |
 | `tests/` | Unit tests for planting, scoring, and the runner. They call no model; the runner is tested with a stand-in program. |
 
 The defect types: a definition moved after the first use; an abbreviation that is never expanded; a pronoun with two possible referents; a definite reference to something not yet introduced; a result whose method paragraph was deleted; a second name for one thing; earlier information relied on without a reminder; a count that disagrees with an earlier count.
@@ -32,9 +32,10 @@ To run a part of the skill with a real model (the model is required; there is no
 ```bash
 python3 evals/run.py audit  --model MODEL --repeats 3 --out /tmp/eval-audit
 python3 evals/run.py prefix --model MODEL --repeats 3 --out /tmp/eval-prefix
+python3 evals/run.py challenge --model MODEL --repeats 3 --out /tmp/eval-challenge
 ```
 
-`audit` sends each case to `dispatch_reader.py audit` and compares the verdict with the expected one, exactly: `undetermined` matches neither. `prefix` plants all eight defects, sends one prefix reader to the end of every section, and scores the readers' issues; with `--defects none` it runs the same readers on the clean manuscript. If every call fails (an expired login, a missing command), both stop with the failure and write no score. Both keep every prompt, raw answer, and cost under `--out` and write `results.json` there. Results are not committed; keep them outside the repository or in an ignored directory.
+`audit` sends each case to `dispatch_reader.py audit` and compares the verdict with the expected one, exactly: `undetermined` matches neither. `prefix` plants all eight defects, sends one prefix reader to the end of every section, and scores the readers' issues; with `--defects none` it runs the same readers on the clean manuscript. `challenge` puts thirteen candidates to `dispatch_reader.py challenge`: one per planted defect, with the reader's question at the planted place, and five objections that the manuscript answers before the quoted place. It counts false kills (a sound candidate the challenger disputes) and false keeps (an answered objection it lets stand). The candidate for D07 is expected to be disputed, because the value it asks for is stated earlier. If every call fails (an expired login, a missing command), the commands stop with the failure and write no score. Both keep every prompt, raw answer, and cost under `--out` and write `results.json` there. Results are not committed; keep them outside the repository or in an ignored directory.
 
 Runs that call a model are not stable from one call to the next, so compare two versions of a component over several runs each, with the same model.
 

@@ -96,7 +96,7 @@ class ReviewStepsTests(unittest.TestCase):
                     "candidates": [{"id": "C05", "anchor": A("B0005", "91 percent"), "question": "Is 91 percent compared with anything?", "evidence": []}]}
         if stage == "decisions":
             common = {"verification": "v", "countercheck": "c", "evidence": []}
-            return {**base, "decisions": [
+            return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [
                 {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite",
                  "diagnosis": "MSW is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
                 {**common, "candidate_id": "C02", "status": "needs_author", "category": "unsupported_claim",
@@ -181,7 +181,7 @@ class ReviewStepsTests(unittest.TestCase):
         receipts = [json.loads((self.journal / STAGE_FILES[s][1]).read_text()) for s in rs.STAGES]
         self.assertEqual([r["previous_receipt_sha256"] for r in receipts[1:]], [r["receipt_sha256"] for r in receipts[:-1]])
         self.assertEqual(receipts[4]["attachments"], [{"path": str(self.root / "audit-C01.json"), "sha256": sha(self.root / "audit-C01.json")}])
-        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 6)
+        self.assertEqual(json.loads((self.journal / "00-start.json").read_text())["schema_version"], 7)
         ready = rs.ready_run(self.journal, self.index)
         self.assertEqual((ready["ready_to_draft"], ready["overlapping_wordings"]), (True, []))
         self.assertEqual(self.names(), ["00-start.json", "01-reading.notes.json", "01-reading.receipt.json", "02-checks.notes.json", "02-checks.receipt.json",
@@ -706,6 +706,112 @@ class ReviewStepsTests(unittest.TestCase):
         self.assertEqual(self.names(out), ["00-start.json"])
         self.assertEqual(sorted(p.name for p in cwd.iterdir()), [])
 
+    def challenge_file(self, name, answers):
+        """A saved challenge of the named candidates; answers maps candidate id to (verdict, answer anchor or None, duplicate_of or None)."""
+        candidates = {c["id"]: c for c in self.notes("checks")["candidates"] + self.notes("reconcile")["candidates"]}
+        requests = [{"candidate_id": k, "anchor": candidates[k]["anchor"], "question": candidates[k]["question"]} for k in answers]
+        joined = rp.check_challenges(requests, [{"candidate_id": k, "verdict": v, "answer": a, "duplicate_of": d, "reason": "r"} for k, (v, a, d) in answers.items()],
+                                     {b["block_id"]: b for b in self.index["blocks"]})
+        path = self.root / name
+        path.write_text(json.dumps({"snapshot_id": self.sid, "challenges": joined, "challenger": {"mode": "bounded-request", "agent_id": "challenger-1"}}), encoding="utf-8")
+        return path
+
+    def decisions_with(self, edits):
+        """The decisions notes with per-candidate edits; the no-challenger reason is dropped once any decision is challenged."""
+        notes = self.notes("decisions")
+        for row in notes["decisions"]:
+            row.update(edits.get(row["candidate_id"], {}))
+        if any("challenge_path" in e for e in edits.values()):
+            del notes["no_challenge_reason"]
+        return notes
+
+    def test_decisions_bind_an_independent_challenge_and_answer_a_dispute(self):
+        self.reseal_schema(self.journal, 6)  # in a schema 6 journal a challenge is checked when present; schema 7 also requires one
+        self.record_through("reconcile")
+        seen_before = A("B0002", "two independent records agreed")
+        stands = str(self.challenge_file("ch-stands.json", {"C01": ("stands", None, None), "C05": ("stands", None, None)}))
+        later = str(self.challenge_file("ch-later.json", {"C01": ("answered", DEFINITION, None)}))
+        earlier = str(self.challenge_file("ch-earlier.json", {"C05": ("answered", seen_before, None)}))
+        minor = str(self.challenge_file("ch-minor.json", {"C01": ("not_material", None, None), "C03": ("not_material", None, None)}))
+        twin = str(self.challenge_file("ch-twin.json", {"C04": ("stands", None, None), "C01": ("duplicate", None, "C04")}))
+        only_c02 = str(self.challenge_file("ch-other.json", {"C02": ("stands", None, None)}))
+        moved = self.root / "ch-moved.json"
+        value = json.loads(Path(later).read_text())
+        value["challenges"][0]["answer_position"] = "before"
+        moved.write_text(json.dumps(value))
+        elsewhere = self.root / "ch-elsewhere.json"
+        value = json.loads(Path(stands).read_text())
+        value["challenges"][0]["anchor"] = A("B0005", "412 pairs")
+        elsewhere.write_text(json.dumps(value))
+        cases = (
+            ({"C01": {"challenge_response": "kept because the definition comes later"}}, "Decision C01: challenge_response answers a challenge, so it needs challenge_path\\."),
+            ({"C01": {"challenge_path": only_c02}}, "challenge_path for C01 holds no challenge of that candidate\\."),
+            ({"C01": {"challenge_path": str(elsewhere)}}, "The challenge of C01 was made at a different anchor than the candidate's"),
+            ({"C01": {"challenge_path": str(moved)}}, "records an answer_position that the text does not give"),
+            ({"C01": {"challenge_path": minor}}, "Decision C01 keeps a candidate whose independent challenge found it not material; say why it is kept in challenge_response, or reject or merge it\\."),
+            ({"C01": {"challenge_path": twin}}, "keeps a candidate whose independent challenge found it a duplicate of C04"),
+            ({"C05": {"challenge_path": earlier}}, "Decision C05 keeps a candidate whose independent challenge quoted text the reader has already seen that answers it"),
+            ({"C01": {"challenge_path": minor, "challenge_response": " "}}, "decision\\.challenge_response must be a nonempty string"),
+        )
+        for edits, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "decisions", self.decisions_with(edits))
+        passes = (
+            ("stands", {"C01": {"challenge_path": stands}, "C05": {"challenge_path": stands}}, [stands]),
+            ("answered later", {"C01": {"challenge_path": later}}, [later]),  # an answer that comes after the anchor confirms a problem of order
+            ("overruled", {"C01": {"challenge_path": minor, "challenge_response": "The restriction in the same sentence depends on the window, so the reader needs it here."},
+                           "C03": {"challenge_path": minor}}, [minor]),  # C03 is rejected: a dispute needs no answer
+            ("answered before, overruled", {"C05": {"challenge_path": earlier, "challenge_response": "The quoted sentence names agreement but gives no rate to compare with."}}, [earlier]),
+        )
+        for name, edits, attached in passes:
+            with self.subTest(name=name):
+                journal = self.fresh_journal(f"challenge-{name.replace(' ', '-').replace(',', '')}", through="reconcile", schema=6)
+                self.assertEqual(self.record("decisions", self.decisions_with(edits), journal)["next_stage"], "repairs")
+                receipt = json.loads((journal / "04-decisions.receipt.json").read_text())
+                self.assertEqual(receipt["attachments"], [{"path": p, "sha256": sha(p)} for p in attached], "one attachment per challenge file, however many decisions use it")
+        Path(stands).write_text(Path(stands).read_text() + "\n")
+        with self.assertRaisesRegex(rp.ReviewDataError, "A saved checkpoint attachment has changed\\."):
+            self.record("repairs", journal=self.root / "challenge-stands")
+
+    def test_schema_7_requires_a_challenge_of_every_candidate_or_a_reason(self):
+        self.record_through("reconcile")
+        everyone = {k: ("stands", None, None) for k in ("C01", "C02", "C03", "C04", "C05")}
+        full = str(self.challenge_file("ch-all.json", everyone))
+        part = str(self.challenge_file("ch-part.json", {"C01": ("stands", None, None), "C02": ("stands", None, None)}))
+        no_reason = self.notes("decisions")
+        del no_reason["no_challenge_reason"]
+        both = self.decisions_with({k: {"challenge_path": full} for k in everyone})
+        both["no_challenge_reason"] = "no challenger"
+        blank = self.notes("decisions")
+        blank["no_challenge_reason"] = " "
+        cases = (
+            (no_reason, "Every candidate needs an independent challenge before its decision .* Missing: C01, C02, C03, C04, C05\\. If no challenger can be run, say why in no_challenge_reason and challenge none\\."),
+            (self.decisions_with({"C01": {"challenge_path": part}, "C02": {"challenge_path": part}}), "Missing: C03, C04, C05\\."),
+            (both, "no_challenge_reason says no challenger was run, so no decision may carry challenge_path\\."),
+            (blank, "decisions\\.no_challenge_reason must be a nonempty string"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "decisions", value)
+        self.assertEqual(self.record("decisions", self.decisions_with({k: {"challenge_path": full} for k in everyone}))["next_stage"], "repairs")
+        receipt = json.loads((self.journal / "04-decisions.receipt.json").read_text())
+        self.assertEqual(receipt["attachments"], [{"path": full, "sha256": sha(full)}])
+        other = self.fresh_journal("no-challenger", through="reconcile")
+        self.assertEqual(self.record("decisions", journal=other)["next_stage"], "repairs", "a stated reason stands in when no challenger can be run")
+
+    def test_challenge_input_lists_every_recorded_candidate_in_batches(self):
+        self.assertRefused("Challenge the candidates after the reconcile stage is recorded", rs.challenge_inputs, self.journal, self.index, self.root / "early", 10)
+        self.record_through("reconcile")
+        result = rs.challenge_inputs(self.journal, self.index, self.root / "inputs", 2)
+        self.assertEqual((result["candidates"], [Path(p).name for p in result["inputs"]]), (5, ["challenge-input-01.json", "challenge-input-02.json", "challenge-input-03.json"]))
+        rows = [row for p in result["inputs"] for row in json.loads(Path(p).read_text())["candidates"]]
+        self.assertEqual([row["candidate_id"] for row in rows], ["C01", "C02", "C03", "C04", "C05"])
+        self.assertEqual(sorted(rows[0]), ["anchor", "candidate_id", "question"], "the challenger is not given the editor's evidence")
+        blocks = {b["block_id"]: b for b in self.index["blocks"]}
+        self.assertEqual(len(rp.challenge_requests(rows, blocks)), 5)
+        with self.assertRaisesRegex(rp.ReviewDataError, "--batch must be at least 1"):
+            rs.challenge_inputs(self.journal, self.index, self.root / "zero", 0)
+
     def test_overlapping_wordings_name_blocks_two_wordings_touch(self):
         rows = [{"candidate_id": "C01", "proposed_wording": "W1", "affected_block_ids": ["B0003", "B0004"]},
                 {"candidate_id": "C02", "proposed_wording": None, "affected_block_ids": ["B0004"]},
@@ -1169,7 +1275,7 @@ class HedgedJournal(unittest.TestCase):
                     "candidates": [{"id": "C01", "anchor": anchor, "question": "Is the hedge on the effect kept?", "evidence": []}]}
         if stage == "reconcile":
             return {**base, "checkpoints": [], "no_checkpoints_reason": "none run", "branches": [], "observations": [], "candidates": []}
-        return {**base, "decisions": [{"candidate_id": "C01", "status": "accepted", "verification": "v", "countercheck": "c", "evidence": [], "category": "unsupported_claim",
+        return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [{"candidate_id": "C01", "status": "accepted", "verification": "v", "countercheck": "c", "evidence": [], "category": "unsupported_claim",
                                        "diagnosis": "The hedged effect reads as established.", "severity": "minor", "confidence": "medium"}]}
 
     def audit(self, wording, hedges, verdict="preserved", audit_round=1, anchor=HEDGED_ANCHOR, **checks):

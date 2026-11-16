@@ -634,7 +634,9 @@ class Run:
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
             require(isinstance(parsed, dict) and isinstance(parsed.get("decisions"), list), "The response must be an object with a decisions array.")
             require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
-            decisions = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "decisions": parsed["decisions"]}
+            # The orchestrator does not run the independent challenge yet (dispatch_reader.py challenge); a schema 7 journal must say so.
+            decisions = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "decisions": parsed["decisions"],
+                         "no_challenge_reason": "server/orchestrator.py does not run the independent challenge yet"}
             try:
                 self.record("decisions", decisions, self.out / "decisions.json")
             except rp.ReviewDataError as exc:
