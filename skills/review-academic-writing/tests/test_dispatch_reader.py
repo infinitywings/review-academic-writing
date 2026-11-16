@@ -211,6 +211,38 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertFalse((self.events / "P1b.prompt.txt").exists())
         self.assertIn("rejected", (self.events / "P1.invalid-reason.txt").read_text())
 
+    def prefix_observation(self, text, understanding):
+        """A packet through B0002 of `text` saved as P1.packet.json, and a reader's answer to it with the given understanding."""
+        packet = rp.build_packet(rp.build_index(text), PROFILE, through_block="B0002")
+        packet_path = self.root / "P1.packet.json"
+        rp.write_json_atomic(packet_path, packet)
+        observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+        observation.update({"understanding": understanding, "issues": []})
+        return packet_path, observation
+
+    def test_an_answer_in_another_language_is_corrected(self):
+        packet_path, chinese = self.prefix_observation(TEXT, "计数上升了。")
+        english = {**chinese, "understanding": "Counts of agreement rose."}
+        self.responses(json.dumps(chinese, ensure_ascii=False), json.dumps(english))
+        code, out, err = self.main(["prefix", "--events", str(self.events), "--packet", str(packet_path), "--label", "P1"])
+        self.assertEqual(code, 0, err)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_language"), ("P1b", "ok")])
+        self.assertEqual(summary["label"], "P1b")
+        self.assertEqual((self.events / "P1.invalid-reason.txt").read_text(encoding="utf-8").split(". Original files")[0], "P1 not accepted (language): understanding ('计数上升了。')")
+        source = (self.events / "P1b.prompt-source.txt").read_text(encoding="utf-8")
+        self.assertIn("Language note from the controller: a previous attempt at this same input wrote text in a language other than English (understanding ('计数上升了。')). "
+                      "Write every explanation, note, and reason in English; copy quotations character for character from the text; keep every other part of the response as before.", source)
+        self.assertEqual(json.loads((self.events / "P1b.observation.json").read_text())["understanding"], "Counts of agreement rose.")
+        self.assertFalse((self.events / "P1.observation.json").exists(), "the answer in another language is kept as raw bytes, not as an observation")
+
+    def test_an_input_that_holds_another_script_is_not_held_to_english(self):
+        packet_path, chinese = self.prefix_observation(TEXT.replace("Counts rose.", "Counts (计数) rose."), "计数上升了。")
+        self.responses(json.dumps(chinese, ensure_ascii=False))
+        code, out, err = self.main(["prefix", "--events", str(self.events), "--packet", str(packet_path), "--label", "P1"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(r["label"], r["status"]) for r in json.loads((self.events / "summary.json").read_text())["calls"]], [("P1", "ok")])
+
     # ------------------------------------------------------------ masked
 
     def test_masked_loop_runs_two_windows_to_completion(self):
@@ -263,6 +295,20 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertIn("copied character for character", correction)
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "invalid_anchor"), ("E01b", "ok"), ("E02", "ok")])
+
+    def test_masked_notes_in_another_language_are_corrected_before_they_are_recorded(self):
+        chinese = json.loads(masked_response([{**N1, "text": "报告了计数。"}]))
+        self.responses(json.dumps(chinese), json.dumps(chinese), json.dumps(chinese), masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
+        code, out, err = self.masked("--until-complete")
+        self.assertEqual(code, 0, err)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]],
+                         [("E01", "invalid_language"), ("E01b", "invalid_language"), ("E01c", "invalid_language"), ("E01r1", "ok"), ("E02", "ok")])
+        self.assertEqual(summary["restarts"], 1, "a language failure that used up its corrections restarts like a format failure")
+        self.assertIn("Language note from the controller", self.prompt(2))
+        self.assertIn("carry_memory.notes[0].text ('报告了计数。')", self.prompt(2))
+        recorded = json.loads((self.run / "records" / "000001" / "response.json").read_text())
+        self.assertEqual(recorded["carry_memory"]["notes"][0]["text"], "Counts are reported.")
 
     def test_resumed_run_after_a_rejection_uses_a_resume_label(self):
         unseen = dict(N2, sources=["B2"])  # B2 is not yet seen at event 1: the helper rejects it outright

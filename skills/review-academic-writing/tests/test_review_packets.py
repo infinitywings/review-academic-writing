@@ -244,6 +244,50 @@ class ReviewPacketsTests(unittest.TestCase):
             self.assertEqual(json.loads(done.stderr), {"ok": False, "error": {
                 "code": "output_exists", "message": "Output path already exists; choose a new path."}})
 
+    def test_other_script_strings_names_each_string_and_skips_copied_text(self):
+        value = {"summary": "One finding.", "decisions": [
+            {"diagnosis": "fine"},
+            {"diagnosis": "The term 定义 comes late and the sentence goes on for a good many more words.", "countercheck": ["checked", "проверено"],
+             "evidence": [{"block_id": "B0002", "quote": "引文"}], "proposed_wording": "改写", "kept_as": "可能", "in_context": "[[可能]]", "term": "术语",
+             "audit_path": "/home/读者/audit.json", "events_dir": "/home/读者/events"}]}
+        self.assertEqual(rp.other_script_strings(value), [("decisions[1].diagnosis", "定义 comes late and the sentence goes on f"), ("decisions[1].countercheck[1]", "проверено")],
+                         "the snippet is at most 40 characters from the first character of the other script")
+        self.assertEqual(rp.other_script_strings({"notes": "α and β are angles; the café is naïve — “quoted”."}), [], "Greek letters and accented Latin are not another script here")
+        for sample in ("кириллица", "עברית", "عربى", "हिन्दी", "ไทย", "かな", "漢字", "한글", "𠀋"):
+            with self.subTest(sample=sample):
+                self.assertEqual(rp.other_script_strings([sample]), [("[0]", sample)])
+
+    def test_english_check_on_observations_and_reviews(self):
+        packet = self.packet(through_block="B0002")
+        observation = self.observation(packet)
+        observation["understanding"] = "MSW 没有定义。"
+        self.assertEqual(rp.check_observation(packet, observation)["issue_count"], 1, "the library call checks the language only when asked")
+        with self.assertRaisesRegex(rp.ReviewDataError, "^observation: records are written in English; copy quotations and proposed wording exactly as they are in the manuscript\\. "
+                                    "Text in another script at: understanding \\('没有定义。'\\)\\.$"):
+            rp.check_observation(packet, observation, english=True)
+        many = self.review()
+        many["issues"] = [{**many["issues"][0], "id": f"W{n}", "diagnosis": "太晚"} for n in range(7)]
+        with self.assertRaisesRegex(rp.ReviewDataError, "issues\\[4\\]\\.diagnosis \\('太晚'\\); and 2 more\\.$"):
+            rp.check_review(self.index, many, english=True)
+        # A manuscript that itself holds text in another script may be quoted anywhere, so its records are not checked.
+        mixed = rp.build_index(TEXT + "\nThe window (测量间隔) is short.\n")
+        review = {"snapshot_id": mixed["snapshot_id"], "summary": "The gloss 测量间隔 is used once.", "issues": []}
+        self.assertEqual(rp.check_review(mixed, review, english=True)["issue_count"], 0)
+
+    def test_cli_check_review_refuses_a_summary_in_another_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "index.json").write_text(json.dumps(self.index), encoding="utf-8")
+            (root / "review.json").write_text(json.dumps(self.review()), encoding="utf-8")
+            done = self.run_cli(root, "check-review", "--index", root / "index.json", "--review", root / "review.json")
+            self.assertEqual((done.returncode, json.loads(done.stdout)["issue_count"]), (0, 1), done.stderr)
+            (root / "chinese.json").write_text(json.dumps({**self.review(), "summary": "一处定义出现得太晚。"}), encoding="utf-8")
+            done = self.run_cli(root, "check-review", "--index", root / "index.json", "--review", root / "chinese.json")
+            self.assertEqual((done.returncode, done.stdout), (2, ""))
+            self.assertEqual(json.loads(done.stderr), {"ok": False, "error": {"code": "validation_error", "message":
+                "review: records are written in English; copy quotations and proposed wording exactly as they are in the manuscript. "
+                "Text in another script at: summary ('一处定义出现得太晚。')."}})
+
 
 
 class HedgeReportTests(unittest.TestCase):

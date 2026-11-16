@@ -68,6 +68,17 @@ HEDGE_PATTERNS = (
     r"\bcannot (?:rule out|exclude)\b", r"\blimited to\b", r"\bwe did not (?:measure|test|examine|observe)\b",
 )
 HEDGE_REGEX = re.compile("|".join(HEDGE_PATTERNS), re.IGNORECASE)
+# Records are written in English; a character of one of these scripts in a record marks text in
+# another language. Greek is absent on purpose: mathematical notation uses it.
+OTHER_SCRIPT = re.compile(
+    "[\u0400-\u052F\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F\u1100-\u11FF"
+    "\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\U00020000-\U0002FA1F]"
+)
+# Copied manuscript text keeps the manuscript's language. A *_path or *_dir value is exempt too:
+# a home directory may be named in any script.
+LANGUAGE_EXEMPT_KEYS = {"quote", "proposed_wording", "kept_as", "in_context", "term"}
+LANGUAGE_SNIPPET_CHARS = 40
+LANGUAGE_PATHS_SHOWN = 5
 
 
 class ReviewDataError(ValueError):
@@ -206,6 +217,47 @@ def check_hedge_report(occurrences: list[dict[str, Any]], reported: Any, checks:
     if not _place_kept([spans[i] for i in order], []):
         raise ReviewDataError("audit.checks.hedges reports " + ", ".join(item["id"] for item in kept) + " kept, but the proposed wording does not hold a separate qualifying phrase for each: "
                               "two kept hedges quote the same words. Report each hedge the wording dropped as removed or strengthened.")
+
+
+def other_script_strings(value: Any, path: str = "") -> list[tuple[str, str]]:
+    """Every string in a JSON value that holds text in another script, as (path, snippet from the first such character).
+
+    A path reads like decisions[2].diagnosis. Nothing under a key in LANGUAGE_EXEMPT_KEYS, or
+    under a key that ends in _path or _dir, is looked at.
+    """
+    found: list[tuple[str, str]] = []
+    if isinstance(value, str):
+        match = OTHER_SCRIPT.search(value)
+        if match:
+            found.append((path, value[match.start():match.start() + LANGUAGE_SNIPPET_CHARS]))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key in LANGUAGE_EXEMPT_KEYS or key.endswith(("_path", "_dir")):
+                continue
+            found.extend(other_script_strings(item, f"{path}.{key}" if path else key))
+    elif isinstance(value, list):
+        for number, item in enumerate(value):
+            found.extend(other_script_strings(item, f"{path}[{number}]"))
+    return found
+
+
+def language_paths(found: list[tuple[str, str]]) -> str:
+    shown = "; ".join(f"{path or 'the value'} ({snippet!r})" for path, snippet in found[:LANGUAGE_PATHS_SHOWN])
+    return shown + (f"; and {len(found) - LANGUAGE_PATHS_SHOWN} more" if len(found) > LANGUAGE_PATHS_SHOWN else "")
+
+
+def require_english(value: Any, label: str, source_text: str) -> None:
+    """Refuse a record that holds text in another script, unless the manuscript itself does.
+
+    A manuscript that contains such text may be quoted anywhere in a record, so the check is
+    skipped for it. The check sees scripts, not languages: French or German prose passes.
+    """
+    if OTHER_SCRIPT.search(source_text):
+        return
+    found = other_script_strings(value)
+    if found:
+        raise ReviewDataError(f"{label}: records are written in English; copy quotations and proposed wording exactly as they are in the manuscript. "
+                              f"Text in another script at: {language_paths(found)}.")
 
 
 def sha256_text(text: str) -> str:
@@ -629,7 +681,7 @@ def _issues(value: Any, blocks: dict[str, dict[str, Any]], *, final: bool) -> in
     return len(value)
 
 
-def check_observation(packet: Any, observation: Any) -> dict[str, Any]:
+def check_observation(packet: Any, observation: Any, *, english: bool = False) -> dict[str, Any]:
     packet = validate_packet(packet)
     observation = _object(observation, "observation")
     _keys(observation, {
@@ -642,6 +694,8 @@ def check_observation(packet: Any, observation: Any) -> dict[str, Any]:
     blocks = {block["block_id"]: block for block in packet["blocks"]}
     count = _issues(observation["issues"], blocks, final=False)
     unplaced = _cannot_place(observation.get("cannot_place", []), blocks)
+    if english:
+        require_english(observation, "observation", packet["visible_text"])
     return {
         "ok": True,
         "command": "check-observation",
@@ -690,7 +744,7 @@ def _concept_ledger(value: Any, blocks: dict[str, dict[str, Any]]) -> None:
             _evidence(entry["evidence"], blocks, label + ".evidence")
 
 
-def check_review(index: Any, review: Any) -> dict[str, Any]:
+def check_review(index: Any, review: Any, *, english: bool = False) -> dict[str, Any]:
     index = validate_index(index)
     review = _object(review, "review")
     _keys(review, {"snapshot_id", "summary", "issues"}, {"concept_ledger"}, "review", allow_extra=True)
@@ -701,6 +755,8 @@ def check_review(index: Any, review: Any) -> dict[str, Any]:
     count = _issues(review["issues"], blocks, final=True)
     if "concept_ledger" in review:
         _concept_ledger(review["concept_ledger"], blocks)
+    if english:
+        require_english(review, "review", index["text"])
     return {
         "ok": True,
         "command": "check-review",
@@ -808,9 +864,9 @@ def main(argv: list[str] | None = None) -> int:
             write_json_atomic(args.out, result)
             response = {"ok": True, "command": "packet", "checkpoint_id": result["checkpoint_id"], "prefix_sha256": result["prefix_sha256"], "output": str(args.out)}
         elif args.command == "check-observation":
-            response = check_observation(load_json(args.packet), load_json(args.observation))
+            response = check_observation(load_json(args.packet), load_json(args.observation), english=True)
         else:
-            response = check_review(load_json(args.index), load_json(args.review))
+            response = check_review(load_json(args.index), load_json(args.review), english=True)
         print(json.dumps(response, ensure_ascii=True, allow_nan=False))
         return 0
     except ReviewDataError as exc:

@@ -991,7 +991,7 @@ class ReviewStepsTests(unittest.TestCase):
             self.assertTrue(rs.names_a_block(text, blocks), text)
         for text in ("B00031", "AB0003", "b0003", "B003", "在B00031处加一句说明", "1B0003"):
             self.assertFalse(rs.names_a_block(text, blocks), text)
-        journal = self.fresh_journal("cjk-action")
+        journal = self.fresh_journal("cjk-action", schema=6)  # schema 7 notes are English; the block-id rule itself reads any script
         self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"action": "在B0003处加一句说明"}}), journal)["next_stage"], "ready")
         self.assertEqual(json.loads((journal / "05-repairs.notes.json").read_text(encoding="utf-8"))["repairs"][0]["action"], "在B0003处加一句说明")
         self.assertEqual(self.record("repairs", self.repairs_with({"C01": {"action": "Move B0004's first sentence ahead of B0003."}}))["next_stage"], "ready")
@@ -1181,6 +1181,57 @@ class ReviewStepsTests(unittest.TestCase):
         path = journal / "00-start.json"
         original = json.loads(path.read_text())
         path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": version})))
+
+    # ------------------------------------------------------------ records in English (schema 7)
+
+    def test_schema_7_notes_and_the_final_review_are_written_in_english(self):
+        self.record_through("reconcile")
+        decisions = self.notes("decisions")
+        decisions["decisions"][2]["verification"] = "定义出现在首次使用之后。"
+        self.assertRefused("^decisions: records are written in English; copy quotations and proposed wording exactly as they are in the manuscript\\. "
+                           "Text in another script at: decisions\\[2\\]\\.verification \\('定义出现在首次使用之后。'\\)\\.$", self.record, "decisions", decisions)
+        older = self.fresh_journal("english-schema6", through="reconcile", schema=6)
+        self.assertEqual(self.record("decisions", decisions, older)["next_stage"], "repairs", "journals before schema 7 are not checked")
+        self.record("decisions")
+        self.record("repairs")
+        rs.ready_run(self.journal, self.index)
+        review = self.final_review()
+        review["summary"] = "三处问题。"
+        self.assertRefused("^review: records are written in English; .* Text in another script at: summary \\('三处问题。'\\)\\.$", rs.check_final, self.journal, self.index, review)
+        self.assertEqual(rs.check_final(self.journal, self.index, self.final_review())["issue_count"], 3)
+
+    def test_copied_wording_and_paths_are_exempt_from_the_english_check(self):
+        self.record_through("decisions")
+        wording = "Agreement fell sharply when consecutive measurements (连续测量) were more than two seconds apart."
+        folder = self.root / "审计"
+        folder.mkdir()
+        audit = folder / "audit-C01.json"
+        audit.write_text(json.dumps(self.audit(proposed_wording=wording)), encoding="utf-8")
+        copied = {"proposed_wording": wording, "audit_path": str(audit)}
+        self.assertRefused("Text in another script at: repairs\\[0\\]\\.new_terms_check \\('去掉缩写'\\)\\.$", self.record, "repairs",
+                           self.repairs_with({"C01": {**copied, "new_terms_check": "去掉缩写"}}))
+        self.assertEqual(self.record("repairs", self.repairs_with({"C01": copied}))["next_stage"], "ready")
+        saved = json.loads((self.journal / "05-repairs.notes.json").read_text(encoding="utf-8"))["repairs"][0]
+        self.assertEqual((saved["proposed_wording"], saved["audit_path"]), (wording, str(audit)))
+
+    def test_a_manuscript_with_text_in_another_script_is_not_checked(self):
+        index = rp.build_index(TEXT.replace("a separate observer.", "a separate observer (观察者)."))
+        journal = self.root / "mixed-source"
+        rs.start_run(index, PROFILE, self.scope(), journal)
+        reading = {**self.notes("reading"), "snapshot_id": index["snapshot_id"]}
+        reading["paragraphs"][0]["paraphrase"] = "两份记录由不同的观察者完成。"
+        self.assertEqual(rs.record_stage(journal, index, "reading", json.dumps(reading).encode("utf-8"))["next_stage"], "checks")
+
+    def test_a_stored_observation_in_another_language_still_replays(self):
+        self.reseal_schema(self.journal, 6)
+        self.record_through("checks")
+        reconcile, _packet_path, obs_path = self.prefix_reconcile()
+        observation = json.loads(obs_path.read_text(encoding="utf-8"))
+        observation["understanding"] = "MSW 还没有定义。"
+        obs_path.write_text(json.dumps(observation), encoding="utf-8")
+        self.assertEqual(self.record("reconcile", reconcile)["next_stage"], "decisions")
+        replayed = rs.load_run(self.journal, self.index)[1]["reconcile"]
+        self.assertEqual([p["observation_path"] for p in replayed["checkpoints"]], [str(obs_path)])
 
     def legacy_audit(self):
         audit = self.term_level(self.audit())

@@ -39,6 +39,8 @@ JOURNAL_SCHEMA = 7
 # Schema 7 journals require an independent challenge of every candidate before its decision
 # (challenge_path on each decision), or no_challenge_reason when no challenger could be run;
 # in schema 6 and earlier a challenge is checked when present and never required.
+# Schema 7 notes and the final review are also written in English (review_packets.require_english);
+# attached reader files are not rechecked here, dispatch_reader.py holds them to it when they are made.
 SUPPORTED_SCHEMAS = {4, 5, 6, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
 # An optional passage.proposition_checks entry: what one suspected sentence actually states.
@@ -355,6 +357,8 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
     if value["snapshot_id"] != start["snapshot_id"]:
         raise Error("Notes snapshot_id does not match this journal's source.")
     string(value["summary"], stage + ".summary")
+    if start["schema_version"] >= 7:
+        rp.require_english(value, stage, index["text"])
     blocks = {b["block_id"]: b for b in index["blocks"]}
     included = set(start["scope"]["included_block_ids"])
     attachments = []
@@ -968,7 +972,7 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
     with locked(journal):
         start, notes, previous_hash = load_run(journal, index)
         verify_ready(journal, start, notes, previous_hash)
-        rp.check_review(index, review)
+        rp.check_review(index, review, english=start["schema_version"] >= 7)
         candidates = all_candidates(notes)
         decisions = by_id(notes["decisions"]["decisions"], "candidate_id", "decisions")
         repairs = by_id(notes["repairs"]["repairs"], "candidate_id", "repairs")
