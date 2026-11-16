@@ -42,7 +42,8 @@ JOURNAL_SCHEMA = 7
 # Schema 7 notes and the final review are also written in English (review_packets.require_english);
 # attached reader files are not rechecked here, dispatch_reader.py holds them to it when they are made.
 # A schema 7 observation classified resolved_later or adequate quotes the words that answer the
-# reader's question (observation_proof).
+# reader's question (observation_proof), and every kept schema 7 decision states a close_criterion
+# that the final issue repeats.
 SUPPORTED_SCHEMAS = {4, 5, 6, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
 # An optional passage.proposition_checks entry: what one suspected sentence actually states.
@@ -486,7 +487,7 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
         decisions = by_id(array(value.get("decisions"), "decisions.decisions"), "candidate_id", "decisions")
         if decisions.keys() != candidates.keys():
             raise Error("Decisions must account for every candidate exactly once, including rejected candidates.")
-        for row in decisions.values():
+        for candidate_id, row in decisions.items():
             fields(row, {"status", "verification", "countercheck", "evidence"}, "decision")
             rp._enum(row["status"], FINAL_STATUSES | {"rejected", "merged"}, "decision.status")
             for key in ("verification", "countercheck"):
@@ -502,6 +503,8 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                 target = string(row.get("merged_into"), "decision.merged_into")
                 if target not in decisions or not isinstance(decisions[target].get("status"), str) or decisions[target]["status"] not in FINAL_STATUSES:
                     raise Error("A merged candidate must point directly to an accepted or needs_author candidate; no chains or cycles.")
+            if start["schema_version"] >= 7:
+                close_criterion(candidate_id, row)
         seen_paths: dict[str, list[dict]] = {}
         for key, row in decisions.items():
             attachments.extend(challenge(row, key, candidates[key], blocks, start["snapshot_id"], seen_paths))
@@ -620,6 +623,24 @@ def observation_proof(key: str, row: dict, point: dict | None, blocks: dict, pro
     elif point is not None and rp._absolute_span(resolved_by, blocks)[1] > rp._absolute_span(point["anchor"], blocks)[1]:
         raise Error(f"Observation {key}: resolved_by quotes words that end after checkpoint {row['source_id']}'s anchor, which the reader had not reached. Words that answer the question "
                     "only later make the observation resolved_later, not adequate; quote earlier words, give background, or change the classification.")
+
+
+def close_criterion(candidate_id: str, row: dict) -> None:
+    """A kept decision states when its problem will be gone: what the target reader can state or find once the passage is fixed (schema 7).
+
+    A later re-test asks a fresh reader exactly that, so the criterion is about the reader and
+    may not repeat the diagnosis. A rejected or merged decision has nothing left to close; the
+    blank string the template starts with counts as none there.
+    """
+    criterion = row.get("close_criterion")
+    if row["status"] not in FINAL_STATUSES:
+        if criterion is not None and not (isinstance(criterion, str) and not criterion.strip()):
+            raise Error(f"Decision {candidate_id} is {row['status']}, so it carries no close_criterion: nothing of it remains to be closed. Remove the field or set it to null.")
+        return
+    if not isinstance(criterion, str) or not criterion.strip():
+        raise Error(f"Decision {candidate_id} ({row['status']}) needs close_criterion: one sentence saying what the target reader can state or find once the passage is fixed.")
+    if criterion.strip() == row["diagnosis"].strip():
+        raise Error(f"Decision {candidate_id}: close_criterion repeats the diagnosis. Say what the target reader can state or find once the passage is fixed, not what is wrong now.")
 
 
 def challenge(row: dict, candidate_id: str, candidate: dict, blocks: dict, snapshot_id: str, seen: dict[str, list[dict]]) -> list[dict]:
@@ -1041,8 +1062,8 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
                 raise Error(f"Final issue {key}: action must say where to act by naming a block id of this source (for example B0003).")
             if strict and decision["status"] == "needs_author" and not is_question(string(issue.get("author_question"), f"final issue {key}.author_question")):
                 raise Error(f"Final issue {key}: author_question must be a question that ends with a question mark.")
-            for field in ("category", "diagnosis", "severity", "confidence"):
-                if issue[field] != decision[field]:
+            for field in ("category", "diagnosis", "severity", "confidence") + (("close_criterion",) if start["schema_version"] >= 7 else ()):
+                if issue.get(field) != decision[field]:
                     raise Error(f"Final issue {key}.{field} differs from the saved decision; revise notes in a new run.")
             for field in ("action", "scientific_fidelity"):
                 if issue[field] != repair[field]:

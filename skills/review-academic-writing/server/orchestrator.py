@@ -834,7 +834,7 @@ class Run:
             for n, key in enumerate(parsed["issue_order"], 1):
                 decision, repair, candidate = decisions[key], repairs[key], candidates[key]
                 issue = {"id": f"W{n:02d}", "candidate_id": key, "decision_status": decision["status"], "category": decision["category"], "anchor": candidate["anchor"],
-                         "diagnosis": decision["diagnosis"], "action": repair["action"], "proposed_wording": repair["proposed_wording"], "scientific_fidelity": repair["scientific_fidelity"],
+                         "diagnosis": decision["diagnosis"], "close_criterion": decision["close_criterion"], "action": repair["action"], "proposed_wording": repair["proposed_wording"], "scientific_fidelity": repair["scientific_fidelity"],
                          "severity": decision["severity"], "confidence": decision["confidence"], "evidence": dedupe_anchors(decision["evidence"] + candidate["evidence"]),
                          "initial_reader_question": candidate["question"], "affected_locations": repair["affected_block_ids"]}
                 if repair["author_question"] is not None:

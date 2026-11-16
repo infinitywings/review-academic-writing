@@ -98,13 +98,14 @@ class ReviewStepsTests(unittest.TestCase):
             common = {"verification": "v", "countercheck": "c", "evidence": []}
             return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [
                 {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite",
-                 "diagnosis": "MSW is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
+                 "diagnosis": "MSW is used in B0003 before B0004 defines it.", "close_criterion": "The reader can say what the MSW measures on reaching the threshold in B0003.",
+                 "severity": "major", "confidence": "high"},
                 {**common, "candidate_id": "C02", "status": "needs_author", "category": "unsupported_claim",
-                 "diagnosis": "The pair count has no stated source.", "severity": "minor", "confidence": "medium"},
+                 "diagnosis": "The pair count has no stated source.", "close_criterion": "The reader can say how the 412 pairs were selected.", "severity": "minor", "confidence": "medium"},
                 {**common, "candidate_id": "C03", "status": "rejected"},
                 {**common, "candidate_id": "C04", "status": "merged", "merged_into": "C01"},
                 {**common, "candidate_id": "C05", "status": "accepted", "category": "unsupported_claim",
-                 "diagnosis": "The agreement rate has no comparison.", "severity": "minor", "confidence": "medium"}]}
+                 "diagnosis": "The agreement rate has no comparison.", "close_criterion": "The reader can name the rate that 91 percent is compared with.", "severity": "minor", "confidence": "medium"}]}
         return {**base, "repairs": [
             {"candidate_id": "C01", "kind": "move", "action": "Move the definition ahead of B0003.", "proposed_wording": WORDING,
              "scientific_fidelity": "threshold preserved", "new_terms_check": "drops MSW", "affected_block_ids": ["B0003", "B0004"], "author_question": None,
@@ -158,7 +159,7 @@ class ReviewStepsTests(unittest.TestCase):
         for n, key in enumerate(("C01", "C02", "C05"), 1):
             d, r = decisions[key], repairs[key]
             issues.append({"id": f"W0{n}", "candidate_id": key, "decision_status": d["status"], "anchor": anchors[key],
-                           **{f: d[f] for f in ("category", "diagnosis", "severity", "confidence")},
+                           **{f: d[f] for f in ("category", "diagnosis", "close_criterion", "severity", "confidence")},
                            **{f: r[f] for f in ("action", "scientific_fidelity", "proposed_wording", "author_question")}})
         issues[0]["evidence"] = [DEFINITION]
         return {"snapshot_id": self.sid, "summary": "Three findings.", "issues": issues}
@@ -1236,6 +1237,51 @@ class ReviewStepsTests(unittest.TestCase):
         older = self.fresh_journal("proof-schema6", through="checks", schema=6)
         self.assertEqual(self.record("reconcile", self.observed("resolved_later"), older)["next_stage"], "decisions", "journals before schema 7 need no proof")
 
+    # ------------------------------------------------------------ close criterion (schema 7)
+
+    def test_every_kept_decision_states_a_close_criterion_that_the_final_issue_repeats(self):
+        self.record_through("reconcile")
+        absent = self.notes("decisions")
+        del absent["decisions"][0]["close_criterion"]
+        cases = (
+            (absent, "Decision C01 \\(accepted\\) needs close_criterion: one sentence saying what the target reader can state or find once the passage is fixed\\."),
+            (self.decisions_with({"C01": {"close_criterion": None}}), "Decision C01 \\(accepted\\) needs close_criterion"),
+            (self.decisions_with({"C02": {"close_criterion": " "}}), "Decision C02 \\(needs_author\\) needs close_criterion"),
+            (self.decisions_with({"C01": {"close_criterion": "MSW is used in B0003 before B0004 defines it. "}}),
+             "Decision C01: close_criterion repeats the diagnosis\\. Say what the target reader can state or find once the passage is fixed, not what is wrong now\\."),
+            (self.decisions_with({"C03": {"close_criterion": "The reader can name the observer."}}),
+             "Decision C03 is rejected, so it carries no close_criterion: nothing of it remains to be closed\\. Remove the field or set it to null\\."),
+            (self.decisions_with({"C04": {"close_criterion": "The reader can say what the MSW measures."}}), "Decision C04 is merged, so it carries no close_criterion"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.assertRefused(message, self.record, "decisions", value)
+        # A rejected or merged decision may leave the field null or as the blank string of the template.
+        self.assertEqual(self.record("decisions", self.decisions_with({"C03": {"close_criterion": None}, "C04": {"close_criterion": ""}}))["next_stage"], "repairs")
+        self.record("repairs")
+        rs.ready_run(self.journal, self.index)
+        changed = self.final_review()
+        changed["issues"][0]["close_criterion"] = "The reader can define the MSW."
+        dropped = self.final_review()
+        del dropped["issues"][1]["close_criterion"]
+        self.assertRefused("Final issue C01\\.close_criterion differs from the saved decision; revise notes in a new run\\.", rs.check_final, self.journal, self.index, changed)
+        self.assertRefused("Final issue C02\\.close_criterion differs from the saved decision", rs.check_final, self.journal, self.index, dropped)
+        self.assertEqual(rs.check_final(self.journal, self.index, self.final_review())["issue_count"], 3)
+
+    def test_close_criterion_is_not_required_before_schema_7(self):
+        older = self.fresh_journal("criterion-schema6", through="reconcile", schema=6)
+        bare = self.notes("decisions")
+        for row in bare["decisions"]:
+            row.pop("close_criterion", None)
+        bare["decisions"][2]["close_criterion"] = "The reader can name the observer."
+        self.assertEqual(self.record("decisions", bare, older)["next_stage"], "repairs")
+        self.record("repairs", journal=older)
+        rs.ready_run(older, self.index)
+        review = self.final_review()
+        for issue in review["issues"]:
+            del issue["close_criterion"]
+        self.assertEqual(rs.check_final(older, self.index, review)["issue_count"], 3)
+
     # ------------------------------------------------------------ records in English (schema 7)
 
     def test_schema_7_notes_and_the_final_review_are_written_in_english(self):
@@ -1381,7 +1427,8 @@ class HedgedJournal(unittest.TestCase):
         if stage == "reconcile":
             return {**base, "checkpoints": [], "no_checkpoints_reason": "none run", "branches": [], "observations": [], "candidates": []}
         return {**base, "no_challenge_reason": "this test journal runs no challenger", "decisions": [{"candidate_id": "C01", "status": "accepted", "verification": "v", "countercheck": "c", "evidence": [], "category": "unsupported_claim",
-                                       "diagnosis": "The hedged effect reads as established.", "severity": "minor", "confidence": "medium"}]}
+                                       "diagnosis": "The hedged effect reads as established.", "close_criterion": "The reader can say that the effect is a possibility, not a result.",
+                                       "severity": "minor", "confidence": "medium"}]}
 
     def audit(self, wording, hedges, verdict="preserved", audit_round=1, anchor=HEDGED_ANCHOR, **checks):
         base = {name: "same" for name in rs.AUDIT_CHECKS}

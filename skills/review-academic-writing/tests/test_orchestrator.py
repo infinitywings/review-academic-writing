@@ -167,11 +167,14 @@ class FakeLLM:
     def step_decisions(self, data, batch, attempt):
         common = {"verification": "v", "countercheck": "c", "evidence": []}
         return {"summary": "five decisions", "decisions": [
-            {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite", "diagnosis": "MSW is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
+            {**common, "candidate_id": "C01", "status": "accepted", "evidence": [DEFINITION], "category": "late_prerequisite", "diagnosis": "MSW is used in B0003 before B0004 defines it.",
+             "close_criterion": "The reader can say what the MSW measures on reaching the threshold in B0003.", "severity": "major", "confidence": "high"},
             {**common, "candidate_id": "C02", "status": "rejected"},
             {**common, "candidate_id": "C03", "status": "merged", "merged_into": "C01"},
-            {**common, "candidate_id": "C04", "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The pair count has no stated source.", "severity": "minor", "confidence": "medium"},
-            {**common, "candidate_id": "C05", "status": "accepted", "category": "unsupported_claim", "diagnosis": "The agreement rate has no comparison.", "severity": "minor", "confidence": "medium"}]}
+            {**common, "candidate_id": "C04", "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The pair count has no stated source.",
+             "close_criterion": "The reader can say how the 412 pairs were selected.", "severity": "minor", "confidence": "medium"},
+            {**common, "candidate_id": "C05", "status": "accepted", "category": "unsupported_claim", "diagnosis": "The agreement rate has no comparison.",
+             "close_criterion": "The reader can name the rate that 91 percent is compared with.", "severity": "minor", "confidence": "medium"}]}
 
     def step_repairs(self, data, batch, attempt):
         if "audit_feedback" in data:
@@ -415,6 +418,7 @@ class OrchestratorTests(unittest.TestCase):
         review = json.loads((self.out / "review.json").read_text(encoding="utf-8"))
         self.assertEqual([(i["id"], i["candidate_id"], i["decision_status"]) for i in review["issues"]], [("W01", "C01", "accepted"), ("W02", "C05", "accepted"), ("W03", "C04", "needs_author")])
         self.assertEqual(review["issues"][0]["proposed_wording"], WORDING)
+        self.assertEqual(review["issues"][0]["close_criterion"], "The reader can say what the MSW measures on reaching the threshold in B0003.")
         self.assertEqual(review["issues"][2]["author_question"], "How were the 412 pairs selected?")
         self.assertEqual(review["concept_ledger"][0]["term"], "MSW")
         self.assertEqual(rs.check_final(self.out / "journal", rp.load_json(self.out / "index.json"), review)["issue_count"], 3)

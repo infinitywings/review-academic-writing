@@ -145,10 +145,13 @@ class NotesBuildTests(unittest.TestCase):
         common = {"verification": "v", "countercheck": "c"}
         return {"summary": "Decided.", "no_challenge_reason": "this test journal runs no challenger", "decisions": {
             "C01": {**common, "status": "accepted", "evidence": [DEFINITION, SETTING], "category": "late_prerequisite",
-                    "diagnosis": "RVG is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
-            "C02": {**common, "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The visit count has no stated source.", "severity": "minor", "confidence": "medium"},
+                    "diagnosis": "RVG is used in B0003 before B0004 defines it.", "close_criterion": "The reader can say what the RVG is on reaching the merging rule in B0003.",
+                    "severity": "major", "confidence": "high"},
+            "C02": {**common, "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The visit count has no stated source.",
+                    "close_criterion": "The reader can say how the 1284 visits were counted.", "severity": "minor", "confidence": "medium"},
             "C03": {**common, "status": "rejected"},
-            "C04": {**common, "status": "accepted", "category": "unsupported_claim", "diagnosis": "The share of repeated visitors has no comparison.", "severity": "minor", "confidence": "medium"}}}
+            "C04": {**common, "status": "accepted", "category": "unsupported_claim", "diagnosis": "The share of repeated visitors has no comparison.",
+                    "close_criterion": "The reader can name the share that 63 percent is compared with.", "severity": "minor", "confidence": "medium"}}}
 
     def repairs_fragment(self):
         return {"summary": "Repaired.", "repairs": {
@@ -340,6 +343,9 @@ class NotesBuildTests(unittest.TestCase):
         decisions = self.decisions_fragment()
         decisions["decisions"]["C02"]["diagnosis"] = ""
         self.assertRefused(r"Decision C02 \(needs_author\) lacks diagnosis\.", "decisions", [self.write("drafts/d3.json", decisions)])
+        decisions = self.decisions_fragment()
+        del decisions["decisions"]["C04"]["close_criterion"]
+        self.assertRefused(r"Decision C04 \(accepted\) lacks close_criterion\.", "decisions", [self.write("drafts/d4.json", decisions)])
 
     def test_repairs(self):
         self.through("decisions")
@@ -521,6 +527,8 @@ class NotesBuildTests(unittest.TestCase):
         self.assertEqual((issues[0]["anchor"], issues[0]["category"], issues[0]["severity"], issues[0]["confidence"]), (CRITICAL, "late_prerequisite", "major", "high"))
         self.assertEqual((issues[0]["proposed_wording"], issues[0]["action"], issues[0]["scientific_fidelity"]), (WORDING, "Replace the RVG in B0003 with the gap it names.", "threshold preserved"))
         self.assertNotIn("author_question", issues[0])
+        self.assertEqual([i["close_criterion"] for i in issues], ["The reader can say what the RVG is on reaching the merging rule in B0003.",
+                                                                  "The reader can say how the 1284 visits were counted.", "The reader can name the share that 63 percent is compared with."])
         self.assertEqual(issues[1]["author_question"], "How were the 1284 visits counted?")
         self.assertNotIn("evidence", issues[1])
         self.assertNotIn("author_question", issues[2])

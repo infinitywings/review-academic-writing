@@ -408,7 +408,8 @@ def build_decisions(fragment: dict, journal: Journal, ctx: Context, challenges: 
         if row.get("challenge_path") is None and key in lookup:
             row["challenge_path"] = lookup[key]
         if row.get("status") in rs.FINAL_STATUSES:
-            lacking = [f for f in ("category", "diagnosis", "severity", "confidence") if not row.get(f)]
+            needed = ("category", "diagnosis", "severity", "confidence") + (("close_criterion",) if journal.start["schema_version"] >= 7 else ())
+            lacking = [f for f in needed if not row.get(f)]
             if lacking:
                 raise BuildError(f"Decision {key} ({row['status']}) lacks {', '.join(lacking)}.")
         rows.append(row)
@@ -528,6 +529,8 @@ def build_review(fragment: dict, journal: Journal, ctx: Context) -> dict:
                  "anchor": candidate["anchor"], "diagnosis": decision["diagnosis"], "action": repair["action"],
                  "scientific_fidelity": repair["scientific_fidelity"], "severity": decision["severity"], "confidence": decision["confidence"],
                  "proposed_wording": repair["proposed_wording"]}
+        if "close_criterion" in decision:
+            issue["close_criterion"] = decision["close_criterion"]
         if repair.get("author_question") is not None:
             issue["author_question"] = repair["author_question"]
         evidence = []

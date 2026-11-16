@@ -2,6 +2,12 @@
 
 ## 未发布
 
+- **每条保留的诊断写明"怎样算改好了"（改造计划 R3）。** 以后的复测（R14）要问一位新读者"问题还在不在"，需要一个事先写好的判断条件。这个条件也迫使诊断落到读者能做什么上。只对 schema 7 日志生效。
+  - 决定记录里，状态为 `accepted` 或 `needs_author` 的条目必须带 `close_criterion`：一句话，说明改好之后目标读者能说出什么、找到什么。缺了拒绝入库；与 `diagnosis` 相同也拒绝。`rejected` 和 `merged` 的条目不能带这个字段。
+  - 结构化评审的每条问题带同一句 `close_criterion`，`check-final` 要求它与已入库的决定一字不差。
+  - `assets/notes/decisions.json` 加了这个字段；`notes_build.py decisions` 把它列入必填项，`notes_build.py review` 把它抄进每条问题；`server/prompts/decisions.txt` 的返回格式和规则加了这个字段，`server/orchestrator.py` 汇编评审时照抄。
+  - `staged-review.md` 第 5 节和字段表、`output-contract.md`、`workflow.md` 补了说明。
+  - schema 6 及更早的日志不要求。
 - **"后文已解决"和"原文够用"要引出原文作证（改造计划 R2）。** 一次真实运行里，编辑把读者提的一个有效问题归为已解决，却没说在哪里解决的。现在这两种归类必须指出回答问题的那句话，脚本核对引文和位置。只对 schema 7 日志生效。
   - reconcile 的观察记录新增两个可选字段：`resolved_by`（锚点 `{block_id, quote}` 或 null）和 `background`（字符串或 null）。
   - `resolved_later`：必须给 `resolved_by`，引文要从该检查点锚点结束之后开始。引文落在读者已经读过的位置时拒绝入库，提示这种情况应归为 `adequate` 或 `needed_again`。

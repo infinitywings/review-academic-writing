@@ -11,6 +11,7 @@
       "evidence": [{"block_id": "", "quote": ""}],
       "category": "",
       "diagnosis": "",
+      "close_criterion": "",
       "severity": "",
       "confidence": "",
       "merged_into": null,
