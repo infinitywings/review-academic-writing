@@ -668,7 +668,8 @@ class ReviewStepsTests(unittest.TestCase):
         reconcile["branches"] = [{"id": "R1", "run_path": str(run), "branch_sequence": 1, "result": "undetermined at event 2", "limitation": "question chosen with full text"}]
         observation = {"id": "O1", "source_id": "R1", "reader_question": "What is the MSW?", "classification": "absent_at_critical_use",
                        "editor_check": "B0004 defines it after B0003.", "evidence": [DEFINITION], "candidate_id": "C01"}
-        reconcile["observations"] = [observation, {**observation, "id": "O2", "classification": "adequate", "evidence": [], "candidate_id": "C05"}]
+        # A branch has no anchor in the record, so an adequate observation of it may quote words from anywhere in the source.
+        reconcile["observations"] = [observation, {**observation, "id": "O2", "classification": "adequate", "evidence": [], "candidate_id": "C05", "resolved_by": DEFINITION}]
         return reconcile
 
     def test_branch_attachment_and_observations(self):
@@ -678,6 +679,8 @@ class ReviewStepsTests(unittest.TestCase):
                               (lambda r: r["observations"][0].update(source_id="K9"), "observation.source_id must name a checkpoint or branch recorded in this stage"),
                               (lambda r: r["observations"][1].update(classification="confusing"), "observation.classification must be one of: absent_at_critical_use, adequate, asset_lookup, inferred_connection, interpretation_changed, lost_in_notes, needed_again, resolved_later\\."),
                               (lambda r: r["observations"][1].update(candidate_id="C99"), "observation.candidate_id must name a candidate from checks or this stage"),
+                              (lambda r: r["observations"][1].update(resolved_by=A("B0004", "We define the MSW")), "observation\\.resolved_by\\.quote is not an exact substring of its supplied block"),
+                              (lambda r: r["observations"][1].update(resolved_by=None), "Observation O2 is adequate, so it needs exactly one proof: .* Neither was given\\."),
                               (lambda r: r["candidates"][0].update(id="C01"), "Reconcile candidates must use ids not already used in checks"),
                               (lambda r: r.update(checkpoints=self.masked_reconcile(run, id="R1")["checkpoints"]), "Checkpoint and branch ids must not collide")):
             reconcile = self.branch_reconcile(run)
@@ -1181,6 +1184,57 @@ class ReviewStepsTests(unittest.TestCase):
         path = journal / "00-start.json"
         original = json.loads(path.read_text())
         path.write_text(json.dumps(rs.sealed({**{k: v for k, v in original.items() if k != "receipt_sha256"}, "schema_version": version})))
+
+    # ------------------------------------------------------------ proof for a dismissed reader question (schema 7)
+
+    def observed(self, classification, **proof):
+        """Reconcile notes with the prefix checkpoint K1 at CRITICAL (in B0003) and one observation O1 of it."""
+        reconcile, _packet_path, _obs_path = self.prefix_reconcile()
+        reconcile["observations"] = [{"id": "O1", "source_id": "K1", "reader_question": "What is the MSW?", "classification": classification,
+                                      "editor_check": "read B0002 to B0004 again", "evidence": [], "candidate_id": None, **proof}]
+        return reconcile
+
+    def test_resolved_later_and_adequate_quote_the_words_that_answer_the_question(self):
+        self.record_through("checks")
+        earlier, later_in_block = A("B0002", "two independent records agreed"), A("B0003", "so we restricted the analysis")
+        no_later_words = "Observation O1 is resolved_later, so resolved_by must quote the later manuscript words that answer the reader's question, as \\{block_id, quote\\}\\."
+        passed = ("Observation O1: resolved_by quotes words that begin before the end of checkpoint K1's anchor\\. Words the reader had already passed make the observation "
+                  "adequate or needed_again, not resolved_later; quote the later words that answer the question, or change the classification\\.")
+        refused = (
+            ("resolved_later", {}, no_later_words),
+            ("resolved_later", {"resolved_by": None, "background": None}, no_later_words),
+            ("resolved_later", {"resolved_by": A("B0004", "We define the MSW")}, "observation\\.resolved_by\\.quote is not an exact substring of its supplied block\\."),
+            ("resolved_later", {"resolved_by": earlier}, passed),
+            ("resolved_later", {"resolved_by": A("B0003", "exceeded two seconds, so we restricted")}, passed),
+            ("resolved_later", {"resolved_by": DEFINITION, "background": PROFILE["audience"]}, "Observation O1: background belongs only to an adequate observation; resolved_later points at manuscript words in resolved_by\\."),
+            ("adequate", {}, "Observation O1 is adequate, so it needs exactly one proof: resolved_by quoting manuscript words the reader had at that point, "
+                             "or background quoting the reader profile entry that covers the question\\. Neither was given\\."),
+            ("adequate", {"resolved_by": earlier, "background": PROFILE["audience"]}, "Both were given; keep the one that answers the question\\."),
+            ("adequate", {"resolved_by": DEFINITION}, "Observation O1: resolved_by quotes words that end after checkpoint K1's anchor, which the reader had not reached\\. "
+                                                      "Words that answer the question only later make the observation resolved_later, not adequate"),
+            ("adequate", {"background": "A reader who already knows the MSW"}, "Observation O1: background is not an exact quotation from the journal's reader profile; "
+                                                                               "copy the profile entry that covers the question character for character\\."),
+            ("adequate", {"background": " "}, "observation\\.background must be a nonempty string\\."),
+            ("absent_at_critical_use", {"resolved_by": DEFINITION}, "Observation O1 is absent_at_critical_use, so resolved_by and background must be null: they are the proof of resolved_later and adequate only\\."),
+            ("needed_again", {"background": PROFILE["audience"]}, "Observation O1 is needed_again, so resolved_by and background must be null"),
+        )
+        for classification, proof, message in refused:
+            with self.subTest(classification=classification, proof=proof):
+                self.assertRefused(message, self.record, "reconcile", self.observed(classification, **proof))
+        recorded = (
+            ("resolved_later", {"resolved_by": DEFINITION}),
+            ("resolved_later", {"resolved_by": later_in_block}),
+            ("adequate", {"resolved_by": earlier}),
+            ("adequate", {"resolved_by": CRITICAL}),
+            ("adequate", {"background": "trained researcher"}),
+            ("absent_at_critical_use", {"resolved_by": None, "background": None}),
+        )
+        for n, (classification, proof) in enumerate(recorded):
+            with self.subTest(classification=classification, proof=proof):
+                journal = self.fresh_journal(f"proof-{n}", through="checks")
+                self.assertEqual(self.record("reconcile", self.observed(classification, **proof), journal)["next_stage"], "decisions")
+        older = self.fresh_journal("proof-schema6", through="checks", schema=6)
+        self.assertEqual(self.record("reconcile", self.observed("resolved_later"), older)["next_stage"], "decisions", "journals before schema 7 need no proof")
 
     # ------------------------------------------------------------ records in English (schema 7)
 

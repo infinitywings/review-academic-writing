@@ -161,7 +161,7 @@ class FakeLLM:
                 "observations": [{"id": "O01", "source_id": "K01", "reader_question": "What is the MSW?", "classification": "absent_at_critical_use",
                                   "editor_check": "B0004 defines it after B0003.", "evidence": [DEFINITION], "candidate_id": "C01"},
                                  {"id": "O02", "source_id": "R01", "reader_question": "What does MSW stand for?", "classification": "adequate",
-                                  "editor_check": "the threshold alone was usable", "evidence": [], "candidate_id": None}],
+                                  "editor_check": "the threshold alone was usable", "evidence": [], "candidate_id": None, "resolved_by": CRITICAL, "background": None}],
                 "candidates": [{"id": data["next_candidate_id"], "anchor": A("B0005", "91 percent"), "question": "Is 91 percent compared with anything?", "evidence": []}]}
 
     def step_decisions(self, data, batch, attempt):
@@ -375,6 +375,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(reconcile["checkpoints"][0]["packet_path"], str(self.out / "readers" / "P01" / "P01.packet.json"))
         self.assertEqual(reconcile["branches"][0]["branch_sequence"], 1)
         self.assertEqual([c["id"] for c in reconcile["candidates"]], ["C05"])
+        self.assertEqual([(o["id"], o["classification"], o.get("resolved_by")) for o in reconcile["observations"]], [("O01", "absent_at_critical_use", None), ("O02", "adequate", CRITICAL)])
+        reconcile_input = json.loads((self.out / "editor" / "03-reconcile.prompt.txt").read_text(encoding="utf-8").rsplit("\n=== INPUT (one JSON object) ===\n", 1)[1])
+        self.assertEqual(reconcile_input["reader_profile"], rp.load_json(self.out / "reader-profile.json"), "the editor can quote the profile as background")
         receipt3 = json.loads((self.out / "journal" / "03-reconcile.receipt.json").read_text())
         self.assertEqual(len(receipt3["attachments"]), 2 + 4 + 4)
         # Audit gate: C01 kept its wording; C05 failed twice and became an author question.

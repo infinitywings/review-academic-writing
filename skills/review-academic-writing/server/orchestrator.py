@@ -578,7 +578,7 @@ class Run:
                       "answer": json.loads((record / "response.json").read_text(encoding="utf-8"))}
         next_candidate = len(checks["candidates"]) + 1
         values = {"input": {"snapshot_id": self.index["snapshot_id"], "execution_mode": EXECUTION_MODE, "reader_endpoint": llm.load_config(self.reader_config).get("base_url"),
-                            "checks_notes": checks, "blocks": self.block_rows(self.included), "prefix_checkpoints": prefix_rows,
+                            "reader_profile": self.profile, "checks_notes": checks, "blocks": self.block_rows(self.included), "prefix_checkpoints": prefix_rows,
                             "failed_reader_calls": self.failed_readers, "masked_run": masked, "branch": branch, "next_candidate_id": f"C{next_candidate:02d}"}}
 
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:

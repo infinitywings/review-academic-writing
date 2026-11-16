@@ -353,6 +353,8 @@ def build_reconcile(fragment: dict, journal: Journal, ctx: Context) -> dict:
     observations = with_ids(fragment.get("observations", []), "O")
     for observation in observations:
         observation.setdefault("candidate_id", None)
+        observation.setdefault("resolved_by", None)
+        observation.setdefault("background", None)
         observation.setdefault("evidence", [])
     candidates = with_ids(fragment.get("candidates", []), "C")
     earlier = {c["id"] for c in journal.notes["checks"]["candidates"]}

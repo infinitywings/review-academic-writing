@@ -41,6 +41,8 @@ JOURNAL_SCHEMA = 7
 # in schema 6 and earlier a challenge is checked when present and never required.
 # Schema 7 notes and the final review are also written in English (review_packets.require_english);
 # attached reader files are not rechecked here, dispatch_reader.py holds them to it when they are made.
+# A schema 7 observation classified resolved_later or adequate quotes the words that answer the
+# reader's question (observation_proof).
 SUPPORTED_SCHEMAS = {4, 5, 6, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
 # An optional passage.proposition_checks entry: what one suspected sentence actually states.
@@ -467,7 +469,7 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
         candidates = validate_candidates(value, blocks, included, "reconcile")
         if candidates.keys() & earlier.keys():
             raise Error("Reconcile candidates must use ids not already used in checks.")
-        for row in by_id(array(value.get("observations"), "reconcile.observations"), "id", "observations").values():
+        for key, row in by_id(array(value.get("observations"), "reconcile.observations"), "id", "observations").items():
             fields(row, {"source_id", "reader_question", "classification", "editor_check", "evidence", "candidate_id"}, "observation")
             if string(row["source_id"], "observation.source_id") not in points.keys() | branches.keys():
                 raise Error("observation.source_id must name a checkpoint or branch recorded in this stage.")
@@ -477,6 +479,8 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
             evidence(row["evidence"], blocks, "observation.evidence")
             if row["candidate_id"] is not None and string(row["candidate_id"], "observation.candidate_id") not in earlier.keys() | candidates.keys():
                 raise Error("observation.candidate_id must name a candidate from checks or this stage.")
+            if start["schema_version"] >= 7:
+                observation_proof(key, row, points.get(row["source_id"]), blocks, start["profile"])
     elif stage == "decisions":
         candidates = all_candidates(previous)
         decisions = by_id(array(value.get("decisions"), "decisions.decisions"), "candidate_id", "decisions")
@@ -568,6 +572,54 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                 else:
                     attachments.extend(feature_comparison(row, key, start["schema_version"]))
     return attachments
+
+
+def string_leaves(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [leaf for item in value.values() for leaf in string_leaves(item)]
+    if isinstance(value, list):
+        return [leaf for item in value for leaf in string_leaves(item)]
+    return []
+
+
+def observation_proof(key: str, row: dict, point: dict | None, blocks: dict, profile: dict) -> None:
+    """A classification that dismisses a reader's question points at the words that answer it (schema 7).
+
+    `resolved_later` quotes, in resolved_by, manuscript words that begin after the source
+    checkpoint's anchor. `adequate` gives exactly one proof: resolved_by quoting words that end
+    by the end of that anchor (text the reader had), or background quoting the entry of the
+    journal's reader profile that covers the question. No other classification carries either
+    field. A branch has no anchor in this record (`point` is None), so for an observation of a
+    branch the quotation is checked for existence only.
+    """
+    kind, resolved_by, background = row["classification"], row.get("resolved_by"), row.get("background")
+    if kind not in ("resolved_later", "adequate"):
+        if resolved_by is not None or background is not None:
+            raise Error(f"Observation {key} is {kind}, so resolved_by and background must be null: they are the proof of resolved_later and adequate only.")
+        return
+    if resolved_by is not None:
+        rp._anchor(resolved_by, blocks, "observation.resolved_by")
+    if kind == "resolved_later":
+        if background is not None:
+            raise Error(f"Observation {key}: background belongs only to an adequate observation; resolved_later points at manuscript words in resolved_by.")
+        if resolved_by is None:
+            raise Error(f"Observation {key} is resolved_later, so resolved_by must quote the later manuscript words that answer the reader's question, as {{block_id, quote}}.")
+        if point is not None and rp._absolute_span(resolved_by, blocks)[0] < rp._absolute_span(point["anchor"], blocks)[1]:
+            raise Error(f"Observation {key}: resolved_by quotes words that begin before the end of checkpoint {row['source_id']}'s anchor. Words the reader had already passed make "
+                        "the observation adequate or needed_again, not resolved_later; quote the later words that answer the question, or change the classification.")
+        return
+    if (resolved_by is None) == (background is None):
+        given = "Neither was given" if resolved_by is None else "Both were given; keep the one that answers the question"
+        raise Error(f"Observation {key} is adequate, so it needs exactly one proof: resolved_by quoting manuscript words the reader had at that point, "
+                    f"or background quoting the reader profile entry that covers the question. {given}.")
+    if background is not None:
+        if not any(string(background, "observation.background") in leaf for leaf in string_leaves(profile)):
+            raise Error(f"Observation {key}: background is not an exact quotation from the journal's reader profile; copy the profile entry that covers the question character for character.")
+    elif point is not None and rp._absolute_span(resolved_by, blocks)[1] > rp._absolute_span(point["anchor"], blocks)[1]:
+        raise Error(f"Observation {key}: resolved_by quotes words that end after checkpoint {row['source_id']}'s anchor, which the reader had not reached. Words that answer the question "
+                    "only later make the observation resolved_later, not adequate; quote earlier words, give background, or change the classification.")
 
 
 def challenge(row: dict, candidate_id: str, candidate: dict, blocks: dict, snapshot_id: str, seen: dict[str, list[dict]]) -> list[dict]:

@@ -124,13 +124,13 @@ Use the original histories as evidence in the reconcile stage, after the editor'
 | Observation | Label | What the editor checks |
 | --- | --- | --- |
 | Information absent at a critical use | `absent_at_critical_use` | Is it needed there, already explained, ordinary background, or an honest preview? |
-| A question resolved later | `resolved_later` | Did waiting merely follow normal article structure, or did the missing relation block the earlier claim? |
+| A question resolved later | `resolved_later` | Did waiting merely follow normal article structure, or did the missing relation block the earlier claim? Quote the later words that answer the question in `resolved_by`; the helper refuses words the reader had already passed. |
 | Earlier information needed again | `needed_again` | Was a reminder warranted, or was a normal targeted lookup adequate? |
 | Information lost in notes | `lost_in_notes` | Did the source omit it, or did the reader's summary omit or distort it? A recall answer that was wrong or `I don't know` enters here with the question, the choice, and the dropped or revised note the receipts show. |
 | A changed interpretation | `interpretation_changed` | Which supplied passage caused the change, and was the earlier interpretation reasonable? |
 | An inferred connection | `inferred_connection` | Is the inference justified and appropriate for the specified audience, or must the author supply a scientific premise? |
 | A figure/table lookup | `asset_lookup` | What did it resolve, and did text, visual evidence, and caption agree? |
-| The text worked at that point | `adequate` | Record why the existing text sufficed; this supports retaining it. |
+| The text worked at that point | `adequate` | Record why the existing text sufficed; this supports retaining it. Quote the proof: earlier manuscript words in `resolved_by`, or the reader-profile entry that covers the question in `background`, never both. |
 
 Make acceptance, rejection, merge, and author-question decisions with source and counterevidence as usual. Give concrete repairs only afterward. Preserve the ordinary-language default, necessary scientific terms, uncertainty, numerical values, and causal versus associative meaning. Missing scientific links require an author question or a justified conditional edit, not invented science.
 

@@ -439,6 +439,7 @@ class NotesBuildTests(unittest.TestCase):
         self.assertEqual((point["anchor"], point["mode"], point["figure_policy"], point["limitation"]), (CRITICAL, "fresh-prefix", "text-only", "the reader saw text only"))
         self.assertIn("1 issue(s), 1 cannot_place entry; understanding: Visits are merged by a gap", point["result"])
         self.assertEqual(reconcile["observations"][0]["id"], "O01")
+        self.assertEqual((reconcile["observations"][0]["resolved_by"], reconcile["observations"][0]["background"]), (None, None))
         self.assertNotIn("no_checkpoints_reason", reconcile)
         # build already ran the record validator (rs.validate_notes reads the packet and observation), so the output records
         self.assertEqual(self.record("reconcile", result["output"])["next_stage"], "decisions")
@@ -456,6 +457,12 @@ class NotesBuildTests(unittest.TestCase):
         clash = fragment()
         clash["candidates"][0]["id"] = "C02"
         self.assertRefused(r"Reconcile candidates reuse checks ids: C02; give new ids \(the checks stage used up to C03\)", "reconcile", [self.write("drafts/rc6.json", clash)])
+        unproved = fragment()
+        unproved["observations"][0]["classification"] = "resolved_later"
+        self.assertRefused("Observation O01 is resolved_later, so resolved_by must quote the later manuscript words", "reconcile", [self.write("drafts/rc8.json", unproved)])
+        unproved["observations"][0]["resolved_by"] = DEFINITION
+        _, proved = self.build("reconcile", [self.write("drafts/rc9.json", unproved)])
+        self.assertEqual((proved["observations"][0]["resolved_by"], proved["observations"][0]["background"]), (DEFINITION, None))
         self.assertRefused("reconcile with no checkpoints needs no_checkpoints_reason", "reconcile",
                            [self.write("drafts/rc7.json", {"summary": "s", "candidates": []})])
         (events / "P01.observation.json").unlink()
