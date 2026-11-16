@@ -86,7 +86,7 @@ Readers and auditors run through `claude -p` with tools, MCP servers, and settin
 
 ## Status
 
-Experimental (version 0.20.0). In October 2026 the full procedure was run on three unpublished manuscripts:
+Experimental (version 0.21.0). In October 2026 the full procedure was run on three unpublished manuscripts:
 
 | | Paper A | Paper B | Proposal |
 | --- | --- | --- | --- |
@@ -96,7 +96,7 @@ Experimental (version 0.20.0). In October 2026 the full procedure was run on thr
 | Fidelity audits (rejected) | 45 (20) | 37 (16) | 29 (14) |
 | Items in the final report | 40 | 65 | 52 |
 
-Typical reasons for rejecting a wording were an added quantifier, a dropped condition, a number carried over from another table cell, or planned work restated in the present tense. The same proposal was also reviewed with the same skill under Codex: the two runs shared only six findings, because one host's readers flagged first-read obstacles while the other's flagged claim strength and logic. Since version 0.17 the checks stage requires both kinds of check for every passage. These are observations from single runs, not a validation.
+Typical reasons for rejecting a wording were an added quantifier, a dropped condition, a number carried over from another table cell, or planned work restated in the present tense. The same proposal was also reviewed with the same skill under Codex: the two runs shared only six findings, because one host's readers flagged first-read obstacles while the other's flagged claim strength and logic. Since version 0.17 the checks stage requires both kinds of check for every passage. These are observations from single runs, not a validation. The three runs used versions 0.16 to 0.19. Version 0.21.0 adds an independent challenge of every candidate, three severity levels, and a report rendered by a script; these have unit tests and runs on a short invented text (`evals/`), and have not yet been used on a full manuscript.
 
 ## Repository layout
 

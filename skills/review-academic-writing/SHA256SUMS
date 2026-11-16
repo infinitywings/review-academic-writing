@@ -1,8 +1,8 @@
 0.8 is preserved as ../../file.tar (a plain-text concatenation of the 0.8 files in path order); 0.20.0 is the previous entry in CHANGELOG.md.
-97383593abca50267eb93cdf7e8d4fae1099d911dfe9a8e4512a4a705df6dcb3  CHANGELOG.md
-4bd86b7b0c5f4618d39657bc162092d841fc8d24f95e74c55f276a2043837a74  README.md
+b6f5e491cd6c30ba262c5beb33dc9706d9a0174391d8636f9b906960b76e5120  CHANGELOG.md
+e5386faf5a4bfd48048e04db021e78c77b118a165d5f8a4aee0235ad2314cc4d  README.md
 38b9f4443f4b261300ef520df7f14ab53cb9e33dc869c6e520027c98d678cf15  SKILL.md
-8da6a2ee5c36bb2770de645cbcd689209f5935b380d68729e107d0250a633b53  VERSION
+363c6aacbb689a2ef691b69674629f647f1afafebc9dc353a86e6b09300b24f6  VERSION
 190de4fdc3df9ebb22ab8ee00791b2eecaa6dc621b129b6052a95973948b38b4  agents/openai.yaml
 9306a850ab164a9ee27ef2007a877ca09a4be25dd4da497c83c4edca9cbb4410  assets/excess-vocabulary.json
 49315dda7125ec5fc77ef5f2b96126d8b2121c6e72944b4702972e90f321d3ee  assets/icon.svg
