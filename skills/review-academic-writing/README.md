@@ -210,7 +210,7 @@ python3 <skill-dir>/scripts/dispatch_reader.py masked --runtime codex --model MO
 export LLM_API_KEY=...
 python3 <skill-dir>/server/orchestrator.py run --manuscript run/manuscript.md --out runs/2026-10-27 --config run/llm.json \
     [--reader-config run/llm-reader.json] [--masked-windows 4] [--masked-budget 250] [--prefix-checkpoints 3] [--batch-blocks 40] \
-    [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt] [--language English]
+    [--task review|quick_review] [--profile reader-profile.json] [--masked-profile masked-profile.json] [--extraction-notes notes.txt]
 ```
 
 `--config` uses the format of the previous section and serves the editor calls; `--reader-config` gives readers and auditors a different endpoint or model and defaults to `--config`. `--out` must be a directory that does not yet exist. The orchestrator works in this order:

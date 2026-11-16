@@ -1,0 +1,128 @@
+{
+  "manuscript": "manuscript.md",
+  "controls": [
+    "The number of visits therefore depends on how these records are grouped.",
+    "We used two exclusion rules.",
+    "which makes it a safer quantity to compare across studies.",
+    "The study covers tagged great tits in one garden over ten days in one season."
+  ],
+  "defects": [
+    {
+      "id": "D01",
+      "type": "definition_after_use",
+      "description": "The sentence that defines the return visit gap is moved from the introduction to Section 2.2, so the introduction uses the term before any explanation.",
+      "replace": [
+        {
+          "find": " The rule used here has one parameter, the return visit gap: the pause length, chosen by the analyst, at or above which the next detection starts a new visit.",
+          "with": ""
+        },
+        {
+          "find": "We set the return visit gap to 5 seconds for the main analysis.",
+          "with": "The rule used here has one parameter, the return visit gap: the pause length, chosen by the analyst, at or above which the next detection starts a new visit. We set the return visit gap to 5 seconds for the main analysis."
+        }
+      ],
+      "expect": [
+        "Detections separated by a pause shorter than the return visit gap are merged into one visit.",
+        "The choice of gap changes the result."
+      ]
+    },
+    {
+      "id": "D02",
+      "type": "undefined_abbreviation",
+      "description": "The beam sensor is called 'the BLS unit' once, an abbreviation the manuscript never expands or uses again.",
+      "replace": [
+        {
+          "find": "a beam sensor recorded the time at which the beam was interrupted",
+          "with": "the BLS unit recorded the time at which the beam was interrupted"
+        }
+      ],
+      "expect": [
+        "the BLS unit"
+      ]
+    },
+    {
+      "id": "D03",
+      "type": "ambiguous_referent",
+      "description": "After a sentence that names two devices, 'Its clock' and 'the other clock' do not say which device is meant.",
+      "replace": [
+        {
+          "find": "The beam sensor's clock drifted by less than 0.01 seconds per day, and we reset it each morning against the tag reader's clock, which was set from the network every night.",
+          "with": "Its clock drifted by less than 0.01 seconds per day, and we reset it each morning against the other clock, which was set from the network every night."
+        }
+      ],
+      "expect": [
+        "Its clock drifted by less than 0.01 seconds per day, and we reset it each morning against the other clock"
+      ]
+    },
+    {
+      "id": "D04",
+      "type": "reference_to_something_not_yet_introduced",
+      "description": "The introduction refers to 'the two exclusion rules' with a definite article and no pointer, before any rule has been mentioned.",
+      "replace": [
+        {
+          "find": "Before counting, we removed detections that were not visits by a tagged bird. Section 2.3 gives the two rules we used for this.",
+          "with": "Before counting, we applied the two exclusion rules."
+        }
+      ],
+      "expect": [
+        "Before counting, we applied the two exclusion rules."
+      ]
+    },
+    {
+      "id": "D05",
+      "type": "result_without_method",
+      "description": "The Methods paragraph that says the count was repeated with gaps of 2 and 10 seconds is deleted, so the Results report an analysis the manuscript never describes.",
+      "replace": [
+        {
+          "find": "\n\nThe main analysis uses a single gap, but the introduction argued that the count depends on the gap. We therefore repeated the count with gaps of 2 seconds and 10 seconds to see how far the result moves.",
+          "with": ""
+        }
+      ],
+      "expect": [
+        "A gap of 2 seconds gave 1,655 visits and a gap of 10 seconds gave 1,102 visits"
+      ]
+    },
+    {
+      "id": "D06",
+      "type": "term_drift",
+      "description": "One later mention calls the return visit gap 'the revisit interval', a name the manuscript never introduces.",
+      "replace": [
+        {
+          "find": "was less sensitive to the return visit gap: across the three gaps",
+          "with": "was less sensitive to the revisit interval: across the three gaps"
+        }
+      ],
+      "expect": [
+        "the revisit interval"
+      ]
+    },
+    {
+      "id": "D07",
+      "type": "earlier_information_needed_without_reminder",
+      "description": "The results rely on the gap value chosen in Section 2.2 without restating the value or pointing back to it at the point of use. Written for readers with limited memory; a reader who can see the whole prefix can look the value up.",
+      "replace": [
+        {
+          "find": "With the return visit gap of 5 seconds set in Section 2.2, the 4,110 detections",
+          "with": "At the chosen setting, the 4,110 detections"
+        }
+      ],
+      "expect": [
+        "At the chosen setting"
+      ]
+    },
+    {
+      "id": "D08",
+      "type": "count_mismatch",
+      "description": "The study has four feeders; one later sentence says 'all three feeders'.",
+      "replace": [
+        {
+          "find": "The size of the change was similar at all four feeders.",
+          "with": "The size of the change was similar at all three feeders."
+        }
+      ],
+      "expect": [
+        "all three feeders"
+      ]
+    }
+  ]
+}

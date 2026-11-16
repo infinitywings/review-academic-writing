@@ -1,0 +1,124 @@
+{
+  "cases": [
+    {
+      "id": "A01",
+      "type": "hedge_removed",
+      "original": "The longer gap may merge separate visits into one.",
+      "proposed_wording": "The longer gap merges separate visits into one.",
+      "expected": "changed",
+      "note": "The only hedge is dropped."
+    },
+    {
+      "id": "A02",
+      "type": "one_of_two_hedges_removed",
+      "original": "A short gap may split one feeding bout, and a long gap may merge separate visits.",
+      "proposed_wording": "A short gap splits one feeding bout, and a long gap may merge separate visits.",
+      "expected": "changed",
+      "note": "Two occurrences of 'may'; the wording keeps one."
+    },
+    {
+      "id": "A03",
+      "type": "hedge_moved_to_another_claim",
+      "original": "A short gap may split one feeding bout. A long gap merges separate visits.",
+      "proposed_wording": "A short gap splits one feeding bout. A long gap may merge separate visits.",
+      "expected": "changed",
+      "note": "One 'may' before and after, on a different claim. The helper cannot see this; only the auditor can."
+    },
+    {
+      "id": "A04",
+      "type": "hedge_removed_condition_kept",
+      "original": "The count may fall by 14 percent under a 10-second gap.",
+      "proposed_wording": "The count falls by 14 percent under a 10-second gap.",
+      "expected": "changed",
+      "note": "The condition survives and could stand in for the deleted 'may'."
+    },
+    {
+      "id": "A05",
+      "type": "quantifier_added",
+      "original": "Feeders showed the same direction of change.",
+      "proposed_wording": "All feeders showed the same direction of change.",
+      "expected": "changed",
+      "note": "'All' is added."
+    },
+    {
+      "id": "A06",
+      "type": "plan_stated_as_done",
+      "original": "We will test whether the median pause holds for other species.",
+      "proposed_wording": "We tested whether the median pause holds for other species.",
+      "expected": "changed",
+      "note": "Planned work restated as completed work."
+    },
+    {
+      "id": "A07",
+      "type": "number_changed",
+      "original": "Repeated visitors accounted for 63 percent of the visits.",
+      "proposed_wording": "Repeated visitors accounted for about two thirds of the visits.",
+      "expected": "changed",
+      "note": "63 percent becomes an approximation of a different value."
+    },
+    {
+      "id": "A08",
+      "type": "association_stated_as_cause",
+      "original": "Shorter gaps were associated with higher visit counts.",
+      "proposed_wording": "Shorter gaps caused higher visit counts.",
+      "expected": "changed",
+      "note": "Association becomes causation."
+    },
+    {
+      "id": "A09",
+      "type": "scope_widened",
+      "original": "In this garden, the share of repeated visitors changed little.",
+      "proposed_wording": "The share of repeated visitors changes little.",
+      "expected": "changed",
+      "note": "The setting is dropped and the tense generalizes the result."
+    },
+    {
+      "id": "A10",
+      "type": "qualification_added",
+      "original": "The shorter gap raised the count.",
+      "proposed_wording": "The shorter gap generally raised the count, although other factors may contribute.",
+      "expected": "changed",
+      "note": "A hedge and a concession the original does not state."
+    },
+    {
+      "id": "A11",
+      "type": "hedge_synonym",
+      "original": "The longer gap may merge separate visits into one.",
+      "proposed_wording": "The longer gap might merge separate visits into one.",
+      "expected": "preserved",
+      "note": "'may' becomes 'might'."
+    },
+    {
+      "id": "A12",
+      "type": "hedge_paraphrase",
+      "original": "The longer gap may merge separate visits.",
+      "proposed_wording": "It is possible that the longer gap merges separate visits.",
+      "expected": "preserved",
+      "note": "The hedge is carried by a different construction."
+    },
+    {
+      "id": "A13",
+      "type": "clauses_reordered",
+      "original": "Because merged visits change the count, we repeated the analysis with two other gaps.",
+      "proposed_wording": "We repeated the analysis with two other gaps, because merged visits change the count.",
+      "expected": "preserved",
+      "note": "Only the clause order changes."
+    },
+    {
+      "id": "A14",
+      "type": "pronoun_replaced_by_referent",
+      "original": "The sensor's clock drifted, so we corrected it each morning.",
+      "proposed_wording": "The sensor's clock drifted, so we corrected the sensor's clock each morning.",
+      "expected": "preserved",
+      "note": "The pronoun is spelled out."
+    },
+    {
+      "id": "A15",
+      "type": "sentence_split",
+      "original": "A gap of 2 seconds gave 1,655 visits and a gap of 10 seconds gave 1,102 visits.",
+      "proposed_wording": "A gap of 2 seconds gave 1,655 visits. A gap of 10 seconds gave 1,102 visits.",
+      "expected": "preserved",
+      "note": "One sentence becomes two; numbers and units unchanged."
+    }
+  ]
+}
