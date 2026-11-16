@@ -105,6 +105,7 @@ Typical reasons for rejecting a wording were an added quantifier, a dropped cond
 | `.agents/skills/` | Codex discovery link to the skill folder |
 | `docs/` | Design notes, literature review, and server deployment notes (in Chinese) |
 | `validation/` | Validation protocol, human-study design, and scoring guide (partly in Chinese) |
+| `evals/` | Planted-defect tests: an invented manuscript, eight clarity defects a script plants in it, and a scorer (see `evals/README.md`) |
 | `REFERENCES.md` | Sources the design borrows from, and what each does and does not support |
 
 The full command reference for each script is in [`skills/review-academic-writing/README.md`](skills/review-academic-writing/README.md) and in `references/`.
@@ -118,7 +119,7 @@ cd skills/review-academic-writing
 python3 -I -m unittest discover -s tests
 ```
 
-Expect 280 tests to pass (one is skipped when spaCy is not installed). The tests never call MinerU or a real model.
+Expect 280 tests to pass (one is skipped when spaCy is not installed). The tests never call MinerU or a real model. The planted-defect tests have their own unit tests: `python3 -I -m unittest discover -s evals/tests` from the repository root.
 
 ## References
 

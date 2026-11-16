@@ -1,0 +1,128 @@
+{
+  "manuscript": "manuscript.md",
+  "controls": [
+    "One bird that returns twenty times and twenty birds that come once each produce the same count.",
+    "We used two exclusion rules. First, we removed detections with no tag reading, because they cannot be assigned to a bird.",
+    "The share of repeated visitors changed little, which makes it a safer quantity to compare across studies.",
+    "The study covers one garden and ten days in one season."
+  ],
+  "defects": [
+    {
+      "id": "D01",
+      "type": "definition_after_use",
+      "description": "The sentence that defines the return visit gap is moved from the introduction to Section 2.2, so the introduction uses the term before any explanation.",
+      "replace": [
+        {
+          "find": " We call the shortest pause that separates two visits by the same bird the return visit gap.",
+          "with": ""
+        },
+        {
+          "find": "We set the return visit gap to 5 seconds for the main analysis.",
+          "with": "We call the shortest pause that separates two visits by the same bird the return visit gap. We set the return visit gap to 5 seconds for the main analysis."
+        }
+      ],
+      "expect": [
+        "Detections of one bird that are closer together than the return visit gap are merged into one visit.",
+        "The choice of gap changes the result."
+      ]
+    },
+    {
+      "id": "D02",
+      "type": "acronym_not_expanded",
+      "description": "IRB is used without its expansion.",
+      "replace": [
+        {
+          "find": "an infrared break-beam (IRB) sensor",
+          "with": "an IRB sensor"
+        }
+      ],
+      "expect": [
+        "an IRB sensor recorded the time at which the beam was interrupted"
+      ]
+    },
+    {
+      "id": "D03",
+      "type": "ambiguous_referent",
+      "description": "After a sentence that names two devices, 'Its clock' and 'the other clock' do not say which device is meant.",
+      "replace": [
+        {
+          "find": "The IRB sensor's clock drifted by up to two seconds per day, so we corrected it each morning against the tag reader's clock, which was set from the network every night.",
+          "with": "Its clock drifted by up to two seconds per day, so we corrected it each morning against the other clock, which was set from the network every night."
+        }
+      ],
+      "expect": [
+        "Its clock drifted by up to two seconds per day"
+      ]
+    },
+    {
+      "id": "D04",
+      "type": "reference_to_something_not_yet_introduced",
+      "description": "The introduction refers to 'the two exclusion rules' with a definite article and no pointer, before any rule has been mentioned.",
+      "replace": [
+        {
+          "find": "Before counting, we removed detections that could not be assigned to a bird. Section 2.3 gives the two rules we used for this.",
+          "with": "Before counting, we applied the two exclusion rules."
+        }
+      ],
+      "expect": [
+        "Before counting, we applied the two exclusion rules."
+      ]
+    },
+    {
+      "id": "D05",
+      "type": "missing_link_between_paragraphs",
+      "description": "The sentence that says why the count is repeated with other gaps is deleted, so the paragraph reports a second analysis without a reason.",
+      "replace": [
+        {
+          "find": "The main analysis uses a single gap, but the introduction argued that the count depends on the gap. We therefore repeated the count with gaps of 2 seconds and 10 seconds to see how far the result moves.",
+          "with": "We repeated the count with gaps of 2 seconds and 10 seconds."
+        }
+      ],
+      "expect": [
+        "We repeated the count with gaps of 2 seconds and 10 seconds."
+      ]
+    },
+    {
+      "id": "D06",
+      "type": "term_drift",
+      "description": "One later mention calls the return visit gap 'the revisit interval', a name the manuscript never introduces.",
+      "replace": [
+        {
+          "find": "The share of repeated visitors was less sensitive to the return visit gap: it stayed between 60 and 66 percent.",
+          "with": "The share of repeated visitors was less sensitive to the revisit interval: it stayed between 60 and 66 percent."
+        }
+      ],
+      "expect": [
+        "The share of repeated visitors was less sensitive to the revisit interval"
+      ]
+    },
+    {
+      "id": "D07",
+      "type": "earlier_information_needed_without_reminder",
+      "description": "The results rely on the gap value chosen in Section 2.2 without restating the value or pointing back to it at the point of use.",
+      "replace": [
+        {
+          "find": "With the return visit gap of 5 seconds set in Section 2.2, the 4,110 detections merged into 1,284 visits.",
+          "with": "At the chosen setting, the 4,110 detections merged into 1,284 visits."
+        }
+      ],
+      "expect": [
+        "At the chosen setting, the 4,110 detections merged into 1,284 visits."
+      ]
+    },
+    {
+      "id": "D08",
+      "type": "count_mismatch",
+      "description": "The study has four feeders; one later sentence says 'all three feeders'.",
+      "replace": [
+        {
+          "find": "All four feeders showed the same direction of change.",
+          "with": "All three feeders showed the same direction of change."
+        }
+      ],
+      "expect": [
+        "All three feeders showed the same direction of change."
+      ]
+    }
+  ]
+}
