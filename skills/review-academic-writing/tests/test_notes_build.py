@@ -227,6 +227,9 @@ class NotesBuildTests(unittest.TestCase):
             '1. [misleads] B0003 "Visits shorter than the RVG" — Is RVG defined before this use? (W01)',
             '2. [hinders] B0005 "63 percent" — Compared with what rate? (W03)',
             "",
+            "## Questions for the author",
+            "- W02, B0005: How were the 1284 visits counted?",
+            "",
         ])
         self.assertIn("- Proposed wording: Visits shorter than the five-second gap between visits were merged into the preceding visit.", report)
         self.assertEqual(report[-3:], ["## Minor items", "1 minor item does not hinder understanding; it is listed in report-minor.md.", ""])

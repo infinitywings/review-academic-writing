@@ -264,7 +264,8 @@ class ReportTests(unittest.TestCase):
             "",
         ])
         questions = lines.index("## Questions for the author")
-        self.assertEqual(lines[questions:questions + 3], ["## Questions for the author", "- W14, B0006: What does phrase 14 refer to in your data?", ""])
+        self.assertEqual(lines[questions:questions + 4], ["## Questions for the author", "- W14, B0006: What does phrase 14 refer to in your data?",
+                                                          "- W15, B0006: What does phrase 16 refer to in your data?", ""])
         headings = [line.split(" ")[1] for line in lines if line.startswith("### ")]
         self.assertEqual(headings, ["W03", "W07", "W01", "W02", "W04", "W05", "W06", "W08", "W09", "W10", "W11", "W12", "W14"],
                          "every finding that misleads or hinders once: the priority list first, then the rest in issue order")
@@ -286,7 +287,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(lines[asked + 5:asked + 7], ["- Action: Ask the author what phrase 14 in B0006 refers to.", "- Question for the author: What does phrase 14 refer to in your data?"])
         self.assertEqual(lines[-3:], ["## Minor items", "2 minor items do not hinder understanding; they are listed in report-minor.md.", ""])
         self.assertNotIn("W13", report)
-        self.assertNotIn("W15", report)
+        self.assertNotIn("### W15", report)
         appendix = (self.root / "report-minor.md").read_text(encoding="utf-8").split("\n")
         self.assertEqual(appendix[:3], ["# Writing review: minor items", "", "### W13 · minor · confidence medium · B0005"])
         self.assertEqual([line.split(" ")[1] for line in appendix if line.startswith("### ")], ["W13", "W15"])
@@ -330,7 +331,7 @@ class ReportTests(unittest.TestCase):
             "1 minor item does not hinder understanding; it is listed in minor-only-minor.md.",
             "",
         ])
-        self.assertIn("- Support: raised at 0 reader checkpoints; challenger: not run.", (self.root / "minor-only-minor.md").read_text(encoding="utf-8").split("\n"))
+        self.assertIn("- Support: raised by the editor's check, by no reader; challenger: not run.", (self.root / "minor-only-minor.md").read_text(encoding="utf-8").split("\n"))
         empty = self.journal("empty", [])
         code, stdout, stderr = self.render(empty, self.review(empty), "empty.md")
         self.assertEqual((code, json.loads(stdout)["appendix"], json.loads(stdout)["counts"]), (0, None, {"priority_list": 0, "findings": 0, "minor": 0}))

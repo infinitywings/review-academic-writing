@@ -9,7 +9,7 @@
   - 每条问题另带 `reader_sources` 和 `challenge`，`check-final` 重新计算，对不上就拒绝。
   - **`notes_build.py review`：** 片段里必须给 `scope_note`。脚本填入固定的三项 `not_assessed`（片段可以追加）、每条问题的 `close_criterion`、`reader_sources`、`challenge`、`initial_reader_question`（候选最初的问题）和 `priority_list`。片段没给清单时按严重程度、再按在稿件里的位置排，取前十条；片段给了就用片段的，并在生成时按规则检查。
   - **新增 `notes_build.py report --journal J --index I --review review.json --out report.md [--appendix PATH]`：** 先再跑一遍 `check-final`，不通过就不生成。生成过程是确定的，不调用模型。报告依次是：读了什么和不评估什么；一行取自记录的计数（读了几块、各类读者检查点几个、候选接受/问作者/合并/驳回各几条、质疑有没有跑、附了几份保真审计）；优先清单；要问作者的问题；所有 `misleads` 和 `hinders` 的问题各出现一次，带读者最初的问题、诊断、做法、改稿（有才列）、含义核对、改好的判断条件和依据。次要条目只写进附录文件，默认是 `--out` 旁边的 `<名字>-minor.md`，没有次要条目就不写。输出文件已存在时拒绝。只支持 schema 7 日志。
-  - 相对计划多加了一行：问题带有要问作者的问题时，条目里多一行"Question for the author"。否则次要的作者问题只进附录，问题本身就没处显示了。
+  - "要问作者的问题"一节列出全部作者问题，包括严重程度为 `minor` 的（它们的完整条目在附录）。条目带有作者问题时，条目里也多一行"Question for the author"。没有读者提出、只由编辑检查发现的条目，支持一行写明"raised by the editor's check, by no reader"。
   - 报告里"读者的问题"取自日志里候选最初记录的问题，不取评审文件里的同名字段，所以事后改不了。
   - **`server/orchestrator.py`：** 报告改由上面的脚本生成，不再让模型写，每次运行少一次编辑调用。删除 `server/prompts/report.txt`。评审步骤的模型多返回一个 `scope_note`，优先清单用默认排序。决定步骤的提示词改用三级严重程度。
   - **文档：** `assets/review-report.md` 改写为新报告的版式说明，供不能运行脚本的环境照着手工填写；`SKILL.md` 第 7 节改为"生成评审、`check-final`、用脚本生成报告"三步，不许往报告里加章节，用使用者的语言告诉对方报告和记录在哪里；`review-rubric.md` 第 7 节、`staged-review.md` 第 5、7 节和字段表、`output-contract.md`、`workflow.md`、包内 README 同步更新。

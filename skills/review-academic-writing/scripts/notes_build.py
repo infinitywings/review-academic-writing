@@ -595,8 +595,9 @@ def finding_block(issue: dict, question: str) -> list[str]:
         lines.append(f"- Proposed wording: {one_line(issue['proposed_wording'])}")
     if issue.get("author_question") is not None:
         lines.append(f"- Question for the author: {one_line(issue['author_question'])}")
+    raised = f"raised at {sources} reader checkpoint{'' if sources == 1 else 's'}" if sources else "raised by the editor's check, by no reader"
     lines += [f"- Meaning check: {one_line(issue['scientific_fidelity'])}", f"- Done when: {one_line(issue['close_criterion'])}",
-              f"- Support: raised at {sources} reader checkpoint{'' if sources == 1 else 's'}; challenger: {issue['challenge'] or 'not run'}."]
+              f"- Support: {raised}; challenger: {issue['challenge'] or 'not run'}."]
     return lines
 
 
@@ -640,7 +641,7 @@ def render_report(review: dict, notes: dict, index: dict, appendix_name: str) ->
         lines.append("No finding that misleads or hinders was accepted.")
     elif eligible > len(priority):
         lines += ["", f"The list shows the {len(priority)} most consequential of {eligible}; all are under Findings."]
-    asked = [issue for issue in findings if issue.get("author_question") is not None]
+    asked = [issue for issue in findings + minor if issue.get("author_question") is not None]
     if asked:
         lines += ["", "## Questions for the author", *(f"- {issue['id']}, {issue['anchor']['block_id']}: {one_line(issue['author_question'])}" for issue in asked)]
     lines += ["", "## Findings"]

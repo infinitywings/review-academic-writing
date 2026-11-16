@@ -30,12 +30,14 @@ Throughout, the review prefers common words and ordinary sentences, and flags co
 
 A report in English (quotations and suggested wording stay in the manuscript's language), containing:
 
-- the few findings that matter most, each with its location, the reader's question, and a concrete fix;
-- replacement wording for each fix the text can support, with a note on what the meaning check found;
-- questions for the author where a fix depends on a scientific decision;
-- a concept table showing where each key term is first mentioned, first explained, and first relied on;
-- a words-and-sentences table with original and suggested phrasing;
-- what was verified, how, and what remains uncertain.
+- what was read, and what the review does not assess: whether the claims are true, whether the evidence is sufficient, whether the work is novel;
+- a priority list of at most ten findings, one line each, those that would mislead a reader before those that slow one down;
+- the questions only the author can answer;
+- every finding once: its location, the reader's question, the diagnosis, a concrete fix, replacement wording when the text can support it, what the meaning check found, and what a reader should be able to say once it is fixed;
+- for each finding, how many independent readers raised it and what the challenger concluded;
+- a count of minor items, which are listed in a separate file.
+
+A script renders the report from the checked records; no model writes it. The concept table (where each key term is first mentioned, first explained, and first relied on) is kept in the structured review file beside it.
 
 ## Install
 
