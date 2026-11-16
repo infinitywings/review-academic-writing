@@ -370,7 +370,23 @@ def build_reconcile(fragment: dict, journal: Journal, ctx: Context) -> dict:
     return value
 
 
-def build_decisions(fragment: dict, journal: Journal, ctx: Context) -> dict:
+def challenge_lookup(paths: list[str]) -> dict[str, str]:
+    """Candidate id -> the challenge file that holds its challenge; a candidate challenged in two files is refused."""
+    found: dict[str, str] = {}
+    for text in paths:
+        record = rp.load_json(text)
+        entries = record.get("challenges") if isinstance(record, dict) else None
+        if not isinstance(entries, list):
+            raise BuildError(f"--challenge {text} is not a challenge file written by dispatch_reader.py challenge.")
+        for entry in entries:
+            key = entry.get("candidate_id") if isinstance(entry, dict) else None
+            if key in found:
+                raise BuildError(f"Candidate {key} is challenged in both {found[key]} and {text}; give one challenge per candidate.")
+            found[key] = str(Path(text).resolve())
+    return found
+
+
+def build_decisions(fragment: dict, journal: Journal, ctx: Context, challenges: list[str] | None = None) -> dict:
     decisions = fragment.get("decisions")
     if not isinstance(decisions, dict):
         raise BuildError("decisions fragments need decisions keyed by candidate id.")
@@ -381,17 +397,23 @@ def build_decisions(fragment: dict, journal: Journal, ctx: Context) -> dict:
         raise BuildError("Decisions must account for every candidate exactly once; "
                          + (f"missing: {', '.join(missing)}" if missing else "") + ("; " if missing and extra else "")
                          + (f"unknown candidates: {', '.join(extra)}" if extra else "") + ".")
+    lookup = challenge_lookup(challenges or [])
     rows = []
     for key in candidates:
         row = dict(decisions[key])
         row["candidate_id"] = key
         row.setdefault("evidence", [])
+        if row.get("challenge_path") is None and key in lookup:
+            row["challenge_path"] = lookup[key]
         if row.get("status") in rs.FINAL_STATUSES:
             lacking = [f for f in ("category", "diagnosis", "severity", "confidence") if not row.get(f)]
             if lacking:
                 raise BuildError(f"Decision {key} ({row['status']}) lacks {', '.join(lacking)}.")
         rows.append(row)
-    return {"snapshot_id": journal.start["snapshot_id"], "summary": summary_of(fragment, "decisions"), "decisions": rows}
+    built = {"snapshot_id": journal.start["snapshot_id"], "summary": summary_of(fragment, "decisions"), "decisions": rows}
+    if fragment.get("no_challenge_reason") is not None:
+        built["no_challenge_reason"] = fragment["no_challenge_reason"]
+    return built
 
 
 def audits_by_candidate(directory: Path | None) -> dict[str, list[tuple[int, Path, dict]]]:
@@ -526,7 +548,7 @@ def build_review(fragment: dict, journal: Journal, ctx: Context) -> dict:
 # ---------------------------------------------------------------- driver
 
 
-def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], out: Path, audits_dir: Path | None, compare_dir: Path | None) -> dict:
+def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], out: Path, audits_dir: Path | None, compare_dir: Path | None, challenges: list[str] | None = None) -> dict:
     if stage not in STAGES:
         raise BuildError("stage must be one of: " + ", ".join(STAGES) + ".")
     if os.path.lexists(out):
@@ -545,7 +567,7 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
     elif stage == "reconcile":
         value = build_reconcile(fragment, journal, ctx)
     elif stage == "decisions":
-        value = build_decisions(fragment, journal, ctx)
+        value = build_decisions(fragment, journal, ctx, challenges)
     elif stage == "repairs":
         value = build_repairs(fragment, journal, ctx, audits_dir, compare_dir)
     else:
@@ -584,13 +606,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="The notes file to write (new path).")
     p.add_argument("--audits", help="repairs: directory of fidelity audits named <cid>.audit.json, <cid>-2.audit.json, ...; the latest round of each candidate decides its wording.")
     p.add_argument("--compare", help="repairs: directory of <cid>.features.json compare results (default: --audits).")
+    p.add_argument("--challenge", action="append", help="decisions: a challenge file from dispatch_reader.py challenge; repeatable. Each decision gets the challenge_path of the file that holds its candidate.")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
-        result = build(args.stage, Path(args.journal), Path(args.index), args.source, Path(args.out), Path(args.audits) if args.audits else None, Path(args.compare) if args.compare else None)
+        result = build(args.stage, Path(args.journal), Path(args.index), args.source, Path(args.out), Path(args.audits) if args.audits else None, Path(args.compare) if args.compare else None, args.challenge)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
     except Error as exc:

@@ -105,6 +105,11 @@ def recall_response(*answers):
     return json.dumps({"answers": [{"question_id": q, "choice": c, "note_ids": list(n)} for q, c, n in answers], "source_recognition": RECOGNITION})
 HEDGED_REQUEST = {"candidate_id": "C06", "original": [{"block_id": "B0002", "quote": "Counts may rise under these conditions."}],
                   "proposed_wording": "Counts might rise under these conditions.", "basis": []}
+CHALLENGE_CANDIDATES = [
+    {"candidate_id": "C01", "anchor": {"block_id": "B0002", "quote": "counts of agreement"}, "question": "What is agreement?"},
+    {"candidate_id": "C02", "anchor": {"block_id": "B0002", "quote": "Counts rose."}, "question": "Counts of what?"},
+    {"candidate_id": "C03", "anchor": {"block_id": "B0003", "quote": "later"}, "question": "Where is it defined?"},
+]
 KEPT_MAY = {"id": "H1", "term": "may", "status": "kept", "kept_as": "might"}
 KEPT_CONDITIONS = {"id": "H2", "term": "under these conditions", "status": "kept", "kept_as": "under these conditions"}
 HEDGED_OCCURRENCES = [
@@ -652,6 +657,77 @@ class DispatchReaderTests(unittest.TestCase):
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C05", "invalid_format"), ("C05b", "ok")])
         self.assertIn("changed: claim_strength", summary["outcome"])
+
+    # ------------------------------------------------------------ challenge
+
+    def challenge_files(self, candidates=None):
+        index_path = self.root / "index.json"
+        if not index_path.exists():
+            index_path.write_text(json.dumps(rp.build_index(TEXT)))
+            (self.root / "reader.json").write_text(json.dumps(PROFILE))
+        request = self.root / f"challenge-{len(list(self.root.glob('challenge-*.json')))}.json"
+        request.write_text(json.dumps({"candidates": candidates if candidates is not None else CHALLENGE_CANDIDATES}))
+        return ["--input", str(request), "--index", str(index_path), "--profile", str(self.root / "reader.json")]
+
+    def challenge_answer(self, *rows):
+        return json.dumps({"challenges": [{"candidate_id": k, "verdict": v, "answer": a, "duplicate_of": d, "reason": "r"} for k, v, a, d in rows]})
+
+    def test_challenge_writes_the_file_with_positions_and_names_the_disputed(self):
+        later = {"block_id": "B0003", "quote": "We define agreement later."}
+        earlier = {"block_id": "B0002", "quote": "We report counts of agreement."}
+        self.responses(self.challenge_answer(("C01", "answered", later, None), ("C02", "answered", earlier, None), ("C03", "not_material", None, None)))
+        out_path = self.root / "challenge.json"
+        code, out, err = self.main(["challenge", "--events", str(self.events), *self.challenge_files(), "--out", str(out_path)])
+        self.assertEqual(code, 0, err)
+        record = json.loads(out_path.read_text())
+        self.assertEqual(sorted(record), ["challenger", "challenges", "snapshot_id"])
+        self.assertEqual(record["challenger"], {"mode": "bounded-request", "agent_id": "claude-p-sess0001"})
+        self.assertEqual([(c["candidate_id"], c["verdict"], c["answer_position"]) for c in record["challenges"]], [("C01", "answered", "after"), ("C02", "answered", "before"), ("C03", "not_material", None)])
+        self.assertEqual(record["challenges"][0]["anchor"], CHALLENGE_CANDIDATES[0]["anchor"])
+        blocks = {b["block_id"]: b for b in rp.build_index(TEXT)["blocks"]}
+        self.assertEqual(rp.check_challenge_file(record, blocks, record["snapshot_id"]), record["challenges"])
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual((summary["disputed"], summary["verdicts"]), (["C02", "C03"], {"answered": 2, "duplicate": 0, "not_material": 1, "stands": 0}))
+        prompt = self.prompt(1)
+        self.assertTrue(prompt.startswith("You are checking objections to a manuscript on the author's behalf."))
+        sent = json.loads(prompt.rsplit("\n\n", 1)[1])
+        self.assertEqual(sorted(sent), ["candidates", "manuscript", "reader"])
+        self.assertEqual((sent["candidates"], sent["reader"]), (CHALLENGE_CANDIDATES, PROFILE))
+        self.assertEqual([b["block_id"] for b in sent["manuscript"]], ["B0001", "B0002", "B0003"])
+        argv = json.loads((self.fake / "prompts" / "1.argv.json").read_text())
+        self.assertIn("checker described in the user's message", argv[argv.index("--system-prompt") + 1])
+
+    def test_challenge_answers_that_do_not_fit_the_text_are_corrected(self):
+        stands = [("C02", "stands", None, None), ("C03", "stands", None, None)]
+        self.responses(self.challenge_answer(("C01", "answered", {"block_id": "B0003", "quote": "We define agreement elsewhere."}, None), *stands),
+                       self.challenge_answer(*stands),
+                       self.challenge_answer(("C01", "stands", None, None), *stands))
+        out_path = self.root / "challenge.json"
+        code, out, err = self.main(["challenge", "--events", str(self.events), *self.challenge_files(), "--out", str(out_path)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("challenges[0].answer.quote is not an exact substring of its supplied block.", self.prompt(2))
+        self.assertIn("challenges does not answer every candidate; missing: C01.", self.prompt(3))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([r["status"] for r in summary["calls"]], ["invalid_anchor", "invalid_format", "ok"])
+        self.assertEqual([c["verdict"] for c in json.loads(out_path.read_text())["challenges"]], ["stands", "stands", "stands"])
+
+    def test_challenge_refuses_bad_input_before_any_call(self):
+        out_path = self.root / "challenge.json"
+        cases = (
+            ([{**CHALLENGE_CANDIDATES[0], "diagnosis": "the editor's view"}], "has unsupported fields: diagnosis"),
+            ([{**CHALLENGE_CANDIDATES[0], "anchor": {"block_id": "B0002", "quote": "not in the text"}}], "quote is not an exact substring"),
+            ([], "must be a nonempty array"),
+        )
+        for candidates, message in cases:
+            with self.subTest(message=message):
+                code, out, err = self.main(["challenge", "--events", str(self.root / "events-bad"), *self.challenge_files(candidates), "--out", str(out_path)])
+                self.assertEqual(code, 2)
+                self.assertIn(message, json.loads(err)["error"]["message"])
+        out_path.write_text("{}")
+        code, out, err = self.main(["challenge", "--events", str(self.root / "events-exists"), *self.challenge_files(), "--out", str(out_path)])
+        self.assertEqual(code, 2)
+        self.assertIn("Refusing to overwrite", err)
+        self.assertFalse((self.fake / "counter.txt").exists(), "no model call was made")
 
     # ------------------------------------------------------------ audit hedges and rounds
 

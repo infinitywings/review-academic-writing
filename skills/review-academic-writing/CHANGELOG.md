@@ -2,6 +2,15 @@
 
 ## 未发布
 
+- **候选的独立质疑（改造计划 R1）。** 三次真实运行里，决定阶段几乎不驳回候选（4/46、0/65、0/52），因为反证是提出候选的编辑自己写的。新增一步：决定之前，把候选交给一个新开上下文、没有工具的质疑者。它能看到整篇稿件和读者画像，对每条候选只看到锚点和读者的问题，看不到编辑的诊断和证据。
+  - `dispatch_reader.py challenge --input --index --profile --out`：一次调用可带多条候选。质疑者对每条给一个结论和理由：`stands`（成立）；`answered`（稿件已回答，必须逐字引出回答它的那句话）；`not_material`（不妨碍理解）；`duplicate`（与同一批里另一条重复）。脚本核对引文，并算出回答在锚点之前、之后还是重叠（`answer_position`）。回答格式不对或引文不在原文时，按现有的更正流程退回重答。
+  - `review_steps.py` 的决定阶段：决定可以带 `challenge_path`。质疑的结论是"不妨碍理解""重复"或"读者已经读到的文字回答了它"时算否定；编辑仍要保留这条候选的话，必须在 `challenge_response` 里写明理由，否则拒绝入库。回答只出现在锚点之后的不算否定，那说明的是顺序问题。质疑文件记入决定阶段回执的附件，事后改动会被发现。
+  - **默认开启，日志升到 schema 7**：每条决定都必须带 `challenge_path`，缺了就拒绝入库。当前环境确实无法运行质疑者时，在决定记录顶层写 `no_challenge_reason` 说明原因，并且一条都不附。schema 6 及更早的日志照旧能读：有质疑就核对，没有不要求。
+  - `review_steps.py challenge-input --journal --index --out [--batch 10]`：reconcile 记录之后，由已记录的候选生成质疑者的输入文件，每个文件一批。`notes_build.py decisions --challenge FILE`（可重复）按候选自动填每条决定的 `challenge_path`。
+  - `server/orchestrator.py` 还不运行质疑，它记录的日志里写明这一原因；等固定流程成为主干（R11）时补上。
+  - 默认开启前，在植入缺陷测试集上量过误否定和误放过两个数（`evals/run.py challenge`，做法见 `evals/README.md`）。测试结果不随仓库发布。这类数字来自一篇约 700 词的虚构短文，不代表真实稿件上的表现。
+  - 新增 `assets/prompts/challenge.txt`、`assets/notes/challenge.json`；`decisions.json` 模板加两个可选字段；`staged-review.md` 第 5 节、`SKILL.md` 第 4 节、包内 README 补了说明。
+  - 质疑者是读同一份稿件的模型，它的结论是供决定参考的证据，不代表真人读者。
 - **报告和所有中间记录一律用英文。** 包括各阶段的笔记、读者的回答、审计备注、结构化评审和最终报告；引文和建议的改稿保持稿件原文的语言。不论使用者用什么语言对话都如此；智能体可以用使用者的语言交谈，但不把保存的文件写成那种语言，也不另出第二种语言的报告，除非使用者要求。原因：技能要交给不同的智能体用，两种语言的记录无法跨运行、跨智能体比较（10 月 27 日的对照里，一边的读者用中文作答）。
   - `SKILL.md` 第 7 节和第 3 节、`references/workflow.md`、`assets/reader-profile.json`（`response_language` 改为 English）、`assets/prompts/fidelity-audit.txt`（备注用英文）。
   - `server/orchestrator.py` 去掉 `--language` 选项，`server/prompts/report.txt` 固定为英文。这是不兼容改动：传 `--language` 会报错。

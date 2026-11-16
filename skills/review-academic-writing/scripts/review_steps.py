@@ -29,14 +29,17 @@ import masked_reader as mr
 import review_packets as rp
 
 STAGES = ("reading", "checks", "reconcile", "decisions", "repairs")
-JOURNAL_SCHEMA = 6
+JOURNAL_SCHEMA = 7
 # Schema 4 journals (0.17) replay with the 0.18 fields optional: an audit may lack hedges,
 # added_qualification and audit_round, a repair may lack edit_scope, and actions and author
 # questions are not checked for a block id or a question mark. Schema 5 journals require them.
 # Schema 6 journals also require the occurrence-level hedge report (hedges_in_original and
 # hedge_patterns in the audit, an id and kept_as per hedge) and a feature comparison of the
 # audited original; schema 5 journals accept the earlier term-level report as well.
-SUPPORTED_SCHEMAS = {4, 5, JOURNAL_SCHEMA}
+# Schema 7 journals require an independent challenge of every candidate before its decision
+# (challenge_path on each decision), or no_challenge_reason when no challenger could be run;
+# in schema 6 and earlier a challenge is checked when present and never required.
+SUPPORTED_SCHEMAS = {4, 5, 6, JOURNAL_SCHEMA}
 CLAIM_CHECK_FIELDS = ("claim_strength", "counterexample", "citation_check")
 # An optional passage.proposition_checks entry: what one suspected sentence actually states.
 PROPOSITION_CHECK_FIELDS = ("anchor", "proposition", "supplied_relations", "function", "needed_here")
@@ -491,6 +494,20 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                 target = string(row.get("merged_into"), "decision.merged_into")
                 if target not in decisions or not isinstance(decisions[target].get("status"), str) or decisions[target]["status"] not in FINAL_STATUSES:
                     raise Error("A merged candidate must point directly to an accepted or needs_author candidate; no chains or cycles.")
+        seen_paths: dict[str, list[dict]] = {}
+        for key, row in decisions.items():
+            attachments.extend(challenge(row, key, candidates[key], blocks, start["snapshot_id"], seen_paths))
+        if start["schema_version"] >= 7:
+            unchallenged = [key for key, row in decisions.items() if row.get("challenge_path") is None]
+            reason = value.get("no_challenge_reason")
+            if reason is None:
+                if unchallenged:
+                    raise Error("Every candidate needs an independent challenge before its decision (dispatch_reader.py challenge; set challenge_path). Missing: "
+                                + ", ".join(unchallenged) + ". If no challenger can be run, say why in no_challenge_reason and challenge none.")
+            else:
+                string(reason, "decisions.no_challenge_reason")
+                if len(unchallenged) != len(decisions):
+                    raise Error("no_challenge_reason says no challenger was run, so no decision may carry challenge_path.")
     elif stage == "repairs":
         strict = start["schema_version"] >= 5
         candidates = all_candidates(previous)
@@ -547,6 +564,38 @@ def validate_notes(stage: str, value: Any, start: dict, index: dict, previous: d
                 else:
                     attachments.extend(feature_comparison(row, key, start["schema_version"]))
     return attachments
+
+
+def challenge(row: dict, candidate_id: str, candidate: dict, blocks: dict, snapshot_id: str, seen: dict[str, list[dict]]) -> list[dict]:
+    """Bind a decision to the independent challenge of its candidate, when one was run (dispatch_reader.py challenge).
+
+    The challenge must be about this candidate's own anchor. When it disputes the candidate
+    (not material, a duplicate, or answered by words the reader has already seen) and the
+    decision keeps the candidate, the decision says why in challenge_response; the editor may
+    overrule a challenger, but not silently. One challenge file may serve several decisions.
+    """
+    path_text, response = row.get("challenge_path"), row.get("challenge_response")
+    if path_text is None:
+        if response is not None:
+            raise Error(f"Decision {candidate_id}: challenge_response answers a challenge, so it needs challenge_path.")
+        return []
+    path = Path(string(path_text, "decision.challenge_path")).resolve()
+    first = str(path) not in seen
+    if first:
+        raw = read_raw(path)
+        seen[str(path)] = [rp.check_challenge_file(parse(raw), blocks, snapshot_id), {"path": str(path), "sha256": digest(raw)}]
+    entries, attachment = seen[str(path)]
+    entry = next((e for e in entries if e["candidate_id"] == candidate_id), None)
+    if entry is None:
+        raise Error(f"challenge_path for {candidate_id} holds no challenge of that candidate.")
+    if not anchor_overlaps(entry["anchor"], candidate["anchor"]):
+        raise Error(f"The challenge of {candidate_id} was made at a different anchor than the candidate's; challenge the candidate's own anchor.")
+    if response is not None:
+        string(response, "decision.challenge_response")
+    if rp.challenge_disputes(entry) and row["status"] in FINAL_STATUSES and response is None:
+        why = {"not_material": "found it not material", "duplicate": f"found it a duplicate of {entry['duplicate_of']}", "answered": "quoted text the reader has already seen that answers it"}[entry["verdict"]]
+        raise Error(f"Decision {candidate_id} keeps a candidate whose independent challenge {why}; say why it is kept in challenge_response, or reject or merge it.")
+    return [attachment] if first else []
 
 
 def fidelity_audit(row: dict, candidate_id: str, blocks: dict, schema: int, targets: list[dict]) -> list[dict]:
@@ -717,6 +766,26 @@ def locked(journal: Path):
 def stage_paths(journal: Path, stage: str) -> tuple[Path, Path]:
     number = STAGES.index(stage) + 1
     return journal / f"{number:02d}-{stage}.notes.json", journal / f"{number:02d}-{stage}.receipt.json"
+
+
+def challenge_inputs(journal: Path, index: Any, out: Path, batch: int) -> dict:
+    """Write the challenger's input files from the recorded candidates: id, anchor, and question only, in batches."""
+    if batch < 1:
+        raise Error("--batch must be at least 1.")
+    with locked(journal):
+        _start, notes, _previous = load_run(journal, index)
+    if "reconcile" not in notes:
+        raise Error("Challenge the candidates after the reconcile stage is recorded, so that the readers' candidates are included.")
+    rows = [{"candidate_id": c["id"], "anchor": c["anchor"], "question": c["question"]} for c in notes["checks"]["candidates"] + notes["reconcile"]["candidates"]]
+    if not rows:
+        return {"ok": True, "command": "challenge-input", "candidates": 0, "inputs": [], "note": "No candidates were recorded; record decisions with no_challenge_reason."}
+    out.mkdir(parents=True, exist_ok=False)
+    paths = []
+    for n in range(0, len(rows), batch):
+        path = out / f"challenge-input-{n // batch + 1:02d}.json"
+        rp.write_json_atomic(path, {"candidates": rows[n:n + batch]})
+        paths.append(str(path))
+    return {"ok": True, "command": "challenge-input", "candidates": len(rows), "inputs": paths}
 
 
 def start_run(index: Any, profile: Any, scope: Any, out: Path) -> dict:
@@ -954,6 +1023,11 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--notes", required=True)
         elif name == "check-final":
             command.add_argument("--review", required=True)
+    inputs = commands.add_parser("challenge-input", help="After reconcile: write the input files for dispatch_reader.py challenge from the recorded candidates.")
+    inputs.add_argument("--journal", required=True)
+    inputs.add_argument("--index", required=True)
+    inputs.add_argument("--out", required=True, help="New directory for challenge-input-01.json, challenge-input-02.json, ...")
+    inputs.add_argument("--batch", type=int, default=10, help="Candidates per input file, and so per challenger call (default 10).")
     corrected = commands.add_parser("corrected-run", help="Start a corrected run: copy the stages before --restart-at from a verified journal into a new one that records what it supersedes.")
     corrected.add_argument("--from", dest="source", required=True, help="The journal being corrected; it is left untouched.")
     corrected.add_argument("--index", required=True)
@@ -973,6 +1047,8 @@ def main(argv: list[str] | None = None) -> int:
             result = record_stage(Path(args.journal), index, args.stage, Path(args.notes).read_bytes())
         elif args.command == "ready":
             result = ready_run(Path(args.journal), index)
+        elif args.command == "challenge-input":
+            result = challenge_inputs(Path(args.journal), index, Path(args.out), args.batch)
         elif args.command == "corrected-run":
             result = corrected_run(Path(args.source), index, Path(args.out), args.restart_at, args.reason)
         else:

@@ -105,6 +105,16 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/review_steps.py record --journal run/journal
 
 Use [the decisions template](../assets/notes/decisions.json). Reopen the relevant source locations; do not decide solely from a summary of the candidate.
 
+**Independent challenge.** A `countercheck` written by the editor who raised the candidate rarely rejects it. After the reconcile stage is recorded and before deciding, put every candidate to a fresh, tool-less challenger that sees the whole manuscript and the reader profile and, for each candidate, only its id, its exact anchor, and the reader's question; it does not see the diagnosis or the evidence the editor collected. Save the request as `{"candidates": [{"candidate_id", "anchor", "question"}]}` and run
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/dispatch_reader.py challenge --events run/events-challenge --input run/challenge-input.json --index run/index.json --profile run/reader-profile.json --out run/challenge.json --model MODEL
+```
+
+One call may carry several candidates (a section's worth; about ten is a reasonable batch), and the same model as the readers is used. The challenger answers each candidate with one verdict and a reason: `stands`; `answered`, quoting the manuscript words that answer the question (the helper checks the quotation and works out `answer_position`: `before` the anchor, `after` it, or `at` it); `not_material`; or `duplicate` of another candidate in the request. The result has the shape of [the challenge template](../assets/notes/challenge.json).
+
+Record the file on each challenged decision as `challenge_path`. A challenge disputes the candidate when the verdict is `not_material` or `duplicate`, or `answered` by words the reader has already seen (`before` or `at`). An answer that comes only `after` the anchor does not dispute it: it confirms a problem of order. A decision that keeps a disputed candidate (`accepted` or `needs_author`) must say why in `challenge_response`; the helper refuses it otherwise. The editor may overrule the challenger, and a challenger that is unsure is told to answer `stands`, so a dispute is a reason to look again, not a ruling. The helper requires a challenge of every candidate: each decision carries `challenge_path`, and the stage is refused when one is missing. `review_steps.py challenge-input --journal run/journal --index run/index.json --out run/challenge-inputs` writes the input files from the recorded candidates in batches of ten (`--batch N`), and `notes_build.py decisions --challenge run/challenge-01.json --challenge run/challenge-02.json` fills in each decision's `challenge_path` from the files. Only when no fresh challenger can be run in this environment, challenge none and say why in `no_challenge_reason` at the top of the decisions notes, as for a reader that could not be dispatched; the report then says that candidates were not independently challenged. Journals written before schema 7 are checked when a challenge is present and never require one. A challenger is a model reading the same text; its verdicts are evidence for the decision and are not findings about human readers.
+
 For every candidate from the checks and reconcile stages, record `candidate_id`, `verification` describing what was checked, `countercheck` describing what could make the existing text adequate, exact source `evidence`, and one `status`:
 
 | Status | Meaning |
@@ -214,6 +224,7 @@ The helper accepts only these values; anything else is refused with a message na
 | `repair.edit_scope` (edit only) | `pointer`, `apposition`, `term`, `reorder`, `split`, `sentence` |
 | `repair.action`, `repair.author_question` | an action names a block id of this source; an author question ends with a question mark |
 | `audit.verdict` | `preserved`, `changed`, `undetermined`; each of the ten `audit.checks` (the nine of 0.17 plus `added_qualification`) is `same`, `changed`, or `not_applicable` |
+| `challenge.challenges[].verdict` | `stands`, `answered`, `not_material`, `duplicate`; `answer_position` is `before`, `after`, `at`, or null (filled in by the helper) |
 | `audit.checks.hedges[]` | `{id, term, status, kept_as}`: one entry per occurrence in `hedges_in_original`; `status` is `kept`, `strengthened`, or `removed`; `kept_as` quotes the proposed wording for a kept occurrence and is null otherwise (schema 5 journals also accept the earlier `{term, status}` entries) |
 | `audit.audit_round` | a positive integer: 1 for the first wording of a candidate, 2 for the revision after a failed audit, and so on |
 | `audit.auditor.mode` | `bounded-request`, `fresh-prefix`, `full-context` |

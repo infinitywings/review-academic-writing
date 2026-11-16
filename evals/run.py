@@ -5,6 +5,10 @@
            auditor's verdict with the expected one
   prefix   plant the defects, send a prefix reader to the end of every section of the planted
            manuscript, and score the readers' issues with planted.py
+  challenge  plant the defects, put one candidate per defect and the key's adequate objections
+           to `dispatch_reader.py challenge`, and count how many sound candidates the
+           challenger disputes (false kills) and how many answered objections it lets stand
+           (false keeps)
 
 Both take --model (required; the tests have no built-in model) and --repeats: a model does
 not give the same answer twice, so compare versions over several runs. Calls go through the
@@ -178,10 +182,55 @@ def run_prefix(options: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def challenge_one(repeat: int, candidates: list[dict[str, Any]], home: Path, options: argparse.Namespace) -> dict[str, Any]:
+    events = home / f"r{repeat}"
+    events.mkdir(parents=True)
+    (events / "input.json").write_text(json.dumps({"candidates": candidates}, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = dispatch("challenge", events / "events", ["--input", str(events / "input.json"), "--index", str(home / "index.json"), "--profile", options.profile,
+                                                        "--out", str(events / "challenge.json"), "--label", "CH01"], options)
+    entries = rp.load_json(events / "challenge.json")["challenges"] if (events / "challenge.json").is_file() else []
+    return {"repeat": repeat, "ok": bool(entries), "entries": {e["candidate_id"]: e for e in entries}, "summary": summary}
+
+
+def run_challenge(options: argparse.Namespace) -> dict[str, Any]:
+    out = Path(options.out)
+    out.mkdir(parents=True, exist_ok=False)
+    planted.plant(Path(options.defects_file), options.defects, out / "planted")
+    key = rp.load_json(out / "planted" / "key.json")
+    made = subprocess.run([sys.executable, "-I", str(SKILL / "scripts" / "review_packets.py"), "index", "--input", str(out / "planted" / "manuscript.md"), "--out", str(out / "index.json")], capture_output=True, text=True)
+    if made.returncode != 0:
+        raise Error("Could not index the planted manuscript: " + made.stderr.strip()[:300])
+    expected = {d["id"]: d["challenge_expected"] for d in key["defects"]} | {a["id"]: "disputed" for a in key["adequate"]}
+    candidates = [{"candidate_id": d["id"], "anchor": d["expect"][0], "question": d["question"]} for d in key["defects"]]
+    candidates += [{"candidate_id": a["id"], "anchor": a["anchor"], "question": a["question"]} for a in key["adequate"]]
+    with ThreadPoolExecutor(max_workers=options.jobs) as pool:
+        rows = list(pool.map(lambda r: challenge_one(r, candidates, out, options), range(1, options.repeats + 1)))
+    stop_if_nothing_ran([row["summary"] for row in rows])
+    complete = [row for row in rows if row["ok"]]
+
+    def outcome(entry: dict[str, Any]) -> str:
+        return "disputed" if rp.challenge_disputes(entry) else "kept"
+
+    table = []
+    for key_id, want in expected.items():
+        got = [outcome(row["entries"][key_id]) for row in complete]
+        verdicts = [row["entries"][key_id]["verdict"] + (":" + row["entries"][key_id]["answer_position"] if row["entries"][key_id]["answer_position"] else "") for row in complete]
+        table.append({"id": key_id, "expected": want, "outcomes": got, "verdicts": verdicts, "matched": sum(1 for g in got if g == want)})
+    sound = [row for row in table if row["expected"] == "kept"]
+    answered = [row for row in table if row["expected"] == "disputed"]
+    result = {"ok": True, "command": "challenge", "model": options.model, "runtime": options.runtime, "repeats": options.repeats, "complete_runs": len(complete),
+              "sound_candidates": {"candidates": len(sound), "runs": sum(len(r["outcomes"]) for r in sound), "false_kills": sum(len(r["outcomes"]) - r["matched"] for r in sound)},
+              "answered_objections": {"candidates": len(answered), "runs": sum(len(r["outcomes"]) for r in answered), "false_keeps": sum(len(r["outcomes"]) - r["matched"] for r in answered)},
+              "candidates": table, "totals": totals([row["summary"] for row in rows]),
+              "note": "A challenger on invented candidates with a fixed expected outcome; false kills and false keeps here do not carry over to candidates on real manuscripts."}
+    rp.write_json_atomic(out / "results.json", result)
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     p = rp.JsonArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = p.add_subparsers(dest="command", required=True)
-    for name in ("audit", "prefix"):
+    for name in ("audit", "prefix", "challenge"):
         command = commands.add_parser(name)
         command.add_argument("--model", required=True, help="Model for every call, passed to dispatch_reader.py (or 'default' for the command's own).")
         command.add_argument("--out", required=True, help="New directory for the call files and results.json.")
@@ -191,9 +240,10 @@ def parser() -> argparse.ArgumentParser:
         for flag, text in (("claude", "claude executable"), ("codex", "codex executable"), ("config", "JSON config for --runtime http"), ("effort", "effort setting passed through")):
             command.add_argument(f"--{flag}", help=text)
     commands.choices["audit"].add_argument("--cases", default=str(HERE / "audit-cases.json"))
-    commands.choices["prefix"].add_argument("--defects-file", default=str(HERE / "defects.json"))
-    commands.choices["prefix"].add_argument("--defects", default="all", help="'all' (default), 'none' for the clean manuscript, or a comma-separated list of defect ids.")
-    commands.choices["prefix"].add_argument("--profile", default=str(SKILL / "assets" / "reader-profile.json"), help="Reader profile for the packets (default: the skill's general reader).")
+    for name in ("prefix", "challenge"):
+        commands.choices[name].add_argument("--defects-file", default=str(HERE / "defects.json"))
+        commands.choices[name].add_argument("--defects", default="all", help="'all' (default), 'none' for the clean manuscript, or a comma-separated list of defect ids.")
+        commands.choices[name].add_argument("--profile", default=str(SKILL / "assets" / "reader-profile.json"), help="Reader profile (default: the skill's general reader).")
     return p
 
 
@@ -202,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         args = parser().parse_args(argv)
         if args.repeats < 1 or args.jobs < 1:
             raise Error("--repeats and --jobs must be at least 1.")
-        result = run_audit(args) if args.command == "audit" else run_prefix(args)
+        result = {"audit": run_audit, "prefix": run_prefix, "challenge": run_challenge}[args.command](args)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
     except Error as exc:

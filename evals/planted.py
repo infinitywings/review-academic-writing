@@ -9,6 +9,11 @@ Standard library only (plus the skill's review_packets.py for block ids).
   score  given findings made on the planted copy, say which defects were found and how many
          findings fell on control blocks
 
+The key also carries material for testing a challenger of candidates: for each defect the
+reader's question at the planted place and whether a challenge should leave the candidate
+standing (`kept`) or dispute it (`disputed`), and a list of `adequate` objections, questions
+that the manuscript answers before the quoted place and that a challenger should dispute.
+
 A defect is a list of exact replacements; each must match the text exactly once, so planting
 is deterministic. A defect counts as found when the quotation of at least one finding
 overlaps one of its expected quotations in the same block, so a different question about the
@@ -53,8 +58,15 @@ def load_spec(path: Path) -> dict[str, Any]:
             raise Error(f"Defect {defect['id']}: replace must be a nonempty list of {{find, with}} strings.")
         if not isinstance(defect.get("expect"), list) or not defect["expect"] or any(not isinstance(q, str) or not q for q in defect["expect"]):
             raise Error(f"Defect {defect['id']}: expect must be a nonempty list of quotes from the planted text.")
+        if not isinstance(defect.get("question"), str) or not defect["question"] or defect.get("challenge_expected") not in ("kept", "disputed"):
+            raise Error(f"Defect {defect['id']}: question (the reader's question at the first expected quote) and challenge_expected (kept or disputed) are required.")
     if any(not isinstance(q, str) or not q for q in spec["controls"]):
         raise Error("controls must be a list of quotes.")
+    adequate = spec.setdefault("adequate", [])
+    if not isinstance(adequate, list) or any(not isinstance(a, dict) or not all(isinstance(a.get(k), str) and a[k] for k in ("id", "quote", "question")) for a in adequate):
+        raise Error("adequate must be a list of {id, quote, question}: objections the manuscript already answers before the quoted place.")
+    if len({a["id"] for a in adequate} | seen) != len(adequate) + len(seen):
+        raise Error("adequate ids must be distinct from each other and from the defect ids.")
     return spec
 
 
@@ -90,14 +102,15 @@ def block_of(index: dict[str, Any], quote: str, label: str) -> str:
 
 def build_key(text: str, spec: dict[str, Any], planted: list[dict[str, Any]]) -> dict[str, Any]:
     index = rp.build_index(text)
-    defects = [{"id": d["id"], "type": d["type"], "description": d["description"],
+    defects = [{"id": d["id"], "type": d["type"], "description": d["description"], "question": d["question"], "challenge_expected": d["challenge_expected"],
                 "expect": [{"block_id": block_of(index, q, f"Defect {d['id']}"), "quote": q} for q in d["expect"]]} for d in planted]
+    adequate = [{"id": a["id"], "question": a["question"], "anchor": {"block_id": block_of(index, a["quote"], f"Adequate {a['id']}"), "quote": a["quote"]}} for a in spec["adequate"]]
     controls = [{"block_id": block_of(index, q, "Control"), "quote": q} for q in spec["controls"]]
     expected = {a["block_id"] for d in defects for a in d["expect"]}
     clash = sorted({c["block_id"] for c in controls} & expected)
     if clash:
         raise Error(f"Control blocks {', '.join(clash)} are also expected blocks of a planted defect; a control must be a passage no defect touches.")
-    return {"snapshot_id": index["snapshot_id"], "planted": [d["id"] for d in planted], "defects": defects, "controls": controls}
+    return {"snapshot_id": index["snapshot_id"], "planted": [d["id"] for d in planted], "defects": defects, "controls": controls, "adequate": adequate}
 
 
 def plant(spec_path: Path, wanted: str, out: Path) -> dict[str, Any]:

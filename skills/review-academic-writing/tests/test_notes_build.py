@@ -143,7 +143,7 @@ class NotesBuildTests(unittest.TestCase):
 
     def decisions_fragment(self):
         common = {"verification": "v", "countercheck": "c"}
-        return {"summary": "Decided.", "decisions": {
+        return {"summary": "Decided.", "no_challenge_reason": "this test journal runs no challenger", "decisions": {
             "C01": {**common, "status": "accepted", "evidence": [DEFINITION, SETTING], "category": "late_prerequisite",
                     "diagnosis": "RVG is used in B0003 before B0004 defines it.", "severity": "major", "confidence": "high"},
             "C02": {**common, "status": "needs_author", "category": "unsupported_claim", "diagnosis": "The visit count has no stated source.", "severity": "minor", "confidence": "medium"},
@@ -288,6 +288,30 @@ class NotesBuildTests(unittest.TestCase):
                            [self.write("drafts/short-checks.json", self.checks_fragment(["B0002", "B0003", "B0005"]))])
         self.assertRefused("Passage checks must cover every included block exactly once; not in scope: B0001", "checks",
                            [self.write("drafts/wide-checks.json", self.checks_fragment(["B0001", *INCLUDED]))])
+
+    def test_decisions_take_challenge_paths_from_the_challenge_files(self):
+        self.through("reconcile")
+        inputs = rs.challenge_inputs(self.journal, self.index, self.root / "challenge-inputs", 3)
+        blocks = {b["block_id"]: b for b in self.index["blocks"]}
+        files = []
+        for n, path in enumerate(inputs["inputs"], 1):
+            requests = rp.load_json(path)["candidates"]
+            joined = rp.check_challenges(requests, [{"candidate_id": r["candidate_id"], "verdict": "stands", "answer": None, "duplicate_of": None, "reason": "r"} for r in requests], blocks)
+            files.append(self.write(f"challenges/ch-{n}.json", {"snapshot_id": self.index["snapshot_id"], "challenges": joined, "challenger": {"mode": "bounded-request", "agent_id": "challenger-1"}}))
+        self.assertEqual(len(files), 2, "four candidates in batches of three")
+        fragment = self.decisions_fragment()
+        del fragment["no_challenge_reason"]
+        source = self.write("drafts/decisions-challenged.json", fragment)
+        out = self.out_path("decisions")
+        nb.build("decisions", self.journal, self.index_path, [str(source)], out, None, None, [str(f) for f in files])
+        decisions = rp.load_json(out)
+        self.assertEqual([Path(d["challenge_path"]).name for d in decisions["decisions"]], ["ch-1.json", "ch-1.json", "ch-1.json", "ch-2.json"])
+        self.assertNotIn("no_challenge_reason", decisions)
+        with self.assertRaisesRegex(rp.ReviewDataError, "Candidate C01 is challenged in both"):
+            nb.build("decisions", self.journal, self.index_path, [str(source)], self.root / "dup.json", None, None, [str(files[0]), str(files[0])])
+        with self.assertRaisesRegex(rp.ReviewDataError, "is not a challenge file written by dispatch_reader.py challenge"):
+            nb.build("decisions", self.journal, self.index_path, [str(source)], self.root / "bad.json", None, None, [str(source)])
+        self.assertEqual(self.record("decisions", out)["next_stage"], "repairs")
 
     def test_field_vocabularies_go_through_the_validator(self):
         self.through("reading")

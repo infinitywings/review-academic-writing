@@ -35,6 +35,18 @@ if "candidate_id" in data:
         checks["claim_strength"] = "changed"
     answer = {{"candidate_id": data["candidate_id"], "proposed_wording": data["proposed_wording"], "original": data["original"],
               "verdict": "changed" if changed else "preserved", "checks": {{**checks, "hedges": []}}, "notes": "n", "auditor": {{"mode": "", "agent_id": ""}}}}
+elif "candidates" in data:
+    # Challenge: every K objection is "answered" by the first words of the first body block, which lie before it;
+    # D02 is called not material (a false kill); every other candidate stands.
+    first = data["manuscript"][2]
+    rows = []
+    for c in data["candidates"]:
+        k = c["candidate_id"]
+        if k.startswith("K") and k != "K05":
+            rows.append({{"candidate_id": k, "verdict": "answered", "answer": {{"block_id": first["block_id"], "quote": first["text"][:20]}}, "duplicate_of": None, "reason": "r"}})
+        else:
+            rows.append({{"candidate_id": k, "verdict": "not_material" if k == "D02" else "stands", "answer": None, "duplicate_of": None, "reason": "r"}})
+    answer = {{"challenges": rows}}
 else:
     block = data["blocks"][-1]
     anchor = {{"block_id": block["block_id"], "quote": block["text"]}}
@@ -119,11 +131,28 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result["found_in_runs"], {"D01": 0, "D02": 0, "D03": 2, "D04": 2, "D05": 0, "D06": 0, "D07": 0, "D08": 2})
         self.assertEqual((result["totals"]["calls"], result["complete_runs"]), (12, 2))
 
+    def test_challenge_counts_false_kills_and_false_keeps(self):
+        out = self.root / "challenge"
+        code, text, err = self.main(["challenge", "--model", "default", "--claude", str(self.claude), "--out", str(out), "--repeats", "2"])
+        self.assertEqual(code, 0, err)
+        result = json.loads(text)
+        self.assertEqual(result["complete_runs"], 2)
+        by = {row["id"]: row for row in result["candidates"]}
+        self.assertEqual(len(by), 13)
+        self.assertEqual((by["D02"]["outcomes"], by["D02"]["matched"]), (["disputed", "disputed"], 0), "a sound candidate called not material is a false kill")
+        self.assertEqual((by["D07"]["expected"], by["D07"]["outcomes"], by["D07"]["matched"]), ("disputed", ["kept", "kept"], 0))
+        self.assertEqual((by["K01"]["verdicts"], by["K01"]["matched"]), (["answered:before", "answered:before"], 2))
+        self.assertEqual((by["K05"]["outcomes"], by["K05"]["matched"]), (["kept", "kept"], 0), "an answered objection left standing is a false keep")
+        self.assertEqual(result["sound_candidates"], {"candidates": 7, "runs": 14, "false_kills": 2})
+        self.assertEqual(result["answered_objections"], {"candidates": 6, "runs": 12, "false_keeps": 4})
+        sent = json.loads((out / "r1" / "input.json").read_text())["candidates"]
+        self.assertEqual(sorted(sent[0]), ["anchor", "candidate_id", "question"], "the challenger gets the question, not the defect's description")
+
     def test_a_run_in_which_every_call_fails_reports_the_failure_not_a_score(self):
         broken = self.root / "claude-expired"
         broken.write_text(f"#!{sys.executable}\nimport sys\nprint('Failed to authenticate: session expired')\nsys.exit(1)\n")
         os.chmod(broken, 0o755)
-        for command in ("audit", "prefix"):
+        for command in ("audit", "prefix", "challenge"):
             with self.subTest(command=command):
                 out = self.root / f"failed-{command}"
                 code, text, err = self.main([command, "--model", "default", "--claude", str(broken), "--out", str(out)])

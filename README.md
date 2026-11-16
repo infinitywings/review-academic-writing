@@ -119,7 +119,7 @@ cd skills/review-academic-writing
 python3 -I -m unittest discover -s tests
 ```
 
-Expect 280 tests to pass (one is skipped when spaCy is not installed). The tests never call MinerU or a real model. The planted-defect tests have their own unit tests: `python3 -I -m unittest discover -s evals/tests` from the repository root.
+Expect 290 tests to pass (one is skipped when spaCy is not installed). The tests never call MinerU or a real model. The planted-defect tests have their own unit tests: `python3 -I -m unittest discover -s evals/tests` from the repository root.
 
 ## References
 
