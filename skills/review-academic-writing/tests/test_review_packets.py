@@ -385,5 +385,77 @@ class ChallengeTests(unittest.TestCase):
                     rp.check_challenge_file(value, self.blocks, snapshot)
 
 
+class SectionRuleTests(unittest.TestCase):
+    TEXT = (
+        "Preface line before any heading.\n\n"
+        "# Study\n\n"
+        "## Methods\n\n"
+        "We counted visits.\n\n"
+        "### Sensors ###\n\n"
+        "Each feeder had one sensor.\n\n"
+        "| feeder | sensor |\n| --- | --- |\n| 1 | beam |\n\n"
+        "Results\n-------\n\n"
+        "Counts rose. Counts rose.\n\n"
+        "Closing\n=======\n"
+    )
+
+    def setUp(self):
+        self.index = rp.build_index(self.TEXT)
+        self.blocks = {b["block_id"]: b for b in self.index["blocks"]}
+
+    def ends(self, **options):
+        return [(row["block_id"], row["heading"]) for row in rp.section_ends(self.index, **options)]
+
+    def test_heading_level_and_text(self):
+        cases = (("# A", 1, "A"), ("###  Deep title ##", 3, "Deep title"), ("## C# notes", 2, "C# notes"), ("Title\n===", 1, "Title"), ("Sub\n---", 2, "Sub"))
+        for text, level, words in cases:
+            with self.subTest(text=text):
+                self.assertEqual((rp.heading_level(text), rp.heading_text(text)), (level, words))
+        for text in ("plain words", "#nospace", "a | b\n--- | ---\n1 | 2", "one\ntwo\nthree"):
+            with self.subTest(text=text):
+                self.assertIsNone(rp.heading_level(text))
+        self.assertEqual([b["kind"] for b in self.index["blocks"]],
+                         ["text", "heading", "heading", "text", "heading", "text", "table", "heading", "text", "heading"])
+
+    def test_section_ends_at_every_heading(self):
+        self.assertEqual(self.ends(), [("B0001", None), ("B0004", "Methods"), ("B0007", "Sensors"), ("B0009", "Results")])
+
+    def test_a_heading_deeper_than_max_level_does_not_end_a_section(self):
+        self.assertEqual(self.ends(max_level=2), [("B0001", None), ("B0007", "Methods"), ("B0009", "Results")])
+        self.assertEqual(self.ends(max_level=1), [("B0001", None), ("B0009", "Study")])
+
+    def test_only_included_blocks_end_a_section(self):
+        self.assertEqual(self.ends(included=["B0004", "B0006", "B0009"]), [("B0004", "Methods"), ("B0006", "Sensors"), ("B0009", "Results")])
+        self.assertEqual(self.ends(included=["B0006"], max_level=2), [("B0006", "Methods")])
+        self.assertEqual(self.ends(included=[]), [])
+
+    def test_closing_quote_is_the_shortest_closing_words_that_name_one_place(self):
+        self.assertEqual(rp.closing_quote("one two three four five", 3), "three four five")
+        self.assertEqual(rp.closing_quote("one two", 3), "one two")
+        self.assertEqual(rp.closing_quote("the cat sat. the cat sat. the cat sat.", 3), "sat. the cat sat. the cat sat.")
+        self.assertEqual(rp.closing_quote("a b a b", 2), "b a b")
+        self.assertEqual(rp.closing_quote("x x x", 2), "x x x")
+        long_block = "Visits were merged when the gap between two detections of one tag was shorter than five seconds in every feeder."
+        self.assertEqual(rp.closing_quote(long_block), "detections of one tag was shorter than five seconds in every feeder.")
+
+    def test_anchor_stop_offset_needs_a_quote_that_names_one_place(self):
+        block = self.blocks["B0009"]
+        self.assertEqual(rp.anchor_stop_offset(block, "rose. Counts rose."), block["end_offset"])
+        self.assertEqual(rp.anchor_stop_offset(block, "Counts rose. C"), block["start_offset"] + len("Counts rose. C"))
+        with self.assertRaisesRegex(rp.ReviewDataError, r"The anchor quote occurs 2 times in B0009, so it does not say where the reader stops; lengthen the quote so that it names one place\."):
+            rp.anchor_stop_offset(block, "Counts rose.")
+        with self.assertRaisesRegex(rp.ReviewDataError, r"The anchor quote is not exact text of B0009\."):
+            rp.anchor_stop_offset(block, "Counts fell.")
+        with self.assertRaisesRegex(rp.ReviewDataError, "anchor.quote must be a nonempty string"):
+            rp.anchor_stop_offset(block, "")
+
+    def test_a_packet_cut_at_a_closing_quote_ends_with_its_block(self):
+        for row in rp.section_ends(self.index):
+            block = self.blocks[row["block_id"]]
+            stop = rp.anchor_stop_offset(block, rp.closing_quote(block["text"]))
+            packet = rp.build_packet(self.index, PROFILE, stop_offset=stop)
+            self.assertEqual((stop, packet["blocks"][-1]["text"]), (block["end_offset"], block["text"]))
+
+
 if __name__ == "__main__":
     unittest.main()

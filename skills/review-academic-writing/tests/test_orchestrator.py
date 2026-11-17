@@ -606,6 +606,25 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.out / "audits").glob("*.audit.json")), ["C01.audit.json", "C05-2.audit.json", "C05.audit.json"])
         self.assertEqual(json.loads((self.out / "summary.json").read_text())["totals"]["retries"], 3)
 
+    def test_a_plan_anchor_that_names_two_places_goes_back_to_the_editor(self):
+        original = self.server.step_checks
+
+        def step_checks(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if batch == 1 and attempt == 1:
+                value["checkpoint_plan"][0]["anchor"] = A("B0003", "the ")
+            return value
+
+        self.server.step_checks = step_checks
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        second = (self.out / "editor" / "02-checks-batch01-b.prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("checkpoint_plan anchor: The anchor quote occurs 2 times in B0003, so it does not say where the reader stops; lengthen the quote so that it names one place.", second)
+        plan = json.loads((self.out / "journal" / "02-checks.notes.json").read_text())["checkpoint_plan"]
+        self.assertEqual([entry["anchor"] for entry in plan], [CRITICAL])
+        packet = json.loads((self.out / "readers" / "P01" / "P01.packet.json").read_text())
+        self.assertTrue(packet["visible_text"].endswith("when the MSW exceeded two seconds"))
+
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")
         section = orch.section_of(staged, "## 2. Save reading notes")

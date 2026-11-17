@@ -329,12 +329,41 @@ def _profile(value: Any) -> dict[str, Any]:
     return json.loads(json.dumps(profile, ensure_ascii=True, allow_nan=False))
 
 
+_ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+\S")
+_ATX_CLOSING = re.compile(r"[ \t]+#+[ \t]*$")
+_SETEXT_UNDERLINE = re.compile(r" {0,3}(=+|-+)[ \t]*")
+
+
+def heading_level(block_text: str) -> int | None:
+    """The level of a Markdown heading block, or None for any other block.
+
+    An ATX heading has the level of its count of `#`; a setext heading is level 1 under `===`
+    and level 2 under `---`.
+    """
+    lines = block_text.split("\n")
+    if len(lines) == 1:
+        match = _ATX_HEADING.match(lines[0])
+        return len(match.group(1)) if match else None
+    if len(lines) == 2 and lines[0].strip():
+        match = _SETEXT_UNDERLINE.fullmatch(lines[1])
+        if match:
+            return 1 if match.group(1)[0] == "=" else 2
+    return None
+
+
+def heading_text(block_text: str) -> str:
+    """The words of a heading block, without its `#` marks or setext underline."""
+    lines = block_text.split("\n")
+    match = _ATX_HEADING.match(lines[0]) if len(lines) == 1 else None
+    if match:
+        return _ATX_CLOSING.sub("", lines[0][match.end(1):]).strip()
+    return lines[0].strip()
+
+
 def _classify_block(text: str) -> str:
     """Mechanical Markdown classification using only the supplied block text."""
     lines = text.split("\n")
-    if len(lines) == 1 and re.match(r"^ {0,3}#{1,6}[ \t]+\S", lines[0]):
-        return "heading"
-    if len(lines) == 2 and lines[0].strip() and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", lines[1]):
+    if heading_level(text) is not None:
         return "heading"
     if len(lines) >= 2 and "|" in lines[0]:
         delimiter = lines[1].strip().strip("|")
@@ -438,6 +467,58 @@ def _quote_offsets(text: str, quote: str) -> list[int]:
             return offsets
         offsets.append(found)
         start = found + 1  # Count overlapping occurrences too.
+
+
+def section_ends(index: dict[str, Any], included: Any = None, max_level: int | None = None) -> list[dict[str, Any]]:
+    """The last body block of every section, in document order, as {block_id, heading} rows.
+
+    A heading opens a section when `max_level` is None or its level is at most `max_level`; a
+    deeper heading neither ends a section nor counts as body. A body block is a text or table
+    block and, when `included` is given, one of those ids. `heading` is the text of the heading
+    that opened the section, None for body text before the first heading. A section without a
+    body block gives no row.
+    """
+    scope = None if included is None else set(included)
+    rows: list[dict[str, Any]] = []
+    heading: str | None = None
+    last: str | None = None
+    for block in index["blocks"]:
+        level = heading_level(block["text"])
+        if level is None:
+            if scope is None or block["block_id"] in scope:
+                last = block["block_id"]
+        elif max_level is None or level <= max_level:
+            if last is not None:
+                rows.append({"block_id": last, "heading": heading})
+            heading, last = heading_text(block["text"]), None
+    if last is not None:
+        rows.append({"block_id": last, "heading": heading})
+    return rows
+
+
+def closing_quote(block_text: str, words: int = 12) -> str:
+    """The closing words of a block as an anchor quote that names one place: its end.
+
+    The shortest suffix that starts at a word, holds at least `words` whitespace-separated
+    words, and occurs once in the block; the whole block when it is shorter than that.
+    """
+    starts = [match.start() for match in re.finditer(r"\S+", block_text)]
+    for count in range(words, len(starts)):
+        suffix = block_text[starts[-count]:]
+        if len(_quote_offsets(block_text, suffix)) == 1:
+            return suffix
+    return block_text
+
+
+def anchor_stop_offset(block: dict[str, Any], quote: str) -> int:
+    """The offset in the indexed text right after `quote`, where a prefix reader of that anchor stops reading."""
+    places = _quote_offsets(block["text"], _nonempty_string(quote, "anchor.quote"))
+    if not places:
+        raise ReviewDataError(f"The anchor quote is not exact text of {block['block_id']}.")
+    if len(places) > 1:
+        raise ReviewDataError(f"The anchor quote occurs {len(places)} times in {block['block_id']}, so it does not say where the reader stops; "
+                              "lengthen the quote so that it names one place.")
+    return block["start_offset"] + places[0] + len(quote)
 
 
 def build_packet(

@@ -152,11 +152,12 @@ def helper_message(exc: BaseException) -> str:
     return f"The helper rejected it: {exc}"
 
 
-def anchor_offsets(block: dict[str, Any], quote: str) -> int:
-    position = block["text"].find(quote)
-    if position < 0:
-        raise Rejected(f"checkpoint_plan anchor quote is not text of {block['block_id']}.")
-    return block["start_offset"] + position + len(quote)
+def plan_stop(block: dict[str, Any], quote: str) -> int:
+    """Where the prefix reader of a plan entry stops; a quote that names no place, or more than one, goes back to the editor."""
+    try:
+        return rp.anchor_stop_offset(block, quote)
+    except rp.ReviewDataError as exc:
+        raise Rejected(f"checkpoint_plan anchor: {exc}") from exc
 
 
 def dedupe_anchors(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -435,6 +436,8 @@ class Run:
                     rs.validate_notes("checks", provisional, start, self.index, {})
                 except rp.ReviewDataError as exc:
                     raise Rejected(helper_message(exc)) from exc
+                for row in plan:
+                    plan_stop(self.blocks[row["anchor"]["block_id"]], row["anchor"]["quote"])
                 require(set(passages) == set(batch), f"This batch must check exactly blocks {', '.join(batch)}.")
                 try:
                     rs.open_question_accounting({"no_candidate": parsed["no_candidate"]}, {"paragraphs": open_questions_of(batch)}, rs.by_id(candidates, "id", "candidates"))
@@ -501,7 +504,7 @@ class Run:
         plan = self.notes["checks"]["checkpoint_plan"]
         for entry in plan:
             block = self.blocks[entry["anchor"]["block_id"]]
-            stop = anchor_offsets(block, entry["anchor"]["quote"])
+            stop = plan_stop(block, entry["anchor"]["quote"])
             packet = rp.build_packet(self.index, self.profile, stop_offset=stop)
             events = self.readers / entry["id"]
             packet_path = self.write_json(events / f"{entry['id']}.packet.json", packet)
