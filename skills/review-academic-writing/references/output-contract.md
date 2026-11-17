@@ -47,6 +47,7 @@ Require:
 {
   "snapshot_id": "copy from index",
   "summary": "Overall finding and what remains uncertain.",
+  "depth": "quick",
   "scope_note": "What was read (edition, sections or blocks, reader runs) and what was left out.",
   "not_assessed": ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"],
   "priority_list": ["C01"],
@@ -80,6 +81,8 @@ Use final categories `late_prerequisite`, `unavailable_prerequisite`, `ambiguous
 `close_criterion` is the decision's one-sentence test of the repair: what the target reader can state or find once the passage is fixed. In a schema 7 journal every accepted and needs_author decision records one, and `check-final` requires the final issue to repeat it exactly; the standalone `check-review` does not look at it.
 
 `severity` is one of three levels named by what happens to the target reader: `misleads` (likely to leave with a wrong understanding of a claim, term, condition, or result, or unable to tell which of two meanings a central statement has), `hinders` (can recover the meaning but must stop, search, or reread), `minor` (does not hinder understanding). Decisions of a schema 7 journal use these three; earlier journals use `critical`, `major`, `minor`, `optional`, and the standalone `check-review` accepts either set because it does not know the journal. `reader_sources` and `challenge` are the two recorded facts behind the level: the number of distinct reader checkpoints and branches whose reconciled observations name the candidate, and the verdict of its independent challenge (`stands`, `answered`, `not_material`, `duplicate`) or null when none was run. `check-final` recomputes both from the journal and refuses a different value.
+
+`depth` is `quick`, `standard`, or `deep` (staged-review.md, "Depth"). `notes_build.py review` always writes it: the fragment's value, or the depth the records support. `check-final` refuses a depth the records do not support: `quick` when a repair carries proposed wording or a masked checkpoint is recorded, `standard` when a masked checkpoint is recorded, `deep` when none is. A review without `depth`, as 0.21.0 wrote it, is accepted, and the standalone `check-review` does not look at the field.
 
 A review of a schema 7 journal carries three more top-level fields, which `check-final` checks. `scope_note` is a nonempty statement of what was read and what was left out. `not_assessed` is a list that includes the three entries shown, because the review is about clarity only; more may be added. `priority_list` holds candidate ids of accepted issues whose severity is `misleads` or `hinders`: each once, at most ten, all of them when there are ten or fewer, `misleads` entries before `hinders` entries, and no `hinders` entry while a `misleads` issue is left off. A `minor` issue or a `needs_author` issue cannot be listed. `notes_build.py review` fills in these fields and each issue's support, and `notes_build.py report` renders the report from the checked review (`assets/review-report.md` shows the layout).
 
