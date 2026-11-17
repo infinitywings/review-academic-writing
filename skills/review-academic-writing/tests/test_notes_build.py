@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -20,6 +22,7 @@ def load(name):
 
 nb = load("notes_build")
 rs, rp = nb.rs, nb.rp
+dr = load("dispatch_reader")
 
 TEXT = """# Counting repeated visits to a feeder
 
@@ -46,6 +49,32 @@ AUDIT_CHECKS = ("claim_strength", "quantifiers", "assumptions", "population", "m
 
 def A(block_id, quote):
     return {"block_id": block_id, "quote": quote}
+
+
+class StubReader:
+    """An in-process runtime that plays the prefix reader of the packet in its prompt; its first `bad_answers` answers are not JSON."""
+
+    name = "stub"
+    isolation = "in-process stub; no model is called"
+
+    def __init__(self, bad_answers=0):
+        self.lock = threading.Lock()
+        self.calls = 0
+        self.bad_answers = bad_answers
+
+    def agent_id(self, session_id):
+        return "stub-reader"
+
+    def call(self, role, prompt):
+        with self.lock:
+            self.calls += 1
+            number = self.calls
+        packet = json.loads(prompt.rsplit("\n\n", 1)[1])
+        observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+        observation.update(understanding=f"Read through {packet['blocks'][-1]['block_id']}.", issues=[])
+        raw = b"I could not read this." if number <= self.bad_answers else json.dumps(observation).encode("utf-8")
+        return {"started_at": "2026-01-01T00:00:00+00:00", "seconds": 0.0, "record": {}, "raw": raw, "error": None,
+                "provenance": {"session_id": f"stub-{number}", "cost_usd": None}}
 
 
 class NotesBuildTests(unittest.TestCase):
@@ -489,6 +518,46 @@ class NotesBuildTests(unittest.TestCase):
                            [self.write("drafts/rc7.json", {"summary": "s", "candidates": []})])
         (events / "P01.observation.json").unlink()
         self.assertRefused(r"Checkpoint K1: P01\.packet\.json or P01\.observation\.json is missing under", "reconcile", [self.root / "drafts/rc1.json"])
+
+    def dispatch(self, reader, argv):
+        """Run a dispatch_reader command with the stub in place of a model runtime."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(dr, "build_runtime", return_value=reader), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = dr.main([*argv, "--model", "default"])
+        return code, out.getvalue() + err.getvalue()
+
+    def shorthand(self, events):
+        return {"summary": "One prefix reader.", "candidates": [], "checkpoints": [{"id": "K1", "plan_id": "P01", "events_dir": str(events), "limitation": "the reader saw text only"}]}
+
+    def test_reconcile_takes_a_prefix_checkpoint_from_a_batch_directory(self):
+        self.through("checks")
+        events = self.root / "events"
+        reader = StubReader(bad_answers=3)
+        batch = ["prefix-batch", "--events", str(events), "--journal", str(self.journal), "--index", str(self.index_path)]
+        code, output = self.dispatch(reader, batch)
+        self.assertEqual(code, 1, output)
+        self.assertRefused(r"Checkpoint K1: P01\.packet\.json or P01\.observation\.json is missing under", "reconcile", [self.write("drafts/failed.json", self.shorthand(events))])
+        code, output = self.dispatch(reader, batch)
+        self.assertEqual(code, 0, output)
+        result, reconcile = self.build("reconcile", [self.write("drafts/batch.json", self.shorthand(events))])
+        point = reconcile["checkpoints"][0]
+        self.assertEqual((point["packet_path"], point["observation_path"]), (str(events / "P01r1.packet.json"), str(events / "P01r1.observation.json")))
+        self.assertEqual((point["plan_id"], point["anchor"], point["mode"], point["result"]), ("P01", CRITICAL, "fresh-prefix", "0 issue(s); understanding: Read through B0003."))
+        self.assertTrue(rp.load_json(point["packet_path"])["visible_text"].endswith("\n\nVisits shorter than the RVG"))
+        self.assertEqual(self.record("reconcile", result["output"])["next_stage"], "decisions")
+
+    def test_reconcile_finds_the_observation_of_a_corrected_call(self):
+        self.through("checks")
+        events = self.root / "events"
+        profile = self.write("profile.json", PROFILE)
+        code, output = self.dispatch(StubReader(bad_answers=1), ["prefix", "--events", str(events), "--index", str(self.index_path), "--profile", str(profile),
+                                                                 "--stop-after-text", CRITICAL["quote"], "--label", "P01"])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(sorted(p.name for p in events.glob("P01*.json") if "packet" in p.name or "observation" in p.name), ["P01.packet.json", "P01b.observation.json"])
+        result, reconcile = self.build("reconcile", [self.write("drafts/corrected.json", self.shorthand(events))])
+        point = reconcile["checkpoints"][0]
+        self.assertEqual((point["packet_path"], point["observation_path"]), (str(events / "P01.packet.json"), str(events / "P01b.observation.json")))
+        self.assertEqual(self.record("reconcile", result["output"])["next_stage"], "decisions")
 
     def test_journal_gating(self):
         self.assertRefused("Building checks needs the earlier stages recorded in the journal; missing: reading\\.", "checks",

@@ -9,9 +9,14 @@ OpenAI-compatible POST /v1/chat/completions request per call, described by a JSO
 given as --config; the API key comes from the environment variable the file names).
 There is no built-in model: claude and codex need --model NAME, or --model default to use
 the command's own configured default, so the person running the review chooses it.
-Four subcommands:
+Subcommands:
 
   prefix   build or take a prefix packet, dispatch it, run review_packets check-observation.
+  prefix-batch
+           dispatch every prefix entry of a journal's recorded checkpoint plan, several at a
+           time (--jobs). Each packet ends right after its plan entry's anchor quote. The
+           results are indexed in <events>/prefix-batch.json; a rerun keeps the readers that
+           passed and calls only the others.
   masked   drive a masked_reader run to completion: packet, dispatch, record, repeat. With
            --recall-every N and --recall-questions, every N windows the reader also answers
            closed questions from its notes alone (a recall event; wrong and "I don't know"
@@ -20,6 +25,8 @@ Four subcommands:
            process while it works.
   branch   issue one branch question from a recorded display event and record the answer.
   audit    run the independent fidelity audit for one proposed wording.
+  challenge
+           put recorded candidates to an independent challenger before the decisions stage.
 
 Every call writes <label>.prompt.txt, <label>.cli.json, <label>.response.raw,
 <label>.response.json (when parsable) and <label>.provenance.json under the events
@@ -38,6 +45,7 @@ flags disable.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import email.utils
 import hashlib
@@ -51,6 +59,7 @@ import shutil
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable
 import urllib.error
@@ -60,6 +69,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import masked_reader as mr  # noqa: E402
 import review_packets as rp  # noqa: E402
+import review_steps as rs  # noqa: E402
 
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "prompts"
@@ -85,7 +95,10 @@ MODEL_REQUIRED = ("choose the reader and auditor model first: ask the user which
                   "or --model default to let the {cli} command use its own configured default.")
 BUDGET_TARGET_FRACTION = 0.85
 MAX_CORRECTIONS = 2
-ATTEMPT_SUFFIXES = ("", "b", "c")
+ATTEMPT_SUFFIXES = rp.ATTEMPT_SUFFIXES
+BATCH_DEFAULT_JOBS = 4
+# A plan id becomes the label of its call files, so it must be a plain file-name stem.
+FILE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 LOOKUP_STALL_LIMIT = 3
 # masked --until-complete: automatic restarts after a stop whose cause was correctable (format,
 # budget, anchor, language) but exhausted its two corrections; a helper rejection never restarts.
@@ -612,6 +625,8 @@ class Events:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.prompts_dir = prompts_dir
         self.calls: list[dict[str, Any]] = []
+        # prefix-batch dispatches from several threads; the call list is the only state they share.
+        self.calls_lock = threading.Lock()
 
     def generic_prompt(self, name: str) -> str:
         path = self.prompts_dir / PROMPT_FILES[name]
@@ -656,7 +671,8 @@ class Events:
         }
         write_new(self.path(label, "provenance.json"), encoded(provenance))
         call = {"label": label, "status": "pending", "seconds": run["seconds"], "cost_usd": provenance["cost_usd"], "session_id": provenance["session_id"], "exit_code": provenance.get("exit_code"), "parsed": parsed, "parse_error": parse_error, "response_path": response_path, "provenance": provenance, "rejected_by_runtime": bool(run.get("rejected"))}
-        self.calls.append(call)
+        with self.calls_lock:
+            self.calls.append(call)
         return call
 
     def invalid(self, label: str, failure: Failure, next_label: str | None) -> None:
@@ -683,8 +699,12 @@ class Events:
             **(extra or {}),
         }
         target = self.dir / "summary.json"
-        if target.exists():
-            target = self.dir / f"summary-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        number = 1
+        while target.exists():
+            # A rerun that keeps every reader finishes within the second of the run before it.
+            target = self.dir / (f"summary-{stamp}.json" if number == 1 else f"summary-{stamp}-{number}.json")
+            number += 1
         write_new(target, encoded(summary))
         summary["summary_file"] = str(target)
         return summary
@@ -818,7 +838,14 @@ def run_prefix(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
         packet = rp.build_packet(rp.load_json(args.index), rp.load_json(args.profile), through_block=args.through_block, stop_after_text=args.stop_after_text, stop_offset=args.stop_offset, occurrence=args.occurrence)
         packet_file = events.path(label, "packet.json")
         rp.write_json_atomic(packet_file, packet)
-    payload = packet_file.read_bytes()
+    call, check, failure = dispatch_prefix(events, runtime, label, packet, packet_file)
+    if failure is not None:
+        return events.finish("prefix", stop_message(label, failure), False, {"label": label})
+    return events.finish("prefix", f"{call['label']} passed check-observation with {check['issue_count']} issue(s).", True, {"label": call["label"], "checkpoint_id": packet["checkpoint_id"]})
+
+
+def dispatch_prefix(events: Events, runtime: Runtime, label: str, packet: dict[str, Any], packet_file: Path) -> tuple[dict[str, Any] | None, Any, Failure | None]:
+    """Send one saved prefix packet to a reader; an answer that passes check-observation is kept as <label>.observation.json."""
 
     def accept(call: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -829,10 +856,144 @@ def run_prefix(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
         write_new(events.path(call["label"], "observation.json"), encoded(call["parsed"]))
         return check
 
-    call, check, failure = attempt_chain(events, runtime, "reader", label, events.generic_prompt("prefix"), payload, packet_file, accept)
-    if failure is not None:
-        return events.finish("prefix", stop_message(label, failure), False, {"label": label})
-    return events.finish("prefix", f"{call['label']} passed check-observation with {check['issue_count']} issue(s).", True, {"label": call["label"], "checkpoint_id": packet["checkpoint_id"]})
+    return attempt_chain(events, runtime, "reader", label, events.generic_prompt("prefix"), packet_file.read_bytes(), packet_file, accept)
+
+
+def prefix_plan(journal: Path, index: Any, only: str | None) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """The start receipt, every prefix entry of the recorded checkpoint plan, and the entries this run dispatches.
+
+    Readers are dispatched after the checks stage is recorded, so that the editor's own
+    review cannot be written with their answers in view, and before reconcile closes the
+    reader evidence.
+    """
+    start, notes, _ = rs.load_run(journal, index)
+    if "checks" not in notes:
+        raise DispatchError("This journal has no recorded checks stage. Record it first (review_steps.py record --stage checks); prefix-batch dispatches the prefix entries of its checkpoint_plan.")
+    if "reconcile" in notes:
+        raise DispatchError("This journal already records the reconcile stage, so its reader evidence is closed. To dispatch readers again, start a corrected run (review_steps.py corrected-run --restart-at reconcile).")
+    planned = [row for row in notes["checks"]["checkpoint_plan"] if row["mode"] in rs.PREFIX_MODES]
+    if not planned:
+        raise DispatchError("The recorded checkpoint_plan has no fresh-prefix or bounded-request entry to dispatch.")
+    ids = [row["id"] for row in planned]
+    selected = planned
+    if only is not None:
+        wanted = [name.strip() for name in only.split(",") if name.strip()]
+        unknown = [name for name in wanted if name not in ids]
+        if unknown or not wanted:
+            raise DispatchError(f"--only names {', '.join(unknown) or 'no id'}; the prefix entries of the recorded checkpoint_plan are: {', '.join(ids)}.")
+        selected = [row for row in planned if row["id"] in wanted]
+    for row in selected:
+        if FILE_LABEL.fullmatch(row["id"]) is None:
+            raise DispatchError(f"Plan entry {row['id']!r}: the id labels the call files, so it must be letters, digits, '_' or '-' only. "
+                                "Leave it out with --only and dispatch it with the prefix command under a --label of your choice.")
+    return start, planned, selected
+
+
+def accepted_prefix(events: Events, base: str, packet: dict[str, Any]) -> dict[str, Any] | None:
+    """The reader answer an earlier call under `base` left for exactly this packet: its label and check, or None."""
+    try:
+        if rp.load_json(events.path(base, "packet.json")) != packet:
+            return None
+        for suffix in ATTEMPT_SUFFIXES:
+            observation = events.path(base + suffix, "observation.json")
+            if observation.is_file():
+                return {"label": base + suffix, "check": rp.check_observation(packet, rp.load_json(observation))}
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def batch_row(plan_id: str, status: str, label: str | None, outcome: str, packet: dict[str, Any] | None = None, packet_file: Path | None = None,
+              observation_file: Path | None = None, check: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"plan_id": plan_id, "label": label, "status": status,
+            "packet_path": str(packet_file) if packet_file is not None and packet_file.is_file() else None,
+            "observation_path": str(observation_file) if observation_file is not None else None,
+            "checkpoint_id": packet["checkpoint_id"] if packet is not None else None,
+            "issue_count": check["issue_count"] if check is not None else None, "outcome": outcome}
+
+
+def earlier_batch_rows(batch_file: Path, snapshot_id: str) -> dict[str, dict[str, Any]]:
+    """The rows of the last prefix-batch run in this directory, by plan id; none when the file is absent, unreadable, or about another source."""
+    try:
+        previous = rp.load_json(batch_file)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(previous, dict) or previous.get("snapshot_id") != snapshot_id or not isinstance(previous.get("entries"), list):
+        return {}
+    return {row["plan_id"]: row for row in previous["entries"] if isinstance(row, dict) and isinstance(row.get("plan_id"), str)}
+
+
+def replace_json(path: Path, value: Any) -> None:
+    """Rewrite a controller index in one step; the per-call files it is derived from stay write-once."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(encoded(value))
+    os.replace(temporary, path)
+
+
+def run_prefix_batch(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
+    if args.jobs < 1:
+        raise DispatchError("--jobs must be at least 1.")
+    journal = Path(args.journal)
+    index = rp.load_json(args.index)
+    start, planned, selected = prefix_plan(journal, index, args.only)
+    blocks = {block["block_id"]: block for block in index["blocks"]}
+    packets: dict[str, dict[str, Any]] = {}
+    for entry in selected:
+        try:
+            stop = rp.anchor_stop_offset(blocks[entry["anchor"]["block_id"]], entry["anchor"]["quote"])
+            packets[entry["id"]] = rp.build_packet(index, start["profile"], stop_offset=stop)
+        except rp.ReviewDataError as exc:
+            raise DispatchError(f"Plan entry {entry['id']}: {exc} No reader was called.") from exc
+
+    # A call may use its base label and the two correction labels. Each entry gets a base whose three labels no file
+    # and no other entry holds, so two threads never write the same file, even for plan ids such as P03 and P03b.
+    taken = {path.name.split(".")[0] for path in events.dir.iterdir()}
+    rows: dict[str, dict[str, Any]] = {}
+    pending: list[tuple[str, str]] = []
+    for entry in selected:
+        plan_id, base, rerun = entry["id"], entry["id"], 0
+        while True:
+            kept = accepted_prefix(events, base, packets[plan_id])
+            if kept is not None:
+                rows[plan_id] = batch_row(plan_id, "kept", kept["label"], f"{kept['label']} had already passed check-observation for this packet; no call was made.",
+                                          packets[plan_id], events.path(base, "packet.json"), events.path(kept["label"], "observation.json"), kept["check"])
+                break
+            labels = {base + suffix for suffix in ATTEMPT_SUFFIXES}
+            if not labels & taken:
+                taken |= labels
+                pending.append((plan_id, base))
+                break
+            rerun += 1
+            base = f"{plan_id}r{rerun}"
+
+    def dispatch_entry(job: tuple[str, str]) -> dict[str, Any]:
+        plan_id, base = job
+        packet, packet_file = packets[plan_id], events.path(base, "packet.json")
+        try:
+            rp.write_json_atomic(packet_file, packet)
+            call, check, failure = dispatch_prefix(events, runtime, base, packet, packet_file)
+        except Exception as exc:  # noqa: BLE001 - one entry's error must not lose the answers the other readers already cost
+            return batch_row(plan_id, "failed", base, f"{base}: {type(exc).__name__}: {exc}", packet, packet_file)
+        if failure is not None:
+            return batch_row(plan_id, "failed", call["label"], stop_message(base, failure), packet, packet_file)
+        return batch_row(plan_id, "ok", call["label"], f"{call['label']} passed check-observation with {check['issue_count']} issue(s).",
+                         packet, packet_file, events.path(call["label"], "observation.json"), check)
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        for row in pool.map(dispatch_entry, pending):
+            rows[row["plan_id"]] = row
+
+    batch_file = events.dir / rp.PREFIX_BATCH_FILE
+    earlier = earlier_batch_rows(batch_file, start["snapshot_id"])
+    entries = [rows.get(entry["id"]) or earlier.get(entry["id"]) or batch_row(entry["id"], "not_run", None, "not selected by --only") for entry in planned]
+    replace_json(batch_file, {"journal": str(journal), "snapshot_id": start["snapshot_id"], "entries": entries})
+
+    failed = [plan_id for plan_id, row in rows.items() if row["status"] == "failed"]
+    kept = sum(1 for row in rows.values() if row["status"] == "kept")
+    outcome = (f"{len(rows) - len(failed)} of {len(rows)} prefix readers passed check-observation"
+               + (f" ({kept} kept from an earlier run, no new call)" if kept else "") + (f"; failed: {', '.join(failed)}" if failed else "") + ".")
+    events.calls.sort(key=lambda call: call["label"])
+    return events.finish("prefix-batch", outcome, not failed, {"journal": str(journal), "batch": str(batch_file), "entries": entries})
 
 
 def load_recall_questions(path: str | None, plan_id: str | None, block_ids: set[str]) -> list[dict[str, Any]]:
@@ -1195,7 +1356,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    def common(command: argparse.ArgumentParser) -> None:
+    def common(command: argparse.ArgumentParser, label: bool = True) -> None:
         command.add_argument("--events", required=True, help="Directory for the labeled call files and summary.json.")
         command.add_argument("--runtime", choices=("claude", "codex", "http"), default="claude", help="claude: the local claude -p command (default). codex: the local codex exec command. http: an OpenAI-compatible chat-completions endpoint described by --config.")
         command.add_argument("--config", help=f"JSON file for --runtime http with {', '.join(HTTP_CONFIG_KEYS)}; the API key is read from the environment variable named by api_key_env.")
@@ -1205,7 +1366,15 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--effort", help="claude: passed through as --effort. codex: sets model_reasoning_effort. Not for http.")
         command.add_argument("--timeout", type=float, help="Seconds allowed per call (default 900 for claude and codex; the config's timeout_seconds, default 300, for http).")
         command.add_argument("--prompts-dir", help=f"Generic prompt files (default {PROMPTS_DIR}).")
-        command.add_argument("--label", help="Label for this call (default: next free P01/BR01, or the candidate id).")
+        if label:
+            command.add_argument("--label", help="Label for this call (default: next free P01/BR01, or the candidate id).")
+
+    batch = commands.add_parser("prefix-batch", help="Dispatch every prefix entry of a journal's recorded checkpoint plan, several at a time.")
+    common(batch, label=False)
+    batch.add_argument("--journal", required=True, help="The review_steps journal; its checks stage must be recorded and its reconcile stage must not be.")
+    batch.add_argument("--index", required=True, help="index.json of the journal's source.")
+    batch.add_argument("--jobs", type=int, default=BATCH_DEFAULT_JOBS, help=f"Readers called at the same time (default {BATCH_DEFAULT_JOBS}).")
+    batch.add_argument("--only", metavar="ID,ID", help="Dispatch only these plan ids; the others keep their row in prefix-batch.json.")
 
     prefix = commands.add_parser("prefix", help="Dispatch one prefix packet and run check-observation.")
     common(prefix)
@@ -1257,7 +1426,9 @@ def print_summary(summary: dict[str, Any]) -> None:
     for row in summary["calls"]:
         cost = "-" if row["cost_usd"] is None else f"{row['cost_usd']:.5f}"
         print(f"  {row['label']:<8} {row['status']:<15} {row['seconds']:>7} s  {cost:>9} USD  session {row['session_id'] or '-'}")
-    print(json.dumps({k: v for k, v in summary.items() if k not in ("calls", "loop")}, ensure_ascii=False))
+    for entry in summary.get("entries", []):
+        print(f"  {entry['plan_id']:<8} {entry['status']:<8} {entry['outcome']}")
+    print(json.dumps({k: v for k, v in summary.items() if k not in ("calls", "loop", "entries")}, ensure_ascii=False))
 
 
 def build_runtime(args: argparse.Namespace) -> Runtime:
@@ -1279,7 +1450,7 @@ def main(argv: list[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         events = Events(Path(args.events), Path(args.prompts_dir) if args.prompts_dir else PROMPTS_DIR)
         runtime = build_runtime(args)
-        handler = {"prefix": run_prefix, "masked": run_masked, "branch": run_branch, "audit": run_audit, "challenge": run_challenge}[args.command]
+        handler = {"prefix": run_prefix, "prefix-batch": run_prefix_batch, "masked": run_masked, "branch": run_branch, "audit": run_audit, "challenge": run_challenge}[args.command]
         summary = handler(args, events, runtime)
         print_summary(summary)
         return 0 if summary["ok"] else 1

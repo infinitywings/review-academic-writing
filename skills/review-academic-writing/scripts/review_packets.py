@@ -85,6 +85,11 @@ OTHER_SCRIPT = re.compile(
 LANGUAGE_EXEMPT_KEYS = {"quote", "proposed_wording", "kept_as", "in_context", "term"}
 LANGUAGE_SNIPPET_CHARS = 40
 LANGUAGE_PATHS_SHOWN = 5
+# Labels of one dispatched call and its two corrections (dispatch_reader.py): P01, P01b, P01c. The packet keeps the
+# first label and the accepted observation the label of the attempt that passed, so notes_build.py needs the list too.
+ATTEMPT_SUFFIXES = ("", "b", "c")
+# The index that dispatch_reader.py prefix-batch keeps in its events directory and notes_build.py reads.
+PREFIX_BATCH_FILE = "prefix-batch.json"
 
 
 class ReviewDataError(ValueError):

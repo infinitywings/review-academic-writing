@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -1505,6 +1506,258 @@ class HttpRuntimeTests(unittest.TestCase):
         self.assertEqual(dr.parse_retry_after("-3"), 0.0)
         self.assertEqual(dr.parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), 0.0)
         self.assertIsNone(dr.parse_retry_after("soon"))
+
+
+# ---------------------------------------------------------------- prefix-batch
+
+BATCH_TEXT = (
+    "# Counting visits at feeders\n\n"
+    "## Aim\n\n"
+    "We count repeat visits. A repeat visit follows an earlier visit by the same bird.\n\n"
+    "## Method\n\n"
+    "Each feeder had one sensor. The sensor logged a tag. The sensor logged a tag.\n\n"
+    "## Result\n\n"
+    "The feeders recorded 5120 detections in ten days.\n"
+)
+BATCH_INCLUDED = ["B0003", "B0005", "B0007"]
+BATCH_PLAN = [
+    {"id": "S01", "anchor": {"block_id": "B0003", "quote": "by the same bird."}, "mode": "fresh-prefix", "reason": "end of the section Aim"},
+    {"id": "S02", "anchor": {"block_id": "B0005", "quote": "Each feeder had one sensor."}, "mode": "bounded-request", "reason": "first use of sensor"},
+    {"id": "M01", "anchor": {"block_id": "B0007", "quote": "5120 detections"}, "mode": "masked-sequential", "reason": "not a prefix entry"},
+    {"id": "S03", "anchor": {"block_id": "B0007", "quote": "in ten days."}, "mode": "fresh-prefix", "reason": "end of the section Result"},
+]
+
+
+class ReaderServer:
+    """A chat-completions endpoint that plays the prefix reader of whatever packet it is sent and counts the calls in flight."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.requests = []  # the last visible block of every request, in arrival order
+        self.bad_blocks = set()
+        self.bad_first = set()  # blocks whose first request is answered badly, later ones well
+        self.in_flight = 0
+        self.peak = 0
+        self.overlapped = threading.Event()
+        self.wait_for_overlap = False
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                packet = json.loads(body["messages"][1]["content"].rsplit("\n\n", 1)[1])
+                last = packet["blocks"][-1]["block_id"]
+                with server.lock:
+                    first = last not in server.requests
+                    server.requests.append(last)
+                    number = len(server.requests)
+                    server.in_flight += 1
+                    server.peak = max(server.peak, server.in_flight)
+                    if server.in_flight > 1:
+                        server.overlapped.set()
+                if server.wait_for_overlap:
+                    server.overlapped.wait(5)
+                else:
+                    time.sleep(0.05)
+                status, headers, payload = completion(server.answer(packet, last, first), number)
+                with server.lock:
+                    server.in_flight -= 1
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        self.thread.start()
+
+    @property
+    def base_url(self):
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
+
+    def answer(self, packet, last, first):
+        if last in self.bad_blocks or (first and last in self.bad_first):
+            return "I could not read this."
+        observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+        issues = []
+        if last == "B0003":
+            issues = [{"id": "R1", "category": "unavailable_prerequisite", "anchor": {"block_id": "B0003", "quote": "repeat visits"}, "reader_question": "Repeat within what time?",
+                       "consequence": "The count cannot be reproduced.", "severity": "major", "confidence": "high"}]
+        observation.update({"understanding": f"Read through {last}.", "issues": issues})
+        return json.dumps(observation)
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class PrefixBatchTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.server = ReaderServer()
+        self.old_key = os.environ.get("LLM_API_KEY")
+        os.environ["LLM_API_KEY"] = API_KEY
+        self.config = self.root / "llm.json"
+        self.config.write_text(json.dumps({"base_url": self.server.base_url, "model": "fake-llm", "api_key_env": "LLM_API_KEY", "timeout_seconds": 30, "retry_backoff_seconds": 0.01}))
+        self.index = rp.build_index(BATCH_TEXT)
+        self.index_path = self.root / "index.json"
+        self.index_path.write_text(json.dumps(self.index))
+        self.events = self.root / "events"
+        self.journal = self.journal_with("journal", BATCH_PLAN)
+
+    def tearDown(self):
+        self.server.close()
+        if self.old_key is None:
+            os.environ.pop("LLM_API_KEY", None)
+        else:
+            os.environ["LLM_API_KEY"] = self.old_key
+        self.tmp.cleanup()
+
+    def journal_with(self, name, plan, through="checks"):
+        """A journal of BATCH_TEXT with the given checkpoint plan, recorded through the named stage (None: started only)."""
+        journal = self.root / name
+        text = {b["block_id"]: b["text"] for b in self.index["blocks"]}
+        scope = {"task": "review", "included_block_ids": BATCH_INCLUDED, "reading_path": "linear", "extraction_notes": "plain",
+                 "omissions": [{"block_id": b, "reason": "heading"} for b in text if b not in BATCH_INCLUDED]}
+        dr.rs.start_run(self.index, PROFILE, scope, journal)
+        sid = self.index["snapshot_id"]
+        notes = {
+            "reading": {"snapshot_id": sid, "summary": "read", "paragraphs": [
+                {"anchor": {"block_id": b, "quote": text[b][:10]}, "paraphrase": "p", "role": "r", "required_context": [], "new_information": [], "open_questions": []} for b in BATCH_INCLUDED]},
+            "checks": {"snapshot_id": sid, "summary": "checked", "concepts": [], "no_concepts_reason": "none questioned", "passages": [
+                {"block_id": b, "structure_check": "s", "wording_check": "w", "claim_check": {"claim_strength": "none", "counterexample": "none", "citation_check": "none"},
+                 "evidence": [{"block_id": b, "quote": text[b][:10]}]} for b in BATCH_INCLUDED], "checkpoint_plan": plan, "candidates": [], "no_candidate": []},
+            "reconcile": {"snapshot_id": sid, "summary": "no reader", "checkpoints": [], "no_checkpoints_reason": "no reader was run", "branches": [], "observations": [], "candidates": []},
+        }
+        stages = [] if through is None else dr.rs.STAGES[: dr.rs.STAGES.index(through) + 1]
+        for stage in stages:
+            dr.rs.record_stage(journal, self.index, stage, json.dumps(notes[stage]).encode("utf-8"))
+        return journal
+
+    def batch(self, *extra, journal=None, events=None):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = dr.main(["prefix-batch", "--runtime", "http", "--config", str(self.config), "--events", str(events or self.events),
+                            "--journal", str(journal or self.journal), "--index", str(self.index_path), *extra])
+        return code, out.getvalue(), err.getvalue()
+
+    def entries(self, events=None):
+        return json.loads(((events or self.events) / "prefix-batch.json").read_text())["entries"]
+
+    def refused(self, message, *extra, journal=None):
+        code, out, err = self.batch(*extra, journal=journal)
+        self.assertEqual(code, 2, out + err)
+        self.assertIn(message, json.loads(err)["error"]["message"])
+        self.assertEqual(self.server.requests, [], "a refused batch calls no reader")
+        self.assertEqual([p.name for p in self.events.iterdir()], [], "a refused batch writes no packet")
+
+    def test_readers_are_called_together_up_to_jobs(self):
+        self.server.wait_for_overlap = True
+        code, out, err = self.batch("--jobs", "3")
+        self.assertEqual(code, 0, out + err)
+        self.assertGreaterEqual(self.server.peak, 2)
+        self.assertEqual(sorted(self.server.requests), ["B0003", "B0005", "B0007"])
+        self.assertEqual([(r["plan_id"], r["label"], r["status"], r["issue_count"]) for r in self.entries()], [("S01", "S01", "ok", 1), ("S02", "S02", "ok", 0), ("S03", "S03", "ok", 0)])
+        self.assertTrue(json.loads((self.events / "S02.packet.json").read_text())["visible_text"].endswith("\n\nEach feeder had one sensor."))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual((summary["ok"], summary["command"], summary["outcome"]), (True, "prefix-batch", "3 of 3 prefix readers passed check-observation."))
+        self.assertEqual([(c["label"], c["status"]) for c in summary["calls"]], [("S01", "ok"), ("S02", "ok"), ("S03", "ok")])
+        batch = json.loads((self.events / "prefix-batch.json").read_text())
+        self.assertEqual((batch["journal"], batch["snapshot_id"]), (str(self.journal), self.index["snapshot_id"]))
+        self.assertEqual(summary["entries"], batch["entries"])
+
+    def test_one_job_calls_one_reader_at_a_time(self):
+        code, out, err = self.batch("--jobs", "1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual((self.server.peak, self.server.requests), (1, ["B0003", "B0005", "B0007"]))
+
+    def test_a_reader_that_keeps_failing_does_not_stop_the_others(self):
+        self.server.bad_blocks = {"B0005"}
+        code, out, err = self.batch()
+        self.assertEqual(code, 1, out + err)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual((summary["ok"], summary["outcome"]), (False, "2 of 3 prefix readers passed check-observation; failed: S02."))
+        self.assertEqual([(c["label"], c["status"]) for c in summary["calls"]],
+                         [("S01", "ok"), ("S02", "invalid_format"), ("S02b", "invalid_format"), ("S02c", "invalid_format"), ("S03", "ok")])
+        rows = {r["plan_id"]: r for r in self.entries()}
+        self.assertEqual(list(rows), ["S01", "S02", "S03"])
+        self.assertEqual(summary["entries"], list(rows.values()))
+        self.assertEqual((rows["S02"]["label"], rows["S02"]["status"], rows["S02"]["packet_path"], rows["S02"]["observation_path"], rows["S02"]["issue_count"]),
+                         ("S02c", "failed", str(self.events / "S02.packet.json"), None, None))
+        self.assertIn("S02: two corrections were requested and the response still failed (format", rows["S02"]["outcome"])
+        packet = json.loads((self.events / "S02.packet.json").read_text())
+        self.assertEqual(rows["S02"]["checkpoint_id"], packet["checkpoint_id"])
+        for plan_id, issues in (("S01", 1), ("S03", 0)):
+            row = rows[plan_id]
+            self.assertEqual((row["label"], row["status"], row["issue_count"], row["packet_path"], row["observation_path"]),
+                             (plan_id, "ok", issues, str(self.events / f"{plan_id}.packet.json"), str(self.events / f"{plan_id}.observation.json")))
+            self.assertEqual(rp.check_observation(rp.load_json(row["packet_path"]), rp.load_json(row["observation_path"]))["issue_count"], issues)
+
+    def test_a_rerun_keeps_the_accepted_readers_and_calls_the_failed_one_under_a_new_label(self):
+        self.server.bad_blocks = {"B0005"}
+        self.batch()
+        self.assertEqual(len(self.server.requests), 5)
+        self.server.bad_blocks = set()
+        code, out, err = self.batch()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.server.requests[5:], ["B0005"], "only the failed entry is called again")
+        self.assertIn("3 of 3 prefix readers passed check-observation (2 kept from an earlier run, no new call).", out)
+        rows = {r["plan_id"]: r for r in self.entries()}
+        self.assertEqual([(r["label"], r["status"]) for r in rows.values()], [("S01", "kept"), ("S02r1", "ok"), ("S03", "kept")])
+        self.assertEqual((rows["S02"]["packet_path"], rows["S02"]["observation_path"]), (str(self.events / "S02r1.packet.json"), str(self.events / "S02r1.observation.json")))
+        self.assertEqual(rp.load_json(self.events / "S02r1.packet.json"), rp.load_json(self.events / "S02.packet.json"))
+        self.assertEqual((rows["S01"]["issue_count"], rows["S01"]["observation_path"]), (1, str(self.events / "S01.observation.json")))
+        self.assertTrue((self.events / "S02c.invalid-reason.txt").is_file(), "the failed attempt's files stay")
+        code, out, err = self.batch()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(len(self.server.requests), 6, "a rerun with nothing left to do calls no reader")
+        self.assertEqual([(r["label"], r["status"]) for r in self.entries()], [("S01", "kept"), ("S02r1", "kept"), ("S03", "kept")])
+        self.assertEqual(len(list(self.events.glob("summary*.json"))), 3)
+
+    def test_only_dispatches_the_named_entries_and_keeps_the_other_rows(self):
+        code, out, err = self.batch("--only", "S01")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.server.requests, ["B0003"])
+        self.assertEqual([(r["plan_id"], r["status"], r["label"], r["packet_path"]) for r in self.entries()],
+                         [("S01", "ok", "S01", str(self.events / "S01.packet.json")), ("S02", "not_run", None, None), ("S03", "not_run", None, None)])
+        code, out, err = self.batch("--only", "S03, S02", "--jobs", "1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.server.requests, ["B0003", "B0005", "B0007"])
+        self.assertIn("2 of 2 prefix readers passed check-observation.", out)
+        self.assertEqual([(r["plan_id"], r["status"]) for r in self.entries()], [("S01", "ok"), ("S02", "ok"), ("S03", "ok")])
+
+    def test_a_quote_that_names_two_places_stops_the_batch_before_any_call(self):
+        plan = [BATCH_PLAN[0], {**BATCH_PLAN[1], "anchor": {"block_id": "B0005", "quote": "The sensor logged a tag."}}, BATCH_PLAN[3]]
+        self.refused("Plan entry S02: The anchor quote occurs 2 times in B0005, so it does not say where the reader stops; lengthen the quote so that it names one place. No reader was called.",
+                     journal=self.journal_with("ambiguous", plan))
+
+    def test_the_journal_must_have_checks_recorded_and_reconcile_not(self):
+        self.refused("This journal has no recorded checks stage.", journal=self.journal_with("reading-only", BATCH_PLAN, through="reading"))
+        self.refused("This journal already records the reconcile stage, so its reader evidence is closed.", journal=self.journal_with("reconciled", BATCH_PLAN, through="reconcile"))
+        self.refused("The recorded checkpoint_plan has no fresh-prefix or bounded-request entry to dispatch.", journal=self.journal_with("masked-only", [BATCH_PLAN[2]]))
+
+    def test_options_and_plan_ids_are_checked_before_any_call(self):
+        self.refused("--only names S09; the prefix entries of the recorded checkpoint_plan are: S01, S02, S03.", "--only", "S01,S09")
+        self.refused("--jobs must be at least 1.", "--jobs", "0")
+        self.refused("Plan entry 'S 1': the id labels the call files", journal=self.journal_with("spaced", [{**BATCH_PLAN[0], "id": "S 1"}]))
+
+    def test_an_entry_never_takes_a_label_that_another_entry_may_use(self):
+        """S01's correction is labeled S01b, which is also the id of the second entry."""
+        journal = self.journal_with("twins", [BATCH_PLAN[0], {**BATCH_PLAN[1], "id": "S01b"}])
+        self.server.bad_first = {"B0003"}
+        code, out, err = self.batch(journal=journal)
+        self.assertEqual(code, 0, out + err)
+        labels = [(r["plan_id"], r["label"], r["status"], Path(r["packet_path"]).name, Path(r["observation_path"]).name) for r in self.entries()]
+        self.assertEqual(labels, [("S01", "S01b", "ok", "S01.packet.json", "S01b.observation.json"), ("S01b", "S01br1", "ok", "S01br1.packet.json", "S01br1.observation.json")])
+        code, out, err = self.batch(journal=journal)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([(r["label"], r["status"]) for r in self.entries()], [("S01b", "kept"), ("S01br1", "kept")])
+        self.assertEqual(len(self.server.requests), 3)
 
 
 if __name__ == "__main__":

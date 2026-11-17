@@ -323,12 +323,30 @@ def build_checks(fragment: dict, journal: Journal, ctx: Context) -> dict:
             "no_candidate": list(fragment.get("no_candidate", []))}
 
 
+def prefix_files(point: dict, plan_id: str) -> tuple[Path, Path]:
+    """The packet and the accepted observation of a prefix checkpoint, under its events directory.
+
+    Without a label, a prefix-batch.json in the directory decides: its row for the plan id names
+    the files of the call that passed, which a rerun stores under S05r1 rather than S05. Otherwise
+    the packet is <label>.packet.json, and the observation carries the label of the attempt that
+    was accepted: <label>, or <label>b or <label>c after a correction.
+    """
+    events = Path(point["events_dir"])
+    batch = events / rp.PREFIX_BATCH_FILE
+    if point.get("label") is None and point.get("packet_path") is None and batch.is_file():
+        value = rp.load_json(batch)
+        for row in value.get("entries", []) if isinstance(value, dict) else []:
+            if isinstance(row, dict) and row.get("plan_id") == plan_id and row.get("status") in ("ok", "kept"):
+                return events / Path(row["packet_path"]).name, events / Path(row["observation_path"]).name
+    label = point.get("label") or point.get("plan_id") or point["id"]
+    observations = [events / f"{label}{suffix}.observation.json" for suffix in rp.ATTEMPT_SUFFIXES]
+    return events / f"{label}.packet.json", next((path for path in observations if path.is_file()), observations[0])
+
+
 def expand_prefix_checkpoint(point: dict, plan: dict) -> dict:
     """A reconcile checkpoint given as {id, plan_id?, events_dir, label?, limitation, result?} -> the full entry."""
     events = Path(point["events_dir"])
-    label = point.get("label") or point.get("plan_id") or point["id"]
-    packet_path = events / f"{label}.packet.json"
-    observation_path = events / f"{label}.observation.json"
+    packet_path, observation_path = prefix_files(point, point.get("plan_id", point["id"]))
     if not packet_path.is_file() or not observation_path.is_file():
         raise BuildError(f"Checkpoint {point['id']}: {packet_path.name} or {observation_path.name} is missing under {events}.")
     plan_id = point.get("plan_id", point["id"])
