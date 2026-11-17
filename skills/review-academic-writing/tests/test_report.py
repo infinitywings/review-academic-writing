@@ -234,13 +234,15 @@ class ReportTests(unittest.TestCase):
                          (True, "report", str(self.root / "report.md"), str(self.root / "report-minor.md"), {"priority_list": 10, "findings": 13, "minor": 2}))
         report = (self.root / "report.md").read_text(encoding="utf-8")
         lines = report.split("\n")
-        self.assertEqual(lines[:9], [
+        self.assertEqual(lines[:11], [
             "# Writing review",
             "",
             "## What was reviewed",
             SCOPE_NOTE,
             "",
             "Not assessed: whether the claims are true; whether the evidence is sufficient; whether the work is novel.",
+            "",
+            "Depth: quick. Not done at this depth: proposed wording and its fidelity audit; masked reading.",
             "",
             "Records: 5 of 6 blocks read; reader checkpoints: 2 full-context; candidates: 13 accepted, 2 author questions, 0 merged, 1 rejected; "
             "independent challenge: run on all 16 candidates; fidelity audits attached: 0.",
@@ -314,10 +316,11 @@ class ReportTests(unittest.TestCase):
 
     def test_report_of_minor_items_only_and_of_no_findings(self):
         journal = self.journal("minor-only", [("accepted", "minor")], challenged=False)
-        code, stdout, stderr = self.render(journal, self.review(journal), "minor-only.md")
+        without_depth = {key: value for key, value in self.review(journal).items() if key != "depth"}
+        code, stdout, stderr = self.render(journal, without_depth, "minor-only.md")
         self.assertEqual((code, stderr), (0, ""))
         lines = (self.root / "minor-only.md").read_text(encoding="utf-8").split("\n")
-        self.assertEqual(lines[7:], [
+        self.assertEqual(lines[7:], [  # a review that states no depth, as 0.21.0 wrote it, gets no Depth line
             "Records: 5 of 6 blocks read; reader checkpoints: none; candidates: 1 accepted, 0 author questions, 0 merged, 0 rejected; "
             "independent challenge: not run (no challenger could be run in this environment); fidelity audits attached: 0.",
             "",
@@ -337,9 +340,22 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((code, json.loads(stdout)["appendix"], json.loads(stdout)["counts"]), (0, None, {"priority_list": 0, "findings": 0, "minor": 0}))
         self.assertFalse((self.root / "empty-minor.md").exists(), "no appendix is written without a minor item")
         self.assertEqual((self.root / "empty.md").read_text(encoding="utf-8").split("\n")[7:],
-                         ["Records: 5 of 6 blocks read; reader checkpoints: none; candidates: 0 accepted, 0 author questions, 0 merged, 0 rejected; "
+                         ["Depth: quick. Not done at this depth: proposed wording and its fidelity audit; masked reading.", "",
+                          "Records: 5 of 6 blocks read; reader checkpoints: none; candidates: 0 accepted, 0 author questions, 0 merged, 0 rejected; "
                           "independent challenge: no candidates to challenge; fidelity audits attached: 0.",
                           "", "## Priority list", "No finding that misleads or hinders was accepted.", "", "## Findings", "None.", ""])
+
+    def test_the_depth_line_names_what_each_depth_leaves_out(self):
+        journal = self.journal("depths", [("accepted", "hinders")], challenged=False)
+        review = self.review(journal)
+        self.assertEqual(review["depth"], "quick")
+        notes = rs.load_run(journal, self.index)[1]
+        expected = {"quick": "Depth: quick. Not done at this depth: proposed wording and its fidelity audit; masked reading.",
+                    "standard": "Depth: standard. Not done at this depth: masked reading.", "deep": "Depth: deep."}
+        for depth, line in expected.items():
+            with self.subTest(depth=depth):
+                text, _minor = nb.render_report({**review, "depth": depth}, notes, self.index, "depths-minor.md")
+                self.assertEqual(text.split("\n")[5:9], ["Not assessed: whether the claims are true; whether the evidence is sufficient; whether the work is novel.", "", line, ""])
 
     def test_report_is_for_schema_7_journals(self):
         older = self.journal("schema6", [("accepted", "minor")], challenged=False, schema=6)

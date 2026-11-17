@@ -6,8 +6,8 @@ masked_reader) and dispatch_reader are imported as libraries and left unchanged;
 note they record is validated by them, never by this file. Order:
 
   index -> scope -> start -> reading (batched) -> checks (batched) -> record
-  -> readers through dispatch_reader (prefix checkpoints from the plan, one masked run
-     over the first windows, one branch)
+  -> readers through dispatch_reader (prefix checkpoints from the plan; with
+     --masked-windows N also one masked run over the first windows and one branch)
   -> reconcile -> decisions -> repairs (every proposed wording audited; a failed audit is
      re-prompted once, then converted to an author question) -> ready
   -> review.json (check-review, check-final) -> report.md (rendered by notes_build.py
@@ -848,7 +848,7 @@ class Run:
                 if repair["author_question"] is not None:
                     issue["author_question"] = repair["author_question"]
                 issues.append(issue)
-            review = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "scope_note": parsed["scope_note"], "not_assessed": list(rs.NOT_ASSESSED),
+            review = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "depth": rs.derived_depth(notes), "scope_note": parsed["scope_note"], "not_assessed": list(rs.NOT_ASSESSED),
                       "priority_list": rs.default_priority(issues, self.blocks), "issues": issues, "concept_ledger": notes["checks"]["concepts"],
                       "execution_mode": EXECUTION_MODE, "coverage": {"included_block_ids": self.included, "prefix_checkpoints": len(self.prefix_results), "masked_run": bool(self.masked_summary and self.masked_summary["ok"])}}
             try:
@@ -933,8 +933,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--profile", help="Prefix reader profile JSON (default assets/reader-profile.json).")
     run.add_argument("--masked-profile", help="Masked reader profile JSON (default assets/masked-reader-profile.json).")
     run.add_argument("--extraction-notes", help="Text file with extraction notes for the scope record.")
-    run.add_argument("--masked-windows", type=int, default=4, help="Windows of the masked run over the first sections; 0 disables it (default 4).")
-    run.add_argument("--masked-budget", type=int, default=250, help="Approximate words per masked window (default 250).")
+    run.add_argument("--masked-windows", type=int, default=0, help="Windows of a masked run over the first sections, with one branch question. Masked reading is opt-in and makes the review deep (default 0: no masked run).")
+    run.add_argument("--masked-budget", type=int, default=ep.DEFAULT_WINDOW_WORDS, help=f"Approximate words per masked window (default {ep.DEFAULT_WINDOW_WORDS}).")
     run.add_argument("--max-events", type=int, default=40, help="Maximum masked reader calls, corrections included (default 40).")
     run.add_argument("--prefix-checkpoints", type=int, default=3, help="Maximum prefix checkpoints the checks plan may request (default 3).")
     run.add_argument("--batch-blocks", type=int, default=40, help="Blocks per reading and checks prompt (default 40).")

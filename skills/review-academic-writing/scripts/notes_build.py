@@ -12,11 +12,18 @@ This program is that builder, once:
              observations, candidates
   decisions  one decision per candidate from checks and reconcile
   repairs    one repair per accepted or needs_author candidate; for an edit, the latest
-             audit of the candidate decides whether its wording is recorded
+             audit of the candidate decides whether its wording is recorded. With
+             --no-wording (a quick review) every edit records its action and no wording,
+             and no audit is read
   review     the final review from the five recorded stages, a summary, and a scope note;
-             the priority list and each issue's recorded support are filled in
+             the priority list, each issue's recorded support, and the depth (quick,
+             standard, deep: the fragment's, or the one the records support) are filled in
   report     report.md, rendered from a review.json that passes check-final (--review,
              no fragment); minor items go to a separate appendix file
+  section-ends
+             a checks fragment whose checkpoint_plan has one prefix reader at the end of
+             every section (--journal, --index, --out; no fragment). Pass it to checks as
+             one more --source
 
 Fragments come from --source paths: a JSON file holding one object, a Python module that
 defines FRAGMENT (a dict) or build(ctx) returning one, or a directory of such files read
@@ -58,6 +65,7 @@ READING_FIELDS = ("paraphrase", "role", "required_context", "new_information", "
 PASSAGE_FIELDS = ("structure_check", "wording_check", "claim_check")
 REPAIR_FIELDS = ("kind", "action", "scientific_fidelity", "new_terms_check", "affected_block_ids")
 AUDIT_FILE = re.compile(r"^(?P<cid>[^./]+?)(?:-(?P<round>\d+))?\.audit\.json$")
+QUICK_WITHHELD_REASON = "Not written: this is a quick review. A standard review adds the wording and its fidelity audit."
 Error = rp.ReviewDataError
 
 
@@ -472,7 +480,7 @@ def audit_preserved(audit: dict) -> bool:
     return audit.get("verdict") == "preserved" and not any(v == "changed" for k, v in checks.items() if k != "hedges")
 
 
-def build_repairs(fragment: dict, journal: Journal, ctx: Context, audits_dir: Path | None, compare_dir: Path | None) -> dict:
+def build_repairs(fragment: dict, journal: Journal, ctx: Context, audits_dir: Path | None, compare_dir: Path | None, no_wording: bool = False) -> dict:
     repairs = fragment.get("repairs")
     if not isinstance(repairs, dict):
         raise BuildError("repairs fragments need repairs keyed by candidate id.")
@@ -484,7 +492,7 @@ def build_repairs(fragment: dict, journal: Journal, ctx: Context, audits_dir: Pa
         raise BuildError("Repairs must correspond exactly to accepted and needs_author candidates; "
                          + (f"missing: {', '.join(missing)}" if missing else "") + ("; " if missing and extra else "")
                          + (f"not accepted or needs_author: {', '.join(extra)}" if extra else "") + ".")
-    audits = audits_by_candidate(audits_dir)
+    audits = {} if no_wording else audits_by_candidate(audits_dir)
     rows = []
     selection: list[dict] = []
     for key in wanted:
@@ -506,6 +514,12 @@ def build_repairs(fragment: dict, journal: Journal, ctx: Context, audits_dir: Pa
         row.setdefault("author_question", None)
         row.setdefault("audit_path", None)
         row.setdefault("compare_path", None)
+        if no_wording:
+            if row["proposed_wording"] is not None:
+                raise BuildError(f"Repair {key} gives proposed_wording, but --no-wording builds the repairs of a quick review, which records the action only. "
+                                 "Remove the wording, or build without --no-wording for a standard review.")
+            if row["kind"] == "edit" and row.get("wording_withheld_reason") is None:
+                row["wording_withheld_reason"] = QUICK_WITHHELD_REASON
         if row["kind"] == "edit" and row.get("proposed_wording") is None and row.get("wording_withheld_reason") is None:
             rounds = audits.get(key, [])
             if not rounds:
@@ -570,6 +584,8 @@ def build_review(fragment: dict, journal: Journal, ctx: Context) -> dict:
         ledger.append({k: concept[k] for k in ("concept_id", "term", "first_mention", "earliest_usable_explanation", "first_critical_use", "assessment")})
     extra = {k: v for k, v in fragment.items() if k not in ("summary", "issues", "concept_ledger", "snapshot_id")}
     review = {"snapshot_id": journal.start["snapshot_id"], "summary": summary_of(fragment, "review"), "issues": issues, **extra}
+    if review.get("depth") is None:
+        review["depth"] = rs.derived_depth(journal.notes)
     if framed:
         review.update(review_frame(fragment, issues, journal))
     if ledger:
@@ -619,6 +635,11 @@ def finding_block(issue: dict, question: str) -> list[str]:
     return lines
 
 
+def depth_line(depth: str) -> str:
+    left_out = rs.DEPTHS[depth]
+    return f"Depth: {depth}." + (f" Not done at this depth: {'; '.join(left_out)}." if left_out else "")
+
+
 def records_line(notes: dict, index: dict) -> str:
     decisions = notes["decisions"]["decisions"]
     modes = [point["mode"] for point in notes["reconcile"]["checkpoints"]]
@@ -650,7 +671,8 @@ def render_report(review: dict, notes: dict, index: dict, appendix_name: str) ->
     minor = [issue for issue in review["issues"] if issue["severity"] == "minor"]
     eligible = sum(1 for issue in review["issues"] if rs.eligible_for_priority(issue))
     lines = ["# Writing review", "", "## What was reviewed", review["scope_note"].strip(), "",
-             "Not assessed: " + "; ".join(review["not_assessed"]) + ".", "", records_line(notes, index), "", "## Priority list"]
+             "Not assessed: " + "; ".join(review["not_assessed"]) + ".", "",
+             *([depth_line(review["depth"]), ""] if "depth" in review else []), records_line(notes, index), "", "## Priority list"]
     for number, issue in enumerate(priority, 1):
         quote = one_line(issue["anchor"]["quote"])
         shown = quote if len(quote) <= PRIORITY_QUOTE_CHARS else quote[:PRIORITY_QUOTE_CHARS] + "…"
@@ -713,9 +735,37 @@ def report(journal_path: Path, index_path: Path, review_path: Path, out: Path, a
 # ---------------------------------------------------------------- driver
 
 
-def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], out: Path, audits_dir: Path | None, compare_dir: Path | None, challenges: list[str] | None = None) -> dict:
+def section_ends(journal_path: Path, index_path: Path, out: Path, max_level: int | None, mode: str) -> dict:
+    """Write the fixed prefix schedule as a checks fragment: one reader at the end of every section of the scope."""
+    if os.path.lexists(out):
+        raise Error(f"Output already exists: {out}; choose a new path.", "output_exists")
+    if max_level is not None and max_level < 1:
+        raise BuildError("--max-level must be at least 1 (1 ends a section only at a top-level heading).")
+    index = rp.load_json(index_path)
+    journal = Journal(journal_path, index)
+    if "checks" in journal.notes:
+        raise BuildError("The journal already records the checks stage, so its checkpoint plan is fixed. section-ends writes a fragment for a checks stage that is still to be built; "
+                         "to change the plan, start a corrected run (review_steps.py corrected-run --restart-at checks).")
+    rows = rp.section_ends(index, included=journal.included, max_level=max_level)
+    if not rows:
+        raise BuildError("No section end was found: the scope includes no body block (text or table) before a heading or the end of the text.")
+    plan, sections = [], []
+    for number, row in enumerate(rows, 1):
+        block = journal.blocks[row["block_id"]]
+        where = "end of the text before the first heading" if row["heading"] is None else f'end of the section "{row["heading"]}"'
+        plan.append({"id": f"S{number:02d}", "anchor": {"block_id": block["block_id"], "quote": rp.closing_quote(block["text"])}, "mode": mode, "reason": f"Fixed schedule: {where}."})
+        sections.append({"id": f"S{number:02d}", "block_id": block["block_id"], "heading": row["heading"], "words_seen": len(index["text"][:block["end_offset"]].split())})
+    rp.write_json_atomic(out, {"checkpoint_plan": plan})
+    return {"ok": True, "command": "section-ends", "output": str(out), "journal": str(journal_path), "entries": len(plan), "sections": sections,
+            "next": f"give {out} to notes_build.py checks as one more --source (delete the entries you do not want first); after the checks stage is recorded, dispatch_reader.py prefix-batch calls the readers"}
+
+
+def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], out: Path, audits_dir: Path | None, compare_dir: Path | None, challenges: list[str] | None = None,
+          no_wording: bool = False) -> dict:
     if stage not in STAGES:
         raise BuildError("stage must be one of: " + ", ".join(STAGES) + ".")
+    if no_wording and stage != "repairs":
+        raise BuildError("--no-wording applies to the repairs stage only.")
     if os.path.lexists(out):
         raise Error(f"Output already exists: {out}; choose a new path.", "output_exists")
     index = rp.load_json(index_path)
@@ -734,7 +784,7 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
     elif stage == "decisions":
         value = build_decisions(fragment, journal, ctx, challenges)
     elif stage == "repairs":
-        value = build_repairs(fragment, journal, ctx, audits_dir, compare_dir)
+        value = build_repairs(fragment, journal, ctx, audits_dir, compare_dir, no_wording)
     else:
         value = build_review(fragment, journal, ctx)
     selection = value.pop("_audit_selection", None)
@@ -746,6 +796,7 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
         rp.check_review(index, value, english=framed)
         if framed:
             rs.check_frame(value)
+        rs.check_depth(value, journal.notes)
         counts = {"issues": len(value["issues"]), "accepted": sum(1 for i in value["issues"] if i["decision_status"] == "accepted"),
                   "needs_author": sum(1 for i in value["issues"] if i["decision_status"] == "needs_author"), "concept_ledger": len(value.get("concept_ledger", []))}
     else:
@@ -755,7 +806,8 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
     result = {"ok": True, "command": stage, "output": str(out), "journal": str(journal_path), "counts": counts,
               "checked": ["every quotation is exact text of its block", "coverage of the included blocks (reading, checks)",
                           "field vocabularies and record shape through review_steps.validate_notes" if stage != "review"
-                          else "final review schema through review_packets.check_review, and the scope note, not-assessed list, and priority list through review_steps.check_frame (schema 7 journals)",
+                          else "final review schema through review_packets.check_review, the scope note, not-assessed list, and priority list through review_steps.check_frame (schema 7 journals), "
+                               "and the depth through review_steps.check_depth",
                           "needs_author repairs carry a question", "edit wording taken from the latest audit only when it found the meaning preserved"]}
     if selection is not None:
         result["audit_selection"] = selection
@@ -768,15 +820,19 @@ def build(stage: str, journal_path: Path, index_path: Path, sources: list[str], 
 
 def parser() -> argparse.ArgumentParser:
     p = rp.JsonArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("stage", choices=(*STAGES, "report"))
+    p.add_argument("stage", choices=(*STAGES, "report", "section-ends"))
     p.add_argument("--journal", required=True, help="The review_steps journal (00-start.json and the stages recorded so far).")
     p.add_argument("--index", required=True)
-    p.add_argument("--source", action="append", help="A fragment: .json, .py (FRAGMENT or build(ctx)), or a directory of them; repeatable, merged in order. Required for every stage; not used by report.")
-    p.add_argument("--out", required=True, help="The notes file to write, or report.md for report (new path).")
+    p.add_argument("--source", action="append", help="A fragment: .json, .py (FRAGMENT or build(ctx)), or a directory of them; repeatable, merged in order. Required for every stage; not used by report and section-ends.")
+    p.add_argument("--out", required=True, help="The notes file to write, report.md for report, or the plan fragment for section-ends (new path).")
     p.add_argument("--review", help="report: the review.json that passed check-final; it is checked again before anything is rendered.")
     p.add_argument("--appendix", help="report: where the minor items go when there are any (default: <out stem>-minor.md beside --out).")
     p.add_argument("--audits", help="repairs: directory of fidelity audits named <cid>.audit.json, <cid>-2.audit.json, ...; the latest round of each candidate decides its wording.")
     p.add_argument("--compare", help="repairs: directory of <cid>.features.json compare results (default: --audits).")
+    p.add_argument("--no-wording", action="store_true", help="repairs: build the repairs of a quick review. Every edit records its action with proposed_wording null and a fixed wording_withheld_reason; "
+                                                             "--audits and --compare are not read; a fragment that gives proposed_wording is refused.")
+    p.add_argument("--max-level", type=int, help="section-ends: only headings of this level or higher end a section (2: # and ##). Default: every heading.")
+    p.add_argument("--mode", choices=sorted(rs.PREFIX_MODES), default="fresh-prefix", help="section-ends: the mode of the planned readers (default fresh-prefix).")
     p.add_argument("--challenge", action="append", help="decisions: a challenge file from dispatch_reader.py challenge; repeatable. Each decision gets the challenge_path of the file that holds its candidate.")
     return p
 
@@ -788,10 +844,13 @@ def main(argv: list[str] | None = None) -> int:
             if not args.review:
                 raise Error("report needs --review PATH: the review.json that passed check-final.", "cli_error")
             result = report(Path(args.journal), Path(args.index), Path(args.review), Path(args.out), Path(args.appendix) if args.appendix else None)
+        elif args.stage == "section-ends":
+            result = section_ends(Path(args.journal), Path(args.index), Path(args.out), args.max_level, args.mode)
         elif not args.source:
             raise Error(f"{args.stage} needs --source: a fragment file or a directory of fragments.", "cli_error")
         else:
-            result = build(args.stage, Path(args.journal), Path(args.index), args.source, Path(args.out), Path(args.audits) if args.audits else None, Path(args.compare) if args.compare else None, args.challenge)
+            result = build(args.stage, Path(args.journal), Path(args.index), args.source, Path(args.out), Path(args.audits) if args.audits else None, Path(args.compare) if args.compare else None, args.challenge,
+                           args.no_wording)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
     except Error as exc:

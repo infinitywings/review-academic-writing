@@ -57,10 +57,11 @@ class StubReader:
     name = "stub"
     isolation = "in-process stub; no model is called"
 
-    def __init__(self, bad_answers=0):
+    def __init__(self, bad_answers=0, issue=None):
         self.lock = threading.Lock()
         self.calls = 0
         self.bad_answers = bad_answers
+        self.issue = issue  # {anchor, reader_question}: raised by every reader whose packet shows the anchor
 
     def agent_id(self, session_id):
         return "stub-reader"
@@ -72,6 +73,9 @@ class StubReader:
         packet = json.loads(prompt.rsplit("\n\n", 1)[1])
         observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
         observation.update(understanding=f"Read through {packet['blocks'][-1]['block_id']}.", issues=[])
+        if self.issue is not None and any(b["block_id"] == self.issue["anchor"]["block_id"] and self.issue["anchor"]["quote"] in b["text"] for b in packet["blocks"]):
+            observation["issues"] = [{"id": "R1", "category": "unavailable_prerequisite", "anchor": self.issue["anchor"], "reader_question": self.issue["reader_question"],
+                                      "consequence": "The sentence cannot be interpreted.", "severity": "major", "confidence": "high"}]
         raw = b"I could not read this." if number <= self.bad_answers else json.dumps(observation).encode("utf-8")
         return {"started_at": "2026-01-01T00:00:00+00:00", "seconds": 0.0, "record": {}, "raw": raw, "error": None,
                 "provenance": {"session_id": f"stub-{number}", "cost_usd": None}}
@@ -251,6 +255,7 @@ class NotesBuildTests(unittest.TestCase):
         code, stdout, stderr = self.run_cli(["report", "--journal", str(self.journal), "--index", str(self.index_path), "--review", str(review_path), "--out", str(self.root / "report.md")])
         self.assertEqual((code, stderr), (0, ""))
         report = (self.root / "report.md").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(report[7], "Depth: standard. Not done at this depth: masked reading.")
         self.assertEqual(report[report.index("## Priority list"):report.index("## Findings")], [
             "## Priority list",
             '1. [misleads] B0003 "Visits shorter than the RVG" — Is RVG defined before this use? (W01)',
@@ -605,7 +610,10 @@ class NotesBuildTests(unittest.TestCase):
         result, review = self.build("review", [self.write("drafts/review.json", fragment)])
         self.assertEqual(result["counts"], {"issues": 3, "accepted": 2, "needs_author": 1, "concept_ledger": 1})
         self.assertEqual((review["snapshot_id"], review["summary"], review["coverage"]), (self.sid, "Three findings.", "all four paragraphs read"))
-        self.assertEqual(set(review), {"snapshot_id", "summary", "scope_note", "not_assessed", "priority_list", "issues", "coverage", "concept_ledger"})
+        self.assertEqual(set(review), {"snapshot_id", "summary", "depth", "scope_note", "not_assessed", "priority_list", "issues", "coverage", "concept_ledger"})
+        self.assertEqual(review["depth"], "standard", "C01 carries audited wording and no masked checkpoint is recorded")
+        self.assertRefused("review.depth is quick, but repair C01 carries proposed wording; a quick review records the action only. The records support depth standard.", "review",
+                           [self.write("drafts/review-quick.json", {**self.fragment("review"), "depth": "quick"})])
         self.assertEqual((review["scope_note"], review["not_assessed"], review["priority_list"]),
                          ("All four paragraphs were read; no reader was dispatched.", ["whether the claims are true", "whether the evidence is sufficient", "whether the work is novel"], ["C01", "C04"]))
         issues = review["issues"]
@@ -661,6 +669,197 @@ class NotesBuildTests(unittest.TestCase):
         del fragment["repairs"]["C04"]["proposed_wording"]
         result, repairs = self.build("repairs", [self.write("drafts/omit.json", fragment)], audits=self.audits)
         self.assertEqual({r["candidate_id"]: r["proposed_wording"] for r in repairs["repairs"]}, {"C01": WORDING, "C02": None, "C04": None})
+
+
+QUICK_TEXT = """# Thaw dates in small ponds
+
+## Aim
+
+We ask whether small ponds thaw earlier than large ones. Thaw means the first day with open water.
+
+## Methods
+
+### Ponds
+
+We watched nine ponds for four springs.
+
+### Light
+
+We logged the DLI at each pond with one sensor. The sensor was cleaned weekly.
+
+## Results
+
+Small ponds thawed six days earlier than large ponds.
+"""
+QUICK_INCLUDED = ["B0003", "B0006", "B0008", "B0010"]
+DLI = {"block_id": "B0008", "quote": "the DLI"}
+
+
+class QuickReviewTests(unittest.TestCase):
+    """The quick depth: a fixed prefix schedule, readers dispatched together, repairs without wording."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.index = rp.build_index(QUICK_TEXT)
+        self.text = {b["block_id"]: b["text"] for b in self.index["blocks"]}
+        self.index_path = self.root / "index.json"
+        self.index_path.write_text(json.dumps(self.index), encoding="utf-8")
+        self.journal = self.start("journal", QUICK_INCLUDED)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def start(self, name, included):
+        journal = self.root / name
+        scope = {"task": "review", "included_block_ids": included, "reading_path": "linear", "extraction_notes": "plain",
+                 "omissions": [{"block_id": b, "reason": "not in this test's scope"} for b in self.text if b not in included]}
+        rs.start_run(self.index, PROFILE, scope, journal)
+        return journal
+
+    def cli(self, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = nb.main([str(a) for a in argv])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def stage(self, stage, fragment, *extra, sources=()):
+        """Build one stage from a fragment through the command line and record it; returns the built notes."""
+        source = self.root / f"{stage}-fragment.json"
+        source.write_text(json.dumps(fragment), encoding="utf-8")
+        out = self.root / f"{stage}.json"
+        argv = [stage, "--journal", self.journal, "--index", self.index_path, "--source", source, "--out", out, *extra]
+        for other in sources:
+            argv += ["--source", other]
+        code, stdout, stderr = self.cli(*argv)
+        self.assertEqual(code, 0, stderr)
+        if stage != "review":
+            rs.record_stage(self.journal, self.index, stage, out.read_bytes())
+        return rp.load_json(out)
+
+    def section_ends(self, out, *extra, journal=None):
+        return self.cli("section-ends", "--journal", journal or self.journal, "--index", self.index_path, "--out", out, *extra)
+
+    def reading(self):
+        return {"summary": "Four paragraphs read.", "paragraphs": {b: {"paraphrase": f"paraphrase of {b}", "role": "r", "required_context": [], "new_information": [], "open_questions": []}
+                                                                   for b in QUICK_INCLUDED}}
+
+    def checks(self):
+        claim_check = {"claim_strength": "none", "counterexample": "no rule to try", "citation_check": "no citation"}
+        return {"summary": "Checks done.", "no_concepts_reason": "none questioned", "passages": {b: {"structure_check": "s", "wording_check": "w", "claim_check": claim_check} for b in QUICK_INCLUDED},
+                "candidates": [{"id": "C01", "anchor": DLI, "question": "What is the DLI?"}]}
+
+    def test_section_ends_plans_one_prefix_reader_at_the_end_of_every_section(self):
+        out = self.root / "plan.json"
+        code, stdout, stderr = self.section_ends(out)
+        self.assertEqual((code, stderr), (0, ""))
+        result = json.loads(stdout)
+        self.assertEqual((result["ok"], result["command"], result["output"], result["entries"]), (True, "section-ends", str(out), 4))
+        self.assertEqual(result["sections"], [{"id": "S01", "block_id": "B0003", "heading": "Aim", "words_seen": 26}, {"id": "S02", "block_id": "B0006", "heading": "Ponds", "words_seen": 37},
+                                              {"id": "S03", "block_id": "B0008", "heading": "Light", "words_seen": 54}, {"id": "S04", "block_id": "B0010", "heading": "Results", "words_seen": 65}])
+        self.assertEqual(rp.load_json(out), {"checkpoint_plan": [
+            {"id": "S01", "anchor": {"block_id": "B0003", "quote": "earlier than large ones. Thaw means the first day with open water."}, "mode": "fresh-prefix", "reason": 'Fixed schedule: end of the section "Aim".'},
+            {"id": "S02", "anchor": {"block_id": "B0006", "quote": "We watched nine ponds for four springs."}, "mode": "fresh-prefix", "reason": 'Fixed schedule: end of the section "Ponds".'},
+            {"id": "S03", "anchor": {"block_id": "B0008", "quote": "DLI at each pond with one sensor. The sensor was cleaned weekly."}, "mode": "fresh-prefix", "reason": 'Fixed schedule: end of the section "Light".'},
+            {"id": "S04", "anchor": {"block_id": "B0010", "quote": "Small ponds thawed six days earlier than large ponds."}, "mode": "fresh-prefix", "reason": 'Fixed schedule: end of the section "Results".'}]})
+        code, stdout, stderr = self.section_ends(out)
+        self.assertEqual((code, json.loads(stderr)["error"]["code"]), (2, "output_exists"))
+
+    def test_section_ends_options_and_refusals(self):
+        coarse = self.root / "coarse.json"
+        code, stdout, stderr = self.section_ends(coarse, "--max-level", "2", "--mode", "bounded-request")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual([(row["id"], row["anchor"]["block_id"], row["mode"], row["reason"]) for row in rp.load_json(coarse)["checkpoint_plan"]],
+                         [("S01", "B0003", "bounded-request", 'Fixed schedule: end of the section "Aim".'), ("S02", "B0008", "bounded-request", 'Fixed schedule: end of the section "Methods".'),
+                          ("S03", "B0010", "bounded-request", 'Fixed schedule: end of the section "Results".')])
+        whole = self.root / "whole.json"
+        self.assertEqual(self.section_ends(whole, "--max-level", "1")[0], 0)
+        self.assertEqual([(row["anchor"]["block_id"], row["reason"]) for row in rp.load_json(whole)["checkpoint_plan"]], [("B0010", 'Fixed schedule: end of the section "Thaw dates in small ponds".')])
+        for extra, journal, message in (
+                (["--max-level", "0"], None, "--max-level must be at least 1"),
+                ([], self.start("headings-only", ["B0002", "B0004"]), "No section end was found: the scope includes no body block (text or table) before a heading or the end of the text."),
+                (["--mode", "masked-sequential"], None, "invalid choice")):
+            with self.subTest(message=message):
+                out = self.root / "refused.json"
+                code, stdout, stderr = self.section_ends(out, *extra, journal=journal)
+                self.assertEqual(code, 2)
+                self.assertIn(message, json.loads(stderr)["error"]["message"])
+                self.assertFalse(out.exists())
+        self.stage("reading", self.reading())
+        self.stage("checks", self.checks(), sources=[coarse])
+        code, stdout, stderr = self.section_ends(self.root / "late.json")
+        self.assertEqual(code, 2)
+        self.assertIn("The journal already records the checks stage, so its checkpoint plan is fixed.", json.loads(stderr)["error"]["message"])
+
+    def test_a_quick_review_end_to_end(self):
+        plan = self.root / "plan.json"
+        self.assertEqual(self.section_ends(plan)[0], 0)
+        self.stage("reading", self.reading())
+        checks = self.stage("checks", self.checks(), sources=[plan])
+        self.assertEqual([entry["id"] for entry in checks["checkpoint_plan"]], ["S01", "S02", "S03", "S04"])
+
+        events = self.root / "events"
+        reader = StubReader(issue={"anchor": DLI, "reader_question": "What is the DLI?"})
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(dr, "build_runtime", return_value=reader), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = dr.main(["prefix-batch", "--events", str(events), "--journal", str(self.journal), "--index", str(self.index_path), "--model", "default", "--jobs", "2"])
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        self.assertEqual(reader.calls, 4)
+        batch = rp.load_json(events / "prefix-batch.json")["entries"]
+        self.assertEqual([(row["plan_id"], row["status"], row["issue_count"]) for row in batch], [("S01", "ok", 0), ("S02", "ok", 0), ("S03", "ok", 1), ("S04", "ok", 1)])
+
+        limitation = "the stub reader saw the text only"
+        reconcile = self.stage("reconcile", {"summary": "Four prefix readers.", "candidates": [],
+                                             "checkpoints": [{"id": f"K{n}", "plan_id": f"S0{n}", "events_dir": str(events), "limitation": limitation} for n in range(1, 5)],
+                                             "observations": [{"source_id": source, "reader_question": "What is the DLI?", "classification": "absent_at_critical_use",
+                                                               "editor_check": "the text never spells DLI out", "evidence": [DLI], "candidate_id": "C01"} for source in ("K3", "K4")]})
+        self.assertEqual([(point["plan_id"], Path(point["observation_path"]).name) for point in reconcile["checkpoints"]],
+                         [("S01", "S01.observation.json"), ("S02", "S02.observation.json"), ("S03", "S03.observation.json"), ("S04", "S04.observation.json")])
+        self.stage("decisions", {"summary": "One decision.", "no_challenge_reason": "this test journal runs no challenger", "decisions": {
+            "C01": {"status": "accepted", "verification": "v", "countercheck": "c", "category": "unavailable_prerequisite", "diagnosis": "DLI is never spelled out.",
+                    "close_criterion": "The reader can say what DLI stands for on reaching B0008.", "severity": "hinders", "confidence": "high"}}})
+        repair = {"kind": "edit", "edit_scope": "apposition", "action": "Spell out DLI at its first use in B0008.", "scientific_fidelity": "no claim changes", "new_terms_check": "none",
+                  "affected_block_ids": ["B0008"]}
+        code, stdout, stderr = self.cli("repairs", "--journal", self.journal, "--index", self.index_path, "--no-wording", "--out", self.root / "worded.json",
+                                        "--source", self.write("worded-fragment.json", {"summary": "s", "repairs": {"C01": {**repair, "proposed_wording": "We logged the daily light integral (DLI)."}}}))
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(stderr)["error"]["message"], "Repair C01 gives proposed_wording, but --no-wording builds the repairs of a quick review, which records the action only. "
+                                                                 "Remove the wording, or build without --no-wording for a standard review.")
+        repairs = self.stage("repairs", {"summary": "One repair, as an action.", "repairs": {"C01": repair}}, "--no-wording", "--audits", self.root / "no-such-directory")
+        self.assertEqual((repairs["repairs"][0]["proposed_wording"], repairs["repairs"][0]["audit_path"], repairs["repairs"][0]["wording_withheld_reason"]),
+                         (None, None, "Not written: this is a quick review. A standard review adds the wording and its fidelity audit."))
+
+        review = self.stage("review", {"summary": "One finding.", "scope_note": "All four paragraphs were read; a prefix reader stopped at the end of each of the four sections."})
+        self.assertEqual((review["depth"], review["priority_list"], review["issues"][0]["reader_sources"], review["issues"][0]["proposed_wording"]), ("quick", ["C01"], 2, None))
+        rs.ready_run(self.journal, self.index)
+        self.assertEqual(rs.check_final(self.journal, self.index, review)["issue_count"], 1)
+        code, stdout, stderr = self.cli("report", "--journal", self.journal, "--index", self.index_path, "--review", self.root / "review.json", "--out", self.root / "report.md")
+        self.assertEqual((code, stderr), (0, ""))
+        report = (self.root / "report.md").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(report[5:10], [
+            "Not assessed: whether the claims are true; whether the evidence is sufficient; whether the work is novel.",
+            "",
+            "Depth: quick. Not done at this depth: proposed wording and its fidelity audit; masked reading.",
+            "",
+            "Records: 4 of 10 blocks read; reader checkpoints: 4 fresh-prefix; candidates: 1 accepted, 0 author questions, 0 merged, 0 rejected; "
+            "independent challenge: not run (this test journal runs no challenger); fidelity audits attached: 0.",
+        ])
+        self.assertNotIn("- Proposed wording:", "\n".join(report))
+        deep = self.write("deep-fragment.json", {"summary": "One finding.", "scope_note": "All four paragraphs were read.", "depth": "deep"})
+        code, stdout, stderr = self.cli("review", "--journal", self.journal, "--index", self.index_path, "--source", deep, "--out", self.root / "deep.json")
+        self.assertEqual((code, json.loads(stderr)["error"]["message"]),
+                         (2, "review.depth is deep, but the reconcile stage records no masked-sequential checkpoint. The records support depth quick."))
+
+    def write(self, name, value):
+        path = self.root / name
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    def test_no_wording_applies_to_the_repairs_stage_only(self):
+        source = self.write("reading-fragment.json", self.reading())
+        code, stdout, stderr = self.cli("reading", "--journal", self.journal, "--index", self.index_path, "--source", source, "--out", self.root / "reading.json", "--no-wording")
+        self.assertEqual((code, json.loads(stderr)["error"]["message"]), (2, "--no-wording applies to the repairs stage only."))
+        self.assertFalse((self.root / "reading.json").exists())
 
 
 if __name__ == "__main__":

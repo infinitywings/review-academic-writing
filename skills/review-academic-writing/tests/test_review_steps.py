@@ -199,6 +199,67 @@ class ReviewStepsTests(unittest.TestCase):
         del dropped["issues"][2]
         self.assertRefused("Final issues must match all accepted/needs_author candidates exactly", rs.check_final, self.journal, self.index, dropped)
 
+    def worded_and_quick_repairs(self):
+        """The standard repairs (C01 carries audited wording) and the same repairs with no wording, as a quick review records them."""
+        worded = self.notes("repairs")
+        quick = self.notes("repairs")
+        quick["repairs"][0].update(proposed_wording=None, audit_path=None)
+        return worded, quick
+
+    def test_derived_depth_follows_the_recorded_reconcile_and_repairs(self):
+        worded, quick = self.worded_and_quick_repairs()
+        plain, masked = self.notes("reconcile"), self.masked_reconcile(self.root / "any-run")
+        self.assertEqual(rs.derived_depth({"reconcile": plain, "repairs": quick}), "quick")
+        self.assertEqual(rs.derived_depth({"reconcile": plain, "repairs": worded}), "standard")
+        self.assertEqual(rs.derived_depth({"reconcile": masked, "repairs": quick}), "deep")
+        self.assertEqual(rs.derived_depth({"reconcile": masked, "repairs": worded}), "deep")
+        audited_only = self.notes("repairs")
+        audited_only["repairs"][0]["proposed_wording"] = None
+        self.assertEqual(rs.derived_depth({"reconcile": plain, "repairs": audited_only}), "standard")
+        self.assertEqual(rs.derived_depth({"reading": self.notes("reading")}), "quick")
+
+    def test_check_depth_holds_the_stated_depth_to_the_records(self):
+        worded, quick = self.worded_and_quick_repairs()
+        plain, masked = self.notes("reconcile"), self.masked_reconcile(self.root / "any-run")
+        for depth, reconcile, repairs in (("quick", plain, quick), ("standard", plain, worded), ("standard", plain, quick), ("deep", masked, worded), ("deep", masked, quick)):
+            with self.subTest(depth=depth):
+                rs.check_depth({"depth": depth}, {"reconcile": reconcile, "repairs": repairs})
+        cases = (
+            ("quick", plain, worded, "review.depth is quick, but repair C01 carries proposed wording; a quick review records the action only. The records support depth standard."),
+            ("quick", masked, quick, "review.depth is quick, but the reconcile stage records a masked-sequential checkpoint. The records support depth deep."),
+            ("standard", masked, worded, "review.depth is standard, but the reconcile stage records a masked-sequential checkpoint. The records support depth deep."),
+            ("deep", plain, worded, "review.depth is deep, but the reconcile stage records no masked-sequential checkpoint. The records support depth standard."),
+            ("deep", plain, quick, "review.depth is deep, but the reconcile stage records no masked-sequential checkpoint. The records support depth quick."),
+            ("thorough", plain, quick, "review.depth must be one of: quick, standard, deep."),
+            (None, plain, quick, "review.depth must be one of: quick, standard, deep."),
+        )
+        for depth, reconcile, repairs, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(rp.ReviewDataError) as raised:
+                    rs.check_depth({"depth": depth}, {"reconcile": reconcile, "repairs": repairs})
+                self.assertEqual(str(raised.exception), message)
+
+    def test_check_final_checks_a_stated_depth_and_accepts_a_review_without_one(self):
+        self.record_through("repairs")
+        rs.ready_run(self.journal, self.index)
+        review = self.final_review()
+        self.assertNotIn("depth", review)
+        self.assertEqual(rs.check_final(self.journal, self.index, review)["issue_count"], 3)
+        self.assertEqual(rs.check_final(self.journal, self.index, {**review, "depth": "standard"})["issue_count"], 3)
+        self.assertRefused("review.depth is quick, but repair C01 carries proposed wording", rs.check_final, self.journal, self.index, {**review, "depth": "quick"})
+        self.assertRefused("review.depth is deep, but the reconcile stage records no masked-sequential checkpoint", rs.check_final, self.journal, self.index, {**review, "depth": "deep"})
+        self.assertRefused("review.depth must be one of: quick, standard, deep", rs.check_final, self.journal, self.index, {**review, "depth": "full"})
+        deep = self.root / "deep"
+        rs.start_run(self.index, PROFILE, self.scope(), deep)
+        self.record_through("checks", journal=deep)
+        self.record("reconcile", self.masked_reconcile(self.masked_run()), journal=deep)
+        self.record("decisions", journal=deep)
+        self.record("repairs", journal=deep)
+        rs.ready_run(deep, self.index)
+        self.assertEqual(rs.check_final(deep, self.index, {**review, "depth": "deep"})["issue_count"], 3)
+        self.assertRefused("review.depth is standard, but the reconcile stage records a masked-sequential checkpoint. The records support depth deep.",
+                           rs.check_final, deep, self.index, {**review, "depth": "standard"})
+
     def test_order_is_enforced(self):
         self.assertRefused("Next operation is reading; cannot record checks now.", self.record, "checks")
         self.record("reading")
