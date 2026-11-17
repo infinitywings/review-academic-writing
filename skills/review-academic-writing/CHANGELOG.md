@@ -20,7 +20,7 @@
   - **先全部生成，再派发。** 所有读者包都生成成功之后才发第一个调用。有一条引文在块里出现多次或不在块里时，命令直接停下并指出是哪个计划条目，一个调用都不发。
   - **并行。** 用线程池同时跑 `--jobs` 个（默认 4，至少 1）。一个条目失败（更正两次仍不合格、读写出错等）只把这一条标为失败，其余照常跑完。有条目失败时退出码为 1。
   - **重跑不重复调用，也不覆盖文件。** 某个条目已有通过检查的观察、且保存的读者包与这次生成的相同时，标为 `kept`，不再调用。上次失败的条目用 `<编号>r1`、`<编号>r2`……作新标签重跑。两个条目不会用到同一个标签，计划编号像 `P03` 和 `P03b` 这样与更正标签相撞时也是如此。
-  - **输出。** 照常写 `summary.json`，调用按标签排序。另写 `<events>/prefix-batch.json`，每次运行整体重写：`journal`、`snapshot_id`，以及每个前缀条目一行（`plan_id`、`label`、`status`、`packet_path`、`observation_path`、`checkpoint_id`、`issue_count`、`outcome`）。`status` 是 `ok`、`kept`、`failed`；没被 `--only` 选中的条目沿用上次那一行，从没跑过的记 `not_run`。这个文件是从各次调用的文件汇总出来的索引，可以重写；各次调用的文件仍然只写一次。
+  - **输出。** 照常写 `summary.json`，调用按标签排序。另写 `<events>/prefix-batch.json`，每次运行整体重写：`journal`、`snapshot_id`，以及每个前缀条目一行（`plan_id`、`label`、`status`、`packet_path`、`observation_path`、`checkpoint_id`、`issue_count`、`outcome`）。`status` 是 `ok`、`kept`、`failed`；没被 `--only` 选中的条目沿用上次那一行，条件是那一行的读者包仍与当前计划条目生成的一致；不一致或从没跑过的记 `not_run`。这个文件是从各次调用的文件汇总出来的索引，可以重写；各次调用的文件仍然只写一次。
   - **`notes_build.py reconcile`：** 检查点写成 `{id, plan_id, events_dir, limitation}` 时，如果该目录有 `prefix-batch.json`，且其中这个计划编号的状态是 `ok` 或 `kept`，读者包和观察的文件名取自那一行。
   - **修了一个旧问题：** 单个 `prefix` 命令在更正一次后写出的是 `P01.packet.json` 和 `P01b.observation.json`，而上面的简写只找 `P01.observation.json`，找不到就报缺文件。现在依次找 `<标签>`、`<标签>b`、`<标签>c` 的观察文件。
   - **`review_packets.py` 新增 `anchor_stop_offset(block, quote)`：** 返回引文结束处在全文中的位置；引文不在块里或出现多次时报错，提示把引文加长到只指向一处。`server/orchestrator.py` 原来自带的 `anchor_offsets` 删除，改调它；编辑模型给出的计划锚点在块里出现多次时，现在会被退回重写。

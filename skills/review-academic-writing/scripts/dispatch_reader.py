@@ -985,7 +985,20 @@ def run_prefix_batch(args: argparse.Namespace, events: Events, runtime: Runtime)
 
     batch_file = events.dir / rp.PREFIX_BATCH_FILE
     earlier = earlier_batch_rows(batch_file, start["snapshot_id"])
-    entries = [rows.get(entry["id"]) or earlier.get(entry["id"]) or batch_row(entry["id"], "not_run", None, "not selected by --only") for entry in planned]
+
+    def carried(entry: dict[str, Any]) -> dict[str, Any]:
+        """The earlier row of an entry --only left out, kept only while its packet is still the one this plan entry gives."""
+        row = earlier.get(entry["id"])
+        try:
+            stop = rp.anchor_stop_offset(blocks[entry["anchor"]["block_id"]], entry["anchor"]["quote"])
+            current = rp.build_packet(index, start["profile"], stop_offset=stop)["checkpoint_id"]
+        except rp.ReviewDataError:
+            current = None
+        if row is not None and current is not None and row.get("checkpoint_id") == current:
+            return row
+        return batch_row(entry["id"], "not_run", None, "not selected by --only")
+
+    entries = [rows.get(entry["id"]) or carried(entry) for entry in planned]
     replace_json(batch_file, {"journal": str(journal), "snapshot_id": start["snapshot_id"], "entries": entries})
 
     failed = [plan_id for plan_id, row in rows.items() if row["status"] == "failed"]

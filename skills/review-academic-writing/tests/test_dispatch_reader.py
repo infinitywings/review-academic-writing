@@ -1731,6 +1731,17 @@ class PrefixBatchTests(unittest.TestCase):
         self.assertIn("2 of 2 prefix readers passed check-observation.", out)
         self.assertEqual([(r["plan_id"], r["status"]) for r in self.entries()], [("S01", "ok"), ("S02", "ok"), ("S03", "ok")])
 
+    def test_a_row_carried_over_by_only_must_still_match_its_plan_entry(self):
+        self.batch("--only", "S01")
+        batch_file = self.events / rp.PREFIX_BATCH_FILE
+        stored = rp.load_json(batch_file)
+        stored["entries"][0]["checkpoint_id"] = "sha256:" + "0" * 64
+        batch_file.write_text(json.dumps(stored), encoding="utf-8")
+        code, out, err = self.batch("--only", "S02")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([(r["plan_id"], r["status"], r["packet_path"]) for r in self.entries()],
+                         [("S01", "not_run", None), ("S02", "ok", str(self.events / "S02.packet.json")), ("S03", "not_run", None)])
+
     def test_a_quote_that_names_two_places_stops_the_batch_before_any_call(self):
         plan = [BATCH_PLAN[0], {**BATCH_PLAN[1], "anchor": {"block_id": "B0005", "quote": "The sensor logged a tag."}}, BATCH_PLAN[3]]
         self.refused("Plan entry S02: The anchor quote occurs 2 times in B0005, so it does not say where the reader stops; lengthen the quote so that it names one place. No reader was called.",
