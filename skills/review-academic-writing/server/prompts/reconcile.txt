@@ -27,6 +27,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - observations: one entry per useful reader observation, source_id naming a checkpoint or branch id above, classification from the table, editor_check with exact evidence, candidate_id naming a checks candidate or a candidate added here, else null. Keep the reader's original question.
 - resolved_by and background are the proof of two classifications and null on every other. resolved_later needs resolved_by: the manuscript words that answer the reader's question, which must begin after the anchor of the checkpoint the observation came from. adequate needs exactly one of the two: resolved_by quoting words that end by that anchor (text the reader had), or background quoting, character for character, the entry of reader_profile in the input that covers the question. When you cannot quote the words that answer the question, it is not answered: classify it absent_at_critical_use.
 - candidates: new candidates only, with ids that continue the checks numbering given in the input (next_candidate_id).
+- Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===

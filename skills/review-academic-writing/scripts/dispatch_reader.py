@@ -28,9 +28,11 @@ Subcommands:
   challenge
            put recorded candidates to an independent challenger before the decisions stage.
 
-Every call writes <label>.prompt.txt, <label>.cli.json, <label>.response.raw,
-<label>.response.json (when parsable) and <label>.provenance.json under the events
-directory. A rejection that names the note budget, a quotation that is not exact text, a
+Every call writes <label>.prompt.txt, <label>.schema.json (when the call sends a response
+schema), <label>.cli.json, <label>.response.raw, <label>.response.json (when parsable) and
+<label>.provenance.json under the events directory. With --runtime http and "json_schema":
+true in the config, the masked, audit, and challenge calls send their response shape as a
+JSON Schema for constrained decoding; the claude and codex runtimes ignore it. A rejection that names the note budget, a quotation that is not exact text, a
 response that is not one JSON object, or a response written in another language when the
 input held only Latin-script text, keeps the original files, writes
 <label>.invalid-reason.txt, and re-dispatches the same packet with one correction sentence
@@ -65,6 +67,7 @@ from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import masked_reader as mr  # noqa: E402
@@ -85,10 +88,16 @@ HTTP_ISOLATION_NOTE = "bare chat-completions request with no tools; isolation by
 CODEX_FLAGS = ["exec", "--ignore-user-config", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--json"]
 CODEX_ISOLATION_NOTE = "codex exec --ignore-user-config --ephemeral --sandbox read-only : user config (MCP servers, plugins, skills) ignored, no thread saved, model-run commands sandboxed read-only; the shell tool stays available, so a call whose event stream shows any command execution is rejected; not an OS sandbox for the model's context"
 CODEX_DEFAULT_TIMEOUT = 900.0
-HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
+HTTP_CONFIG_KEYS = ("base_url", "model", "api_key_env", "temperature", "max_tokens", "json_mode", "json_schema", "timeout_seconds", "extra_headers", "retry_backoff_seconds", "price_per_token", "ca_file")
 HTTP_ATTEMPTS = 3
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 RETRY_AFTER_CAP_SECONDS = 60.0
+# The model's own control tokens. A paper about reasoning models quotes <think> and </think>; sent as they are, the model
+# reads them as markup, and when it quotes </think> back the server ends the reasoning there and cuts the answer in two.
+# http requests carry look-alikes (‹think›) instead, and answers are mapped back, also from \u escapes, before anything
+# reads them, so quotes still match the manuscript exactly. <label>.cli.json keeps the answer as the model wrote it.
+CONTROL_TOKEN = re.compile(r"<(/?(?:think|tool_call|tool_response))>|<\|([a-z_]+)\|>")
+LOOKALIKE_TOKEN = re.compile(r"(?:‹|\\u2039)(?:(/?(?:think|tool_call|tool_response))|\|([a-z_]+)\|)(?:›|\\u203[aA])")
 CLAUDE_DEFAULT_TIMEOUT = 900.0
 CLI_DEFAULT_MODEL = "default"
 MODEL_REQUIRED = ("choose the reader and auditor model first: ask the user which model to use, then pass --model NAME, "
@@ -105,6 +114,14 @@ LOOKUP_STALL_LIMIT = 3
 MASKED_DEFAULT_RESTARTS = 5
 BUDGET_MESSAGE =re.compile(r"carry_memory has (\d+) (words|characters); limit is (\d+)")
 ANCHOR_MESSAGE = re.compile(r"(?i)quote is not (?:exact text|an exact substring)")
+# A memory note's since is bookkeeping the masked-reader helper checks; the message names the value to write.
+SINCE_MESSAGE = re.compile(r"(?:Carried|New) note \S+ must (?:keep|have) since=\d+")
+TYPOGRAPHY = str.maketrans({"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+                            "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
+# Quoting a formula, models drop its markup ($S ( I )$ written S(I)) or garble its commands in JSON (\ldots left out,
+# \therefore read as a tab), so quote matching ignores LaTeX markup: $ _ ^ { }, \commands, and a tab, backspace or form
+# feed with the letters after it. Newlines stay whitespace: extracted blocks contain real ones.
+LATEX_MARKUP = re.compile(r"[$_^{}]|\\[A-Za-z]+|[\x08\x09\x0c][A-Za-z]*")
 AUDIT_KEYS = {"candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"}
 # Keys the controller fills in after the auditor answers; an auditor that echoes them is not refused.
 AUDIT_CONTROLLER_KEYS = {"auditor", "audit_round", "hedges_in_original", "hedge_patterns"}
@@ -193,7 +210,8 @@ class ClaudeRuntime:
     def agent_id(self, session_id: str | None) -> str:
         return "claude-p-" + (session_id or "unknown")[:8]
 
-    def call(self, role: str, prompt: str) -> dict[str, Any]:
+    def call(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        """`schema` is accepted for a uniform interface and unused: claude -p has no constrained decoding."""
         command = self.command(role)
         started_at = utc_now()
         clock = time.monotonic()
@@ -286,7 +304,8 @@ class CodexRuntime:
                 unparsed.append(line[-400:])
         return events, unparsed
 
-    def call(self, role: str, prompt: str) -> dict[str, Any]:
+    def call(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        """`schema` is accepted for a uniform interface and unused: codex exec has no constrained decoding."""
         command = self.command()
         full_prompt = SYSTEM_PROMPTS[role] + "\n\n" + prompt
         started_at = utc_now()
@@ -386,6 +405,37 @@ def message_content(envelope: dict[str, Any]) -> tuple[str | None, Any]:
     return None, finish_reason
 
 
+def shield(text: str) -> str:
+    return CONTROL_TOKEN.sub(lambda m: f"‹{m.group(1)}›" if m.group(1) else f"‹|{m.group(2)}|›", text)
+
+
+def unshield(text: str) -> tuple[str, int]:
+    return LOOKALIKE_TOKEN.subn(lambda m: f"<{m.group(1)}>" if m.group(1) else f"<|{m.group(2)}|>", text)
+
+
+def reasoned(envelope: dict[str, Any] | None) -> bool:
+    """Whether the answer carries the model's reasoning (choices[0].message.reasoning_content or .reasoning)."""
+    choices = (envelope or {}).get("choices")
+    message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+    return isinstance(message, dict) and any(isinstance(message.get(k), str) and message[k] for k in ("reasoning_content", "reasoning"))
+
+
+def trailing_json_start(text: str) -> int | None:
+    """Where the JSON object that ends the text begins, or None."""
+    end = len(text.rstrip())
+    decoder = json.JSONDecoder(strict=False)
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, stop = decoder.raw_decode(text, start)
+        except ValueError:
+            continue
+        if stop == end and isinstance(value, dict):
+            return start
+    return None
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     """Refuse every redirect: following one would send the Authorization header elsewhere."""
 
@@ -452,6 +502,9 @@ class HttpRuntime:
         self.json_mode = config.get("json_mode", False)
         if not isinstance(self.json_mode, bool):
             raise DispatchError("json_mode must be true or false.")
+        self.json_schema = config.get("json_schema", False)
+        if not isinstance(self.json_schema, bool):
+            raise DispatchError("json_schema must be true or false.")
         configured_timeout = config.get("timeout_seconds", 300)
         if isinstance(configured_timeout, bool) or not isinstance(configured_timeout, (int, float)) or configured_timeout <= 0:
             raise DispatchError("timeout_seconds must be a positive number.")
@@ -485,15 +538,17 @@ class HttpRuntime:
             short = short[len("chatcmpl-"):]
         return "http-" + short[:12]
 
-    def request_body(self, role: str, prompt: str) -> dict[str, Any]:
+    def request_body(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": "system", "content": SYSTEM_PROMPTS[role]}, {"role": "user", "content": prompt}],
+            "messages": [{"role": "system", "content": SYSTEM_PROMPTS[role]}, {"role": "user", "content": shield(prompt)}],
             "temperature": self.temperature,
         }
         if self.max_tokens is not None:
             body["max_tokens"] = self.max_tokens
-        if self.json_mode:
+        if schema is not None and self.json_schema:
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "response", "schema": schema, "strict": True}}
+        elif self.json_mode:
             body["response_format"] = {"type": "json_object"}
         return body
 
@@ -511,11 +566,9 @@ class HttpRuntime:
         except urllib.error.HTTPError as exc:
             return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
 
-    def call(self, role: str, prompt: str) -> dict[str, Any]:
-        body = self.request_body(role, prompt)
+    def exchange(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Send one request, retrying 429, 5xx and connection failures: the outcome of the last attempt."""
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        started_at = utc_now()
-        clock = time.monotonic()
         attempts: list[dict[str, Any]] = []
         status: int | None = None
         headers: dict[str, str] = {}
@@ -539,7 +592,6 @@ class HttpRuntime:
             attempt["retry_after"] = retry_after
             attempt["waited_seconds"] = wait
             time.sleep(wait)
-        seconds = round(time.monotonic() - clock, 1)
         succeeded = status is not None and 200 <= status < 300
         error: str | None = None
         if not succeeded:
@@ -557,20 +609,49 @@ class HttpRuntime:
             if envelope is None:
                 error = "response body was not a chat-completions JSON object"
         content, finish_reason = message_content(envelope) if envelope is not None else (None, None)
+        restored = 0
         if envelope is not None:
             record: dict[str, Any] = envelope
             if content is None:
                 error = "response has no choices[0].message.content"
                 raw = encoded(envelope)
             else:
+                content, restored = unshield(content)
                 raw = content.encode("utf-8")
         else:
             record = {"error": error, "status": status, "body": payload.decode("utf-8", "replace")[-4000:], "attempts": attempts}
             raw = payload
         usage = (envelope or {}).get("usage")
-        usage = usage if isinstance(usage, dict) else None
-        input_tokens = (usage or {}).get("prompt_tokens")
-        output_tokens = (usage or {}).get("completion_tokens")
+        return {"status": status, "attempts": attempts, "envelope": envelope, "record": record, "raw": raw, "content": content,
+                "finish_reason": finish_reason, "restored": restored, "error": error, "usage": usage if isinstance(usage, dict) else None}
+
+    def call(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = self.request_body(role, prompt, schema)
+        started_at = utc_now()
+        clock = time.monotonic()
+        result = self.exchange(body)
+        leaked = 0
+        thinking_off: dict[str, Any] | None = None
+        set_aside: dict[str, Any] | None = None
+        # A reasoning model that writes </think> while it reasons (a paper about reasoning models can lead it to) makes the
+        # server end the reasoning there: the rest of it lands in the answer, ahead of the JSON, or the answer holds no JSON.
+        if "response_format" in body and reasoned(result["envelope"]):
+            text = result["content"]
+            if text is not None and parse_result(text)[0] is None and (start := trailing_json_start(text)) is not None:
+                leaked = start
+                result["raw"] = text[start:].encode("utf-8")
+            elif text is None or parse_result(text)[0] is None:
+                # Without reasoning the response format governs every token, so the answer is JSON.
+                retry = self.exchange({**body, "chat_template_kwargs": {**body.get("chat_template_kwargs", {}), "enable_thinking": False}})
+                accepted = retry["content"] is not None and parse_result(retry["content"])[0] is not None
+                set_aside, result = (result, retry) if accepted else (retry, result)
+                thinking_off = {"reason": "the answer was empty" if text is None else "the answer held no JSON object", "accepted": accepted,
+                                "set_aside_status": set_aside["status"], "set_aside_attempts": set_aside["attempts"], "set_aside_response": set_aside["record"]}
+        seconds = round(time.monotonic() - clock, 1)
+        envelope, error, usage = result["envelope"], result["error"], result["usage"]
+        spent = [r["usage"] or {} for r in (result, set_aside) if r is not None]
+        input_tokens = sum(u.get("prompt_tokens") or 0 for u in spent) if usage is not None else None
+        output_tokens = sum(u.get("completion_tokens") or 0 for u in spent) if usage is not None else None
         cost_usd = None
         if self.prices is not None and isinstance(input_tokens, int) and isinstance(output_tokens, int):
             cost_usd = round(input_tokens * self.prices["input"] + output_tokens * self.prices["output"], 6)
@@ -580,14 +661,17 @@ class HttpRuntime:
             "url": self.url,
             "model": self.model,
             "api_key_env": self.api_key_env,
-            "request": {"temperature": self.temperature, "max_tokens": self.max_tokens, "response_format": body.get("response_format"), "timeout_seconds": self.timeout},
+            "request": {"temperature": self.temperature, "max_tokens": self.max_tokens, "response_format": recorded_format(body.get("response_format")), "timeout_seconds": self.timeout},
+            "control_tokens": {"shielded": len(CONTROL_TOKEN.findall(prompt)), "restored": result["restored"]},
+            "leaked_reasoning_chars": leaked,
+            "thinking_off_retry": thinking_off,
             "transport_warning": self.transport_warning,
-            "http_status": status,
-            "attempt_count": len(attempts),
-            "attempts": attempts,
+            "http_status": result["status"],
+            "attempt_count": len(result["attempts"]),
+            "attempts": result["attempts"],
             "response_id": response_id if isinstance(response_id, str) else None,
             "response_model": (envelope or {}).get("model"),
-            "finish_reason": finish_reason,
+            "finish_reason": result["finish_reason"],
             "session_id": response_id if isinstance(response_id, str) else None,
             "usage": usage,
             "input_tokens": input_tokens,
@@ -595,10 +679,17 @@ class HttpRuntime:
             "cost_usd": cost_usd,
             "error": error,
         }
-        return {"started_at": started_at, "seconds": seconds, "record": record, "raw": raw, "error": error, "provenance": provenance}
-
+        return {"started_at": started_at, "seconds": seconds, "record": result["record"], "raw": result["raw"], "error": error, "provenance": provenance}
 
 Runtime = ClaudeRuntime | CodexRuntime | HttpRuntime
+
+
+def recorded_format(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The response_format as provenance records it: a JSON schema by name and digest, since the caller saves the schema itself."""
+    if not response_format or response_format.get("type") != "json_schema":
+        return response_format
+    spec = response_format["json_schema"]
+    return {"type": "json_schema", "name": spec["name"], "schema_sha256": sha256_bytes(encoded(spec["schema"]))}
 
 
 def parse_result(text: str) -> tuple[Any | None, str | None, bool]:
@@ -606,7 +697,8 @@ def parse_result(text: str) -> tuple[Any | None, str | None, bool]:
     fenced = CODE_FENCE.match(text)
     body = fenced.group(1) if fenced else text
     try:
-        value = json.loads(body)
+        # strict=False: a constrained decoder can let a raw tab or form feed into a string (a model writing \therefore or \frac with one backslash).
+        value = json.loads(body, strict=False)
     except ValueError as exc:
         return None, f"{type(exc).__name__}: {exc}", fenced is not None
     if not isinstance(value, dict):
@@ -637,13 +729,18 @@ class Events:
     def path(self, label: str, suffix: str) -> Path:
         return self.dir / f"{label}.{suffix}"
 
-    def dispatch(self, runtime: Runtime, role: str, label: str, generic: str, payload: bytes, packet_file: Path, note: str | None, corrects: str | None) -> dict[str, Any]:
+    def dispatch(self, runtime: Runtime, role: str, label: str, generic: str, payload: bytes, packet_file: Path, note: str | None, corrects: str | None,
+                 schema: dict[str, Any] | None = None) -> dict[str, Any]:
         source = generic + ("\n\n" + note if note else "")
         prompt = source + "\n\n" + payload.decode("utf-8")
         write_new(self.path(label, "prompt.txt"), prompt.encode("utf-8"))
         if note:
             write_new(self.path(label, "prompt-source.txt"), (source + "\n").encode("utf-8"))
-        run = runtime.call(role, prompt)
+        if not getattr(runtime, "json_schema", False):
+            schema = None  # only an http runtime configured with json_schema sends one; the others keep their file set
+        if schema is not None:
+            write_new(self.path(label, "schema.json"), encoded(schema))
+        run = runtime.call(role, prompt, schema)
         write_new(self.path(label, "cli.json"), encoded(run["record"]))
         raw: bytes = run["raw"]
         write_new(self.path(label, "response.raw"), raw)
@@ -734,11 +831,104 @@ def format_note(errors: list[str]) -> str:
     )
 
 
-def anchor_note(errors: list[str]) -> str:
+def fold(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """`text` with typographic quotes and dashes folded to ASCII, NFKC per character, and whitespace and LaTeX markup dropped;
+    spans[i] is the (start, end) range in `text` of folded character i."""
+    folded: list[str] = []
+    spans: list[tuple[int, int]] = []
+
+    def plain(start: int, end: int) -> None:
+        for at in range(start, end):
+            for piece in unicodedata.normalize("NFKC", text[at]).translate(TYPOGRAPHY):
+                if not piece.isspace():
+                    folded.append(piece)
+                    spans.append((at, at + 1))
+
+    offset = 0
+    for match in LATEX_MARKUP.finditer(text):
+        plain(offset, match.start())
+        offset = match.end()
+    plain(offset, len(text))
+    return "".join(folded), spans
+
+
+def block_span(text: str, quote: str) -> str | None:
+    """The text of the one span of `text` that equals `quote` after folding both, widened over adjacent `$` and `}` so a
+    formula stays whole; None when there is no such span or more than one."""
+    target, _ = fold(quote)
+    folded, spans = fold(text)
+    start = folded.find(target)
+    if not target or start < 0 or folded.find(target, start + 1) >= 0:
+        return None
+    begin, end = spans[start][0], spans[start + len(target) - 1][1]
+    while begin > 0 and text[begin - 1] == "$":
+        begin -= 1
+    while end < len(text) and text[end] in "$}":
+        end += 1
+    return text[begin:end].strip()
+
+
+def block_texts(payload: bytes) -> dict[str, str]:
+    """Block or source id -> text, for every object in a packet or input that carries both."""
+    texts: dict[str, str] = {}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            ident = next((node[k] for k in ("block_id", "source_id", "id") if isinstance(node.get(k), str)), None)
+            if ident is not None and isinstance(node.get("text"), str):
+                texts.setdefault(ident, node["text"])
+            for item in node.values():
+                walk(item)
+
+    try:
+        walk(json.loads(payload))
+    except ValueError:
+        pass
+    return texts
+
+
+def exact_copies(response: Any, texts: dict[str, str]) -> list[str]:
+    """For each anchor quote that is not text of its block but matches one span of it once quotes, dashes, spacing and
+    LaTeX markup are set aside, a line giving the block's own text of that span."""
+    lines: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            ident = node.get("block_id") if isinstance(node.get("block_id"), str) else node.get("source_id")
+            quote = node.get("quote")
+            if isinstance(ident, str) and isinstance(quote, str) and quote and ident in texts and quote not in texts[ident]:
+                exact = block_span(texts[ident], quote)
+                if exact is not None:
+                    line = f"{ident} has {json.dumps(exact, ensure_ascii=False)} where you wrote {json.dumps(quote, ensure_ascii=False)}"
+                    if line not in lines:
+                        lines.append(line)
+            for item in node.values():
+                walk(item)
+
+    walk(response)
+    return lines
+
+
+def anchor_note(errors: list[str], copies: list[str] | None = None) -> str:
     return (
         "Anchor note from the controller: a previous attempt at this same input quoted text that is not an exact copy of the block it names "
         f"({'; '.join(errors)}). Every anchor quote must be copied character for character from the named block as shown in the packet, without "
         "paraphrase, ellipsis, or changed punctuation; quote a shorter fragment you can copy exactly, and keep every other part of the response as before."
+        + (" The block's own text of the passages meant, to copy exactly as written (curly quotes and dashes included): " + "; ".join(copies) + "." if copies else "")
+    )
+
+
+def since_note(errors: list[str]) -> str:
+    return (
+        "Memory note from the controller: a previous attempt at this same input gave a memory note the wrong since value "
+        f"({'; '.join(errors)}). A note carried over from the memory you were given keeps its id and since exactly as given; a note you add now "
+        "takes the since value stated above. Keep every other part of the response as before."
     )
 
 
@@ -751,16 +941,19 @@ def language_note(errors: list[str]) -> str:
 
 
 def classify_helper_error(exc: BaseException) -> Failure:
-    """budget and anchor failures are correctable with the same packet; anything else is rejected."""
+    """budget, anchor and memory-since failures are correctable with the same packet; anything else is rejected."""
     message = str(exc)
     if BUDGET_MESSAGE.search(message):
         return Failure("budget", message)
     if ANCHOR_MESSAGE.search(message):
         return Failure("anchor", message)
+    if SINCE_MESSAGE.search(message):
+        return Failure("since", message)
     return Failure("rejected", message)
 
 
-def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generic: str, payload: bytes, packet_file: Path, accept: Callable[[dict[str, Any]], Any]) -> tuple[dict[str, Any] | None, Any, Failure | None]:
+def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generic: str, payload: bytes, packet_file: Path, accept: Callable[[dict[str, Any]], Any],
+                  schema: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, Any, Failure | None]:
     """Dispatch, validate, and correct up to MAX_CORRECTIONS times. Returns (call, accepted value, failure).
 
     Every answer is written in English. An answer that holds text in another script is sent
@@ -771,11 +964,13 @@ def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generi
     format_errors: list[str] = []
     anchor_errors: list[str] = []
     language_errors: list[str] = []
+    since_errors: list[str] = []
+    copies: list[str] = []
     note: str | None = None
     check_language = rp.OTHER_SCRIPT.search(payload.decode("utf-8", "replace")) is None
     for number, suffix in enumerate(ATTEMPT_SUFFIXES):
         label = base + suffix
-        call = events.dispatch(runtime, role, label, generic, payload, packet_file, note, base if suffix else None)
+        call = events.dispatch(runtime, role, label, generic, payload, packet_file, note, base if suffix else None, schema)
         if call["parsed"] is None:
             failure = Failure("rejected" if call.get("rejected_by_runtime") else "format", call["parse_error"] or "no response")
         else:
@@ -800,7 +995,11 @@ def attempt_chain(events: Events, runtime: Runtime, role: str, base: str, generi
             note = budget_note(budget_sizes, match.group(2), int(match.group(3)))
         elif failure.kind == "anchor":
             anchor_errors.append(str(failure))
-            note = anchor_note(anchor_errors)
+            copies += [line for line in exact_copies(call["parsed"], block_texts(payload)) if line not in copies]
+            note = anchor_note(anchor_errors, copies)
+        elif failure.kind == "since":
+            since_errors.append(str(failure))
+            note = since_note(since_errors)
         elif failure.kind == "language":
             language_errors.append(str(failure))
             note = language_note(language_errors)
@@ -851,7 +1050,7 @@ def dispatch_prefix(events: Events, runtime: Runtime, label: str, packet: dict[s
         try:
             check = rp.check_observation(packet, call["parsed"])
         except rp.ReviewDataError as exc:
-            raise Failure("rejected", str(exc)) from exc
+            raise classify_helper_error(exc) from exc
         write_new(events.path(call["label"], "check.json"), encoded(check))
         write_new(events.path(call["label"], "observation.json"), encoded(call["parsed"]))
         return check
@@ -1138,6 +1337,7 @@ def masked_segment(args: argparse.Namespace, events: Events, runtime: Runtime, r
         issued = mr.packet(run, packet_file, state["pending_lookup"])
         packet = json.loads(packet_file.read_bytes())
         seen_before = set(state["seen"]) | set(state["seen_assets"])
+        schema = mr.response_schema(packet, mr.exposed_sources(case, state, packet))
 
         def accept(call: dict[str, Any], packet_file: Path = packet_file) -> dict[str, Any]:
             try:
@@ -1145,7 +1345,7 @@ def masked_segment(args: argparse.Namespace, events: Events, runtime: Runtime, r
             except (mr.Invalid, KeyError, TypeError, ValueError) as exc:
                 raise classify_helper_error(exc) from exc
 
-        call, record, failure = attempt_chain(events, runtime, "reader", label, generic, packet_file.read_bytes(), packet_file, accept)
+        call, record, failure = attempt_chain(events, runtime, "reader", label, generic, packet_file.read_bytes(), packet_file, accept, schema)
         entry = {"sequence": seq, "mode": issued["mode"], "label": call["label"], "status": call["status"]}
         if failure is not None:
             entry["error"] = str(failure)
@@ -1216,7 +1416,7 @@ def run_branch(args: argparse.Namespace, events: Events, runtime: Runtime) -> di
         try:
             return mr.branch_record(run, packet_file, call["response_path"], agent_id=call["session_id"])
         except (mr.Invalid, KeyError, TypeError, ValueError) as exc:
-            raise Failure("rejected", str(exc)) from exc
+            raise classify_helper_error(exc) from exc
 
     call, record, failure = attempt_chain(events, runtime, "reader", label, events.generic_prompt("branch"), packet_file.read_bytes(), packet_file, accept)
     if failure is not None:
@@ -1247,8 +1447,30 @@ def check_audit_shape(audit: Any, request: dict[str, Any], extra_patterns: list[
     if not isinstance(checks, dict) or set(checks) != set(AUDIT_CHECKS) | {"hedges"} or any(not isinstance(checks[k], str) or checks[k] not in AUDIT_CHECK_VALUES for k in AUDIT_CHECKS):
         raise Failure("format", "checks must map each of the ten properties to same, changed, or not_applicable and carry a hedges array")
     check_hedges_shape(checks["hedges"], checks, request["hedges_in_original"], request.get("proposed_wording"), extra_patterns)
-    if not isinstance(audit["notes"], str):
-        raise Failure("format", "notes must be a string")
+    if not isinstance(audit["notes"], str) or not audit["notes"].strip():
+        raise Failure("format", "notes must be a nonempty string: name each changed or undetermined property and quote the words that decide it, "
+                                "or, when the verdict is preserved, say in one sentence what differs and why it keeps the meaning")
+
+
+def audit_schema(request: dict[str, Any]) -> dict[str, Any]:
+    """The audit response as a JSON Schema for a constrained decoder: the three copied fields fixed to the input's values,
+    so they come back byte for byte (Flash-Next rewrote curly apostrophes in them on every attempt), the ten properties
+    and the verdict as closed vocabularies, and one hedge report per occurrence in hedges_in_original with its id and
+    term fixed. check_audit_shape stays the authority (kept_as, one report per occurrence)."""
+    def obj(properties: dict[str, Any], optional: tuple[str, ...] = ()) -> dict[str, Any]:
+        return {"type": "object", "properties": properties, "required": [k for k in properties if k not in optional], "additionalProperties": False}
+
+    def one_of(values: Any) -> dict[str, Any]:
+        return {"type": "string", "enum": sorted(values)}
+
+    occurrences = request["hedges_in_original"]
+    reports = [obj({"id": {"const": o["id"]}, "term": {"const": o["term"]}, "status": one_of(rp.HEDGE_REPORT_STATUSES), "kept_as": {"anyOf": [{"type": "string"}, {"type": "null"}]}})
+               for o in occurrences]
+    hedges = {"type": "array", "items": {"anyOf": reports}, "minItems": len(reports), "maxItems": len(reports)} if reports else {"type": "array", "maxItems": 0}
+    checks = obj({**{key: one_of(AUDIT_CHECK_VALUES) for key in AUDIT_CHECKS}, "hedges": hedges})
+    return obj({"candidate_id": {"const": request["candidate_id"]}, "proposed_wording": {"const": request["proposed_wording"]}, "original": {"const": request["original"]},
+                "verdict": one_of(AUDIT_VERDICTS), "checks": checks, "notes": {"type": "string"},
+                "auditor": {"const": {"mode": "bounded-request", "agent_id": "filled in by the controller"}}}, optional=("auditor",))
 
 
 def audit_request_with_hedges(request: dict[str, Any], extra_patterns: list[str]) -> tuple[dict[str, Any], list[str]]:
@@ -1316,11 +1538,35 @@ def run_audit(args: argparse.Namespace, events: Events, runtime: Runtime) -> dic
         write_new(out, encoded(audit))
         return audit
 
-    call, audit, failure = attempt_chain(events, runtime, "auditor", label, events.generic_prompt("audit"), encoded(request), input_file, accept)
+    call, audit, failure = attempt_chain(events, runtime, "auditor", label, events.generic_prompt("audit"), encoded(request), input_file, accept, audit_schema(request))
     if failure is not None:
         return events.finish("audit", stop_message(label, failure), False, {"label": label})
     changed = [k for k in AUDIT_CHECKS if audit["checks"][k] == "changed"]
     return events.finish("audit", f"{call['label']} verdict {audit['verdict']}" + (f" (changed: {', '.join(changed)})" if changed else "") + f"; written to {out}.", True, {"label": call["label"], "audit": str(out), "verdict": audit["verdict"]})
+
+
+def challenge_schema(candidates: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    """The challenger's answer as a JSON Schema for a constrained decoder: one entry per candidate of the request, the
+    verdict tied to its fields (answered carries an answer and no duplicate_of, duplicate names another candidate, the
+    others carry neither), and an answer that is one whole sentence of one block, so the decoder copies it byte for
+    byte. A challenger's file is evidence the decisions stage cites and may not be repaired afterwards; models had
+    written straight quotes for curly ones in such quotations. check_challenges stays the authority (one entry per
+    candidate, duplicate targets, answer_position)."""
+    def obj(properties: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+    def one_of(values: Any) -> dict[str, Any]:
+        return {"type": "string", "enum": sorted(values)}
+
+    ids = [row["candidate_id"] for row in candidates]
+    null = {"type": "null"}
+    answer = {"anyOf": [obj({"block_id": {"const": block["block_id"]}, "quote": one_of(set(sentences))}) for block in blocks if (sentences := mr.sentences(block["text"]))]}
+
+    def entry(verdict: dict[str, Any], answer_schema: dict[str, Any], duplicate_of: dict[str, Any]) -> dict[str, Any]:
+        return obj({"candidate_id": one_of(ids), "verdict": verdict, "answer": answer_schema, "duplicate_of": duplicate_of, "reason": {"type": "string"}})
+
+    entries = [entry({"const": "answered"}, answer, null), entry({"const": "duplicate"}, null, one_of(ids)), entry(one_of(rp.CHALLENGE_VERDICTS - {"answered", "duplicate"}), null, null)]
+    return obj({"challenges": {"type": "array", "items": {"anyOf": entries}, "minItems": len(ids), "maxItems": len(ids)}})
 
 
 def run_challenge(args: argparse.Namespace, events: Events, runtime: Runtime) -> dict[str, Any]:
@@ -1353,7 +1599,8 @@ def run_challenge(args: argparse.Namespace, events: Events, runtime: Runtime) ->
         write_new(out, encoded(record))
         return record
 
-    call, record, failure = attempt_chain(events, runtime, "challenger", label, events.generic_prompt("challenge"), encoded(payload), input_file, accept)
+    call, record, failure = attempt_chain(events, runtime, "challenger", label, events.generic_prompt("challenge"), encoded(payload), input_file, accept,
+                                          challenge_schema(candidates, index["blocks"]))
     if failure is not None:
         return events.finish("challenge", stop_message(label, failure), False, {"label": label})
     counts = {v: sum(1 for c in record["challenges"] if c["verdict"] == v) for v in sorted(rp.CHALLENGE_VERDICTS)}

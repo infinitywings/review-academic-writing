@@ -3,10 +3,11 @@
 
 Python standard library only. The config file is the one `scripts/dispatch_reader.py
 --runtime http` reads (base_url, model, api_key_env, temperature, max_tokens, json_mode,
-timeout_seconds, and the optional keys it allows); the transport, the retries on 429/5xx
-and connection failures, and the refusal to follow redirects are HttpRuntime's. This
-module adds the editor system prompt and writes one labeled file set per call under a
-calls directory: <label>.prompt.txt, <label>.cli.json, <label>.response.raw,
+json_schema, timeout_seconds, and the optional keys it allows); the transport, the retries
+on 429/5xx and connection failures, and the refusal to follow redirects are HttpRuntime's.
+This module adds the editor system prompt and writes one labeled file set per call under a
+calls directory: <label>.prompt.txt, <label>.schema.json (when the config sets json_schema
+and the step gives a response schema), <label>.cli.json, <label>.response.raw,
 <label>.response.json (when the content parses as one JSON object), and
 <label>.provenance.json. The API key is read from the environment variable the config
 names and is never written to any file.
@@ -34,8 +35,8 @@ class EditorRuntime(dr.HttpRuntime):
     name = "http-editor"
     isolation = EDITOR_ISOLATION_NOTE
 
-    def request_body(self, role: str, prompt: str) -> dict[str, Any]:
-        body = super().request_body("reader", prompt)
+    def request_body(self, role: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = super().request_body("reader", prompt, schema)
         body["messages"][0]["content"] = EDITOR_SYSTEM_PROMPT
         return body
 
@@ -74,11 +75,17 @@ class Client:
     def path(self, label: str, suffix: str) -> Path:
         return self.dir / f"{label}.{suffix}"
 
-    def call(self, label: str, prompt: str) -> Call:
+    def call(self, label: str, prompt: str, schema: dict[str, Any] | None = None) -> Call:
+        """Send one prompt; `schema` goes out as response_format json_schema, and to <label>.schema.json, only when the config sets json_schema."""
         paths = {"prompt": self.path(label, "prompt.txt"), "cli": self.path(label, "cli.json"), "raw": self.path(label, "response.raw"),
                  "json": self.path(label, "response.json"), "provenance": self.path(label, "provenance.json")}
         dr.write_new(paths["prompt"], prompt.encode("utf-8"))
-        run = self.runtime.call("editor", prompt)
+        if not self.runtime.json_schema:
+            schema = None
+        if schema is not None:
+            paths["schema"] = self.path(label, "schema.json")
+            dr.write_new(paths["schema"], dr.encoded(schema))
+        run = self.runtime.call("editor", prompt, schema)
         dr.write_new(paths["cli"], dr.encoded(run["record"]))
         raw: bytes = run["raw"]
         dr.write_new(paths["raw"], raw)

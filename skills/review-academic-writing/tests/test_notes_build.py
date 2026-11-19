@@ -66,7 +66,7 @@ class StubReader:
     def agent_id(self, session_id):
         return "stub-reader"
 
-    def call(self, role, prompt):
+    def call(self, role, prompt, schema=None):
         with self.lock:
             self.calls += 1
             number = self.calls

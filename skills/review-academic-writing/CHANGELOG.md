@@ -32,6 +32,64 @@
   - `masked-reading.md`：开头写明只用于深入档、须由使用者提出；窗口一段改为每窗约 400 到 750 词；示例命令去掉 `--budget 250`。
   - **没有测过的：** 新旧窗口大小在测试集（`evals/`）上的对比没有跑，窗口放宽后读者的发现有没有变化，目前不知道。放宽后一次深入档运行能省多少时间也没有量过。
 
+### 并入服务器分支 `server-openai-endpoint`（原 0.21.0+server.1 至 server.4）
+
+2026-11-19 把服务器那条线并回主线。那条线 11 月 16 日从 0.21.0 拉出，共 18 个提交，这里压成一个提交并入，原分支保留在远端。主线不采用 `+server.N` 的版本号，`VERSION` 仍是 0.21.0，随下次发版一起定。下面四节是分支上的变更说明，原样保留，只把标题降了两级；其中的测试数是分支当时的数字。
+
+- **对所有运行方式都生效的四项修复：** 审计的 `notes` 为空时当场纠错；前缀读者和分支读者引文不准时给纠错机会；纠错说明里写出原文对应的那一段；遮罩读者笔记的 `since` 写错时可以纠错。前缀读者的纠错和上面 R6 的 `prefix-batch` 共用一段代码，批量派发时同样生效。
+- **与 R5 至 R7 合并时的取舍：** 编排器的 `--masked-windows` 默认值按主线，是 0，遮罩读者默认不跑；`--masked-budget` 默认 500。下面 server.1 一节里提到遮罩读者的地方，以这两个默认值为准。`--batch-blocks` 默认 20、`--checks-passes` 默认 3、`--challenge-batch` 默认 10 按分支。编排器现在跑独立质疑，0.21.0 条目里"编排器暂不跑质疑、只记理由"的说法不再成立。
+- **改了一句测试注释：** 分支的 `tests/test_orchestrator.py` 有一句注释提到了一份未公开稿件的类别，并入时改成不指明的说法。远端分支的历史里仍有原句。
+- **测试：** 合并后包内 386 个（没有 spaCy 时 `OK (skipped=1)`），`evals/tests` 16 个。主线这次新增的测试替身补上了运行时 `call` 的第三个参数（`schema`），一个编排器测试的期望值补上了分支新增的选项和质疑调用计数。
+- **没有验证的：** 合并后的代码没有在真实端点上跑过。分支记录的真实运行都是合并之前的代码。
+
+#### 0.21.0+server.4（2026-11-16）
+
+- **审计的 `notes` 为空时给纠错，不再等到记录时才被拒（修复）。** 11-16 经插件审一篇 8 页稿件（作业 `20261116-160647-37ae11`），39 分钟后停在 repairs："The helper rejected it: audit.notes must be a nonempty string."。审计员判 C02 的改写 `preserved`，两轮都把 `notes` 写成空字符串；`dispatch_reader.py` 只检查它是不是字符串，照单收下，到 `review_steps.py` 记录修改时才按"非空"拒收，而这时已经没有纠错机会，整篇作废。提示词原来也只要求有 changed 或 undetermined 时写 notes。现在 `check_audit_shape` 要求 notes 非空，空的当场按格式错误纠错（同一份材料最多两次）；提示词要求 `preserved` 时也用一句话说明改了什么、为什么意思不变。JSON Schema 仍不给字符串设 `minLength`（xgrammar 设了长度就写不出反斜杠）。
+- 测试：355 个增加到 356 个：`preserved` 审计的 notes 只有空白时，第二次请求带着 "notes must be a nonempty string" 的说明，第二次的 notes 被记录。去掉这次的改动，这个测试失败。
+
+#### 0.21.0+server.3（2026-11-16）
+
+- **推理漏进回答时的两道补救（新，做法同 paper-review 2026-11-01）。** server.2 把字面的 `<think>` 换成形近字符之后，在真实端点上重跑 arXiv 2502.12202（讲推理模型的"不思考"漏洞）的引言加附录 B.1，仍停在 checks。原文还有 HTML 实体写法 `&lt;/think&gt;`，模型思考时把它还原成真的 `</think>`，vLLM 在那里结束推理，剩下的推理落进回答：4 次回答里 3 次不是 JSON，其中一次 `content` 为空。现在请求要求 JSON（带 `response_format`）、回答又带着模型的推理（`reasoning` 或 `reasoning_content` 不为空）时，http 运行时这样处理：
+  - 回答本身不是一个 JSON 对象，但末尾是一个完整的 JSON 对象：取这个对象作为回答，`<label>.response.raw` 只存它。`<label>.cli.json` 保留完整回答，`provenance.json` 的 `leaked_reasoning_chars` 记前面漏进来的字符数。
+  - 回答为空，或找不到 JSON：同一请求关掉思考（`chat_template_kwargs.enable_thinking: false`）立刻再发一次。没有推理时，响应格式约束每一个 token。新回答是 JSON 就用它；不是，或者端点拒绝这个参数，就仍返回第一次的结果，照旧走纠错。`provenance.json` 的 `thinking_off_retry` 记原因、是否采用、另一次回答的状态码、传输重试和完整响应；`input_tokens`、`output_tokens`、`cost_usd` 是两次之和，`usage` 是被采用那次的原始值。
+  - 回答不带推理时（claude、codex 运行时，或不思考的端点）行为不变，普通的格式错误仍由纠错说明处理。
+- 传输层（429、5xx、连接失败的重试）从 `HttpRuntime.call` 拆成 `HttpRuntime.exchange`，`call` 在它之上做上面两道补救。
+- **读者纠错给出原文那一段（新）。** 引文不是原文时，纠错说明现在逐条写出原文里对应的那一段：把引号、破折号、空白和 LaTeX 标记放在一边后，引文恰好对上块里一处，就写"B0014 has "56-layer “plain” networks" where you wrote …"。以前只说"不是原文子串"：11-16 经插件跑 ResNet 前 4 页时，前缀读者 P01 三次都把原文的弯引号 “plain” 写成直引号，纠错两次仍失败。用这次的代码重放那三次回答，三条说明都给出了原文。读者回答仍是模型原话，不做事后规范化。`fold`、`block_span` 从 `server/orchestrator.py` 移到 `dispatch_reader.py`，编辑的引文规范化和读者纠错共用。
+- **遮罩读者的笔记 `since` 写错时给纠错机会（新）。** 以前助手报 "Carried note n5 must keep since=1" 这类错误时判为不可纠错，整个遮罩运行停止（同一次插件运行里的 E04）。现在和引文一样，同一份材料最多纠错两次，说明是 "Memory note from the controller"：沿用的笔记保持原来的 id 和 `since`，新加的笔记用报错里写明的值。两个本意测"引用了还没看到的块"的测试，原来的新笔记 `since` 也写错了；改成只剩那一处错误。
+- 测试：包内 350 个增加到 355 个，都按读者的调用方式运行（http 运行时、假端点）：推理漏在 JSON 前面时取末尾的 JSON，只发一次请求；回答里没有 JSON 时第二次请求带 `enable_thinking: false`、消息不变，采用它，两次的 token 相加；回答为空且端点拒绝关思考的参数时，退回纠错（`P1b`）；直引号写错时纠错说明给出原文那一段，第二次通过；沿用笔记改了 `since` 时得到 Memory note，第二次通过。去掉这次的改动，这五个测试都失败。
+- **真实端点重跑**（server3，Flash-Next，前两项改动，读者纠错之前的代码）：同一份 arXiv 2502.12202 摘录（35 块，原文 7 个 `<think>`、2 个 `</think>`）server.2 停在 checks，这次跑完：27 次调用、13 分钟、2 次重提，报告 2 条问题。取末尾 JSON 用了 6 次（3 个前缀读者、遮罩读者 1 次、复查 1 次、质疑者 1 批，漏进来 3,002 到 16,810 个字符），关思考重问没有用上。
+
+#### 0.21.0+server.2（2026-11-16）
+
+- **模型的控制标记换成形近字符再发出（新）。** 研究推理模型的论文原文里就有 `<think>`、`</think>`。原样发给 Flash-Next，模型把它们当成标记；引用时写出 `</think>`，vLLM 的推理解析器就在那里结束推理，回答被截成两半，不是 JSON（paper-review 2026-11-01 踩到过）。现在 http 运行时（读者、审计、质疑者和编辑的调用都经过它）在发出前把 `<think>`、`<tool_call>`、`<tool_response>` 及其结束标记，以及 `<|…|>` 形式的标记换成 `‹think›`、`‹|…|›` 这类形近字符；回答在任何步骤读取之前换回，`\u2039`…`\u203a` 转义写法也换回，所以引文仍与原文逐字一致。`<label>.cli.json` 保留模型原话；`<label>.prompt.txt` 和 `prompt_sha256` 仍是换字符之前的提示；`provenance.json` 新增 `control_tokens`（`shielded` 发出时换掉几处，`restored` 回答里换回几处）。claude、codex 运行时不变。
+- 测试：包内 349 个增加到 350 个。新测试按前缀读者的调用方式运行：稿件含 `</think>`，请求里只有形近字符；假端点的回答一处直接写形近字符、一处写 `\u` 转义；换回后通过 check-observation，观察记录与原文一致，`cli.json` 是模型原话。去掉这次的改动，这个测试失败。
+
+#### 0.21.0+server.1（2026-11-16）
+
+分支 `server-openai-endpoint` 改从 main 的 0.21.0 拉出。服务器这条线 0.14.1+server.1 和 0.14.1+server.2 的修复（`ce8ab26..50a8be2` 的 11 个提交，让编排器在 vLLM 0.31 + xgrammar 上的 Qwen3.8-Flash-Next 上跑通）按 0.21.0 的布局（`skills/review-academic-writing/`）和记录格式（日志 schema 7、英文记录、三级严重程度、`close_criterion`、脚本生成的报告）重做；编排器开始跑 0.21.0 新增的独立质疑。每项修复的依据和重放实验见仓库根目录的 `docs/server-deployment.md`。2026-11-16 在 server3 上用真实端点（Flash-Next）跑通一次 ResNet 前 4 页：35 次调用、21 分钟、4 次重提；结果质量的观察见下面最后一条。三个核心助手和 `notes_build.py` 的校验规则不变。
+
+- **独立质疑（新）。** 以前编排器在决定记录里写 `no_challenge_reason`（"does not run the independent challenge yet"）。现在 reconcile 记录之后，`review_steps.challenge_inputs` 把已记录的候选（编号、锚点、读者的问题，不含编辑的诊断和证据）按 `--challenge-batch`（默认 10）分批写成输入文件，`dispatch_reader.py challenge` 用读者配置逐批调用，与读者和审计一样；文件在 `<out>/challenges/`。
+  - decisions 的输入多了每条候选的质疑结论（`stands`、`answered`、`not_material`、`duplicate`）、回答原文和 `answer_position`、是否构成否定（`disputed`），以及 `challenge-input` 算出的 `support`（几个读者检查点提出过它），供定级时用。
+  - 控制器给每条决定写上 `challenge_path`，模型不写；保留被否定的候选时，模型在 `challenge_response` 里说明理由，没有就由助手退回重写。决定记录不再有 `no_challenge_reason`，报告的计数行写 "run on all N candidates"。
+  - 某一批在 `dispatch_reader.py` 的两次纠错后仍不合格时，整轮都不记质疑（schema 7 要求全有或全无）：`no_challenge_reason` 写明是哪一批，`stages.challenge.status` 为 `failed`，`log.jsonl` 记 `challenge_failed`，运行继续，和读者失败时一样。没有候选时不派发质疑者，也不需要理由。
+  - `summary.json` 多了 `stages.challenge`（状态、批数、各结论条数、被否定的候选）、`options.challenge_batch`，读者调用按类型计数时多了 `challenge`。
+- **引文规范化（server.1、server.2）。** 回答交给助手之前，任何带字符串 `block_id` 和 `quote` 的对象（含 0.21.0 观察记录的 `resolved_by`），`quote` 不是块原文子串时，两边都把弯引号、各种连字符和破折号折成 ASCII，逐字符 NFKC，去掉空白和 LaTeX 标记（`$ _ ^ { }`、反斜杠命令，以及制表符、退格、换页连同其后的字母）；恰好对上一处就换成块原文的那一段，并扩到相邻的 `$` 和 `}`，零处或多处原样交给助手。每次替换记 `anchor_canonicalized`，`totals.anchors_canonicalized` 计数，`editor/<label>.response.json` 仍是模型原话。
+- **重提时补齐顶层字段（server.1）。** 重提的回答缺了的顶层字段从上一次回答带过来，记 `fields_carried`。
+- **缺数组字段时点名（server.1）。** 消息为 "`<字段> is missing; give it as an array, [] when there are none.`"；现在覆盖 reading、checks（含 0.21.0 的 `no_candidate`）、reconcile、decisions、repairs、review 的全部数组字段。
+- **模板（server.1、server.2）。** checks 示例把 `checkpoint_plan`、`candidates`、`no_candidate`、`branch_question` 放在 `concepts` 和 `passages` 之前；reading、checks、recheck、reconcile、decisions、repairs 要求引文保留弯引号；checks 和 recheck 不把抽取造成的拆词（"as sume"）列为候选，decisions 驳回这类候选；未完成的占位符（TODO、TBD、XX、[citation needed]）一律列为候选，decisions 判为 needs_author、category other、severity `hinders`（0.14 的四级里是 major）。
+- **`--batch-blocks` 默认 20（server.1）。** 40 块一批时 Flash-Next 的 checks 输出曾陷入重复直到写满上下文。
+- **checks 默认三遍（server.2）。** `--checks-passes`（默认 3）。第 2 遍起用 `server/prompts/recheck.txt` 逐批重读，输入列出到目前为止的全部候选，只要求补出漏掉的问题；新候选接着编号，重复的留给 decisions 合并。某一批四次都不合格就跳过（`recheck_skipped`），运行继续。`stages.checks` 记 `passes`、`candidates_by_pass`、`rechecks_skipped`。按 0.21.0 调整：模板引用与 checks 相同的规则（含 4b 论断强度一节）；复查候选的问题若逐字包含第一遍已在 `no_candidate` 里说明不立为候选的阅读开放问题，会与记录矛盾，所以每一遍也过开放问题核算，不合格就退回，提示换成自己的话。
+- **每一步的 JSON Schema（server.2）。** 配置新键 `json_schema`（默认 false）为 true 时，编辑调用带 `response_format: {"type": "json_schema", ...}`，Schema 存为 `editor/<label>.schema.json`，`provenance.json` 只记名字和 sha256。`server/schemas.py` 按 0.21.0 的记录重写：scope、reading、checks、recheck、reconcile、decisions、repairs、review 各一份（报告由脚本生成，不需要）；必填字段按模板示例的顺序；类别、三级严重程度、观察分类、状态、修改类型和范围、句子功能用枚举；`claim_check` 和可选的 `proposition_checks`；候选的 `open_questions` 和 `no_candidate` 只能取本批阅读笔记提出的开放问题原文；`resolved_by`，以及只能取冻结读者画像原文的 `background`；保留的决定带 `close_criterion`；评审带 `scope_note`。助手允许缺省的字段在 Schema 里也可缺省，测试逐个核对每个被接收的回答符合它那次调用发出的 Schema。
+- **字符串不设 `minLength`、`maxLength`、`pattern`（server.2）。** xgrammar 把有长度限制的字符串编译成不含反斜杠的字符集，同一 Schema 多处用 `pattern` 会触发内部断言；靠配置的 `max_tokens` 兜住失控的字符串（Flash-Next 上 32768）。server.2 的候选编号还用着 `pattern`，这次去掉了。新增两个测试：一次开启 `json_schema` 的运行里发出的每一份 Schema（编辑、遮罩读者、审计、质疑者），以及 `server/schemas.py` 里每个步骤的生成函数，出现这三个关键字之一就失败。
+- **遮罩读者、保真审计和质疑者也带 Schema（server.2，质疑者为新）。** 遮罩读者引用文字段落时只能取该段的整句之一或空串；审计要抄回的 `candidate_id`、`proposed_wording`、`original` 定为输入原值（`const`），并按 0.20.0 的逐处限定语报告给每一处 `hedges_in_original` 固定 `id` 和 `term`；质疑者每条候选一项，结论与字段绑定（`answered` 带回答、`duplicate` 带 `duplicate_of`），回答只能是某一块的整句。前缀读者和分支读者仍按 `json_mode`。和 server.2 不同，只有配置了 `json_schema` 的 http 运行时才写 `<label>.schema.json` 并发送；claude、codex 运行时的文件集不变。
+- **`parse_result` 用 `json.loads(strict=False)`（server.2）。** 约束解码会让模型少写一个反斜杠时出现的原始制表符进入字符串。
+- **`server/review-paper.sh`（server.1）。** 从 PDF 一条命令跑完整篇（启动 MinerU 本地服务、extract、postprocess、run），后台运行，每次一个目录 `$REVIEW_RUNS/<日期-时间>-<文件名>/`。按 0.21.0 调整：有 `pdftotext` 时给 `postprocess` 加 `--pdf`，用 PDF 文字层修复拆词（`PDFTOTEXT` 设为空则跳过）；没有 `setsid` 时只用 `nohup`；空参数数组在任何 bash 的 `set -u` 下都能展开。
+- **不再移植：报告必须提到每个问题编号（server.2）。** 0.21.0 的报告由 `notes_build.py report` 从通过 `check-final` 的评审生成，不调用模型。
+- **前缀读者和分支读者的引文不准时也给纠错机会（新）。** 以前只有遮罩读者和质疑者在引文不是块原文时收到 anchor note 重试，前缀读者和分支读者直接判为 rejected。首次真实运行里 3 个前缀读者有 2 个因此失败：0.19.0 新增的 `cannot_place` 引用原文 “plain” 时写成了直引号。现在这两种读者的助手报错也按 `classify_helper_error` 分类，引文不准算 anchor，同一份材料最多纠错两次；读者回答仍是模型原话，不做事后规范化。
+- **首次真实运行的观察（ResNet 前 4 页，一次）。** 质疑跑完 3 批，22 条候选里 20 条判 `not_material`、2 条 `answered`，decisions 只保留 1 条（0.14.1+server.2 同一份材料是 25 条候选、保留 9 条）。被判 `not_material` 的包括论断强度一类（“expect … applicable to non-vision problems”、对 highway networks 的否定说法没有引文），理由多是“读者仍能看懂这段的主张”；编辑没有用 `challenge_response` 推翻。一次运行不足以下结论。
+- 仓库根目录的 `docs/server-deployment.md` 换成服务器线的版本（首次真实端点运行、各修复的重放依据），并加一节说明这次移植。
+- 测试：包内 312 个增加到 349 个（没有 spaCy 时 `OK (skipped=1)`），`evals/tests` 16 个不变。新增的测试按用户的调用方式运行：假端点全流程里核对质疑的派发参数、输入文件、各条结论和位置、每条决定的 `challenge_path` 和 `challenge_response`、决定回执的附件、报告的计数行；分批质疑；质疑者始终不合格时的理由；没有候选时的路径；规范化的各种情形；补齐字段；缺数组字段的消息；三遍 checks、跳过的复查批次和开放问题冲突；开启与不开启 `json_schema` 时各类请求的 `response_format` 和保存的 Schema；`review-paper.sh` 的前台流程（假的 mineru 和 pdftotext，拆词被修复）和用法提示。
+
 ## 0.21.0（2026-11-16）
 
 - **报告：三级严重程度，最多十条的优先清单，每条问题只出现一次（改造计划 R4）。** 以前的报告太长，小问题太多。这次把报告的形状交给脚本生成和检查，不再靠提示词要求模型。只对 schema 7 日志生效。R4b、R2、R3、R4 四项的新要求都并入还没发布的 schema 7，不另升版本：用此前未发布版本写出的 schema 7 日志在新规则下不能重放，schema 4 到 6 的日志不受影响。

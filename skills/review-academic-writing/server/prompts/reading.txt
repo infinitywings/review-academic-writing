@@ -16,6 +16,7 @@ What to return: exactly one JSON object with these keys and nothing else:
 - One paragraphs entry for each block listed in batch_block_ids, in order, and for no other block.
 - anchor.quote must be an exact substring of that block's text (copy it character for character; a short clause is enough).
 - The three arrays may be empty; every element is a string.
+- Copy every quote character for character from its block, keeping typographic quotation marks such as “ ” ‘ ’ exactly as they appear; never replace them with straight quotes.
 - Return no code fence and no commentary.
 
 === INPUT (one JSON object) ===
