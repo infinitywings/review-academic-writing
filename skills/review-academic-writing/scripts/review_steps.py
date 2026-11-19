@@ -67,6 +67,13 @@ FINAL_STATUSES = {"accepted", "needs_author"}
 # The review is about clarity only; every schema 7 review says so in not_assessed.
 NOT_ASSESSED = ("whether the claims are true", "whether the evidence is sufficient", "whether the work is novel")
 PRIORITY_LIMIT = 10
+# The three depths of a review and what each leaves out. Depth is a property of the finished review, not of the
+# scope: corrected-run copies the start receipt byte for byte, so a depth sealed there could not be raised later.
+DEPTHS = {
+    "quick": ("proposed wording and its fidelity audit", "masked reading"),
+    "standard": ("masked reading",),
+    "deep": (),
+}
 PREFIX_MODES = {"fresh-prefix", "bounded-request"}
 CHECKPOINT_MODES = {"full-context", "masked-sequential"} | PREFIX_MODES
 READER_EVIDENCE_KEYS = ("checkpoints", "branches", "observations")
@@ -1124,6 +1131,41 @@ def check_frame(review: dict) -> None:
         raise Error(f"review.priority_list leaves out {left_out[0]} ({severity(left_out[0])}) while it lists {priority[-1]} ({severity(priority[-1])}); list the more severe finding instead.")
 
 
+def has_masked_checkpoint(notes: dict) -> bool:
+    return any(point["mode"] == "masked-sequential" for point in notes.get("reconcile", {}).get("checkpoints", []))
+
+
+def derived_depth(notes: dict) -> str:
+    """The depth the recorded stages support: deep with a masked checkpoint, standard with any proposed wording or audit, quick otherwise."""
+    if has_masked_checkpoint(notes):
+        return "deep"
+    repairs = notes.get("repairs", {}).get("repairs", [])
+    if any(row.get("proposed_wording") is not None or row.get("audit_path") is not None for row in repairs):
+        return "standard"
+    return "quick"
+
+
+def check_depth(review: dict, notes: dict) -> None:
+    """Hold the depth a review states to what its journal records.
+
+    A quick review records no proposed wording and no masked checkpoint; a standard review no
+    masked checkpoint; a deep review at least one. A standard review may end with no wording
+    when every audit failed, so wording is not required of it.
+    """
+    depth = review.get("depth")
+    if not isinstance(depth, str) or depth not in DEPTHS:
+        raise Error("review.depth must be one of: " + ", ".join(DEPTHS) + ".")
+    supported = f"The records support depth {derived_depth(notes)}."
+    masked = has_masked_checkpoint(notes)
+    worded = [row["candidate_id"] for row in notes.get("repairs", {}).get("repairs", []) if row.get("proposed_wording") is not None]
+    if depth == "quick" and worded:
+        raise Error(f"review.depth is quick, but repair {worded[0]} carries proposed wording; a quick review records the action only. {supported}")
+    if depth != "deep" and masked:
+        raise Error(f"review.depth is {depth}, but the reconcile stage records a masked-sequential checkpoint. {supported}")
+    if depth == "deep" and not masked:
+        raise Error(f"review.depth is deep, but the reconcile stage records no masked-sequential checkpoint. {supported}")
+
+
 def check_final(journal: Path, index: Any, review: Any) -> dict:
     with locked(journal):
         start, notes, previous_hash = load_run(journal, index)
@@ -1167,10 +1209,14 @@ def check_final(journal: Path, index: Any, review: Any) -> dict:
                     if field not in issue or type(issue[field]) is not type(recorded) or issue[field] != recorded:
                         raise Error(f"Final issue {key}.{field} is {json.dumps(issue.get(field))}, but the records give {json.dumps(recorded)}; copy the recorded value (notes_build.py review fills it in).")
             check_frame(review)
+            # A review made by 0.21.0 states no depth.
+            if "depth" in review:
+                check_depth(review, notes)
     return {"ok": True, "command": "check-final", "issue_count": len(final),
             "verified": ["ready receipt and saved-stage consistency", "final review schema and exact source anchors", "final issues exactly linked to saved decisions and repairs", "needs_author status and author question retained",
                          "every action names a block id and every author question is a question (schema 5 journals)",
-                         "scope note, not-assessed list, priority list, and each issue's recorded reader sources and challenge verdict (schema 7 journals)"],
+                         "scope note, not-assessed list, priority list, and each issue's recorded reader sources and challenge verdict (schema 7 journals)",
+                         "the stated depth against the recorded reconcile and repairs stages, when the review states one (schema 7 journals)"],
             "not_verified": LIMITS + ["whether final prose preserves the implications of its structured status"]}
 
 

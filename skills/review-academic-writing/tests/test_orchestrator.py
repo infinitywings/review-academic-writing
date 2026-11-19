@@ -287,6 +287,15 @@ class HeavyAndChangedLLM(FakeLLM):
                            "checks": checks, "notes": notes, "auditor": {"mode": "bounded-request", "agent_id": "filled in by the controller"}})
 
 
+class PrefixOnlyLLM(FakeLLM):
+    """The editor of a run without a masked reader: its reconcile step cites the prefix checkpoint only."""
+
+    def step_reconcile(self, data, batch, attempt):
+        assert data["masked_run"] is None and data["branch"] is None
+        value = super().step_reconcile(data, batch, attempt)
+        return {**value, "checkpoints": value["checkpoints"][:1], "branches": [], "observations": value["observations"][:1]}
+
+
 class OrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -427,7 +436,8 @@ class OrchestratorTests(unittest.TestCase):
                          [("C01", "misleads", 1, None), ("C05", "hinders", 0, None), ("C04", "minor", 0, None)])
         # The report is rendered from the checked review, not written by the editor model.
         report = (self.out / "report.md").read_text(encoding="utf-8").split("\n")
-        self.assertEqual(report[:10], [
+        self.assertEqual(review["depth"], "deep", "a masked checkpoint is recorded")
+        self.assertEqual(report[:12], [
             "# Writing review",
             "",
             "## What was reviewed",
@@ -435,12 +445,14 @@ class OrchestratorTests(unittest.TestCase):
             "",
             "Not assessed: whether the claims are true; whether the evidence is sufficient; whether the work is novel.",
             "",
+            "Depth: deep.",
+            "",
             "Records: 4 of 5 blocks read; reader checkpoints: 1 bounded-request, 1 masked-sequential; candidates: 2 accepted, 1 author question, 1 merged, 1 rejected; "
             "independent challenge: not run (server/orchestrator.py does not run the independent challenge yet); fidelity audits attached: 1.",
             "",
             "## Priority list",
         ])
-        self.assertEqual(report[10:12], ['1. [misleads] B0003 "the MSW exceeded two seconds" — Is MSW defined first? (W01)', '2. [hinders] B0005 "91 percent" — Is 91 percent compared with anything? (W02)'])
+        self.assertEqual(report[12:14], ['1. [misleads] B0003 "the MSW exceeded two seconds" — Is MSW defined first? (W01)', '2. [hinders] B0005 "91 percent" — Is 91 percent compared with anything? (W02)'])
         self.assertEqual([line for line in report if line.startswith("### ")], ["### W01 · misleads · confidence high · B0003", "### W02 · hinders · confidence medium · B0005"])
         self.assertEqual(report[-3:], ["## Minor items", "1 minor item does not hinder understanding; it is listed in report-minor.md.", ""])
         self.assertIn("### W03 · minor · confidence medium · B0005", (self.out / "report-minor.md").read_text(encoding="utf-8").split("\n"))
@@ -605,6 +617,44 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in json.loads((self.out / "journal" / "03-reconcile.notes.json").read_text())["candidates"]], ["C05"])
         self.assertEqual(sorted(p.name for p in (self.out / "audits").glob("*.audit.json")), ["C01.audit.json", "C05-2.audit.json", "C05.audit.json"])
         self.assertEqual(json.loads((self.out / "summary.json").read_text())["totals"]["retries"], 3)
+
+    def test_a_run_without_masked_options_dispatches_no_masked_reader_and_its_review_is_standard(self):
+        self.use_server(PrefixOnlyLLM())
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = orch.main(["run", "--manuscript", str(self.manuscript), "--out", str(self.out), "--config", str(self.config), "--batch-blocks", "2", "--prefix-checkpoints", "2"])
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        summary = json.loads((self.out / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["options"], {"batch_blocks": 2, "prefix_checkpoints": 2, "masked_windows": 0, "masked_budget": 500})
+        self.assertEqual(summary["totals"]["readers"]["by_kind"], {"prefix": 1, "masked": 0, "branch": 0, "audit": 3})
+        self.assertEqual(summary["stages"]["readers"], {"status": "done", "prefix_ok": 1, "failed": [], "masked": False, "branch": False})
+        self.assertFalse((self.out / "masked").exists())
+        self.assertFalse((self.out / "branch-question.json").exists())
+        reconcile = json.loads((self.out / "journal" / "03-reconcile.notes.json").read_text(encoding="utf-8"))
+        self.assertEqual([(c["id"], c["mode"]) for c in reconcile["checkpoints"]], [("K01", "bounded-request")])
+        review = json.loads((self.out / "review.json").read_text(encoding="utf-8"))
+        self.assertEqual((review["depth"], review["issues"][0]["proposed_wording"]), ("standard", WORDING))
+        report = (self.out / "report.md").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(report[7], "Depth: standard. Not done at this depth: masked reading.")
+
+    def test_a_plan_anchor_that_names_two_places_goes_back_to_the_editor(self):
+        original = self.server.step_checks
+
+        def step_checks(data, batch, attempt):
+            value = original(data, batch, attempt)
+            if batch == 1 and attempt == 1:
+                value["checkpoint_plan"][0]["anchor"] = A("B0003", "the ")
+            return value
+
+        self.server.step_checks = step_checks
+        code, out, err = self.run_pipeline()
+        self.assertEqual(code, 0, out + err)
+        second = (self.out / "editor" / "02-checks-batch01-b.prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("checkpoint_plan anchor: The anchor quote occurs 2 times in B0003, so it does not say where the reader stops; lengthen the quote so that it names one place.", second)
+        plan = json.loads((self.out / "journal" / "02-checks.notes.json").read_text())["checkpoint_plan"]
+        self.assertEqual([entry["anchor"] for entry in plan], [CRITICAL])
+        packet = json.loads((self.out / "readers" / "P01" / "P01.packet.json").read_text())
+        self.assertTrue(packet["visible_text"].endswith("when the MSW exceeded two seconds"))
 
     def test_render_quotes_reference_sections_verbatim(self):
         staged = (PACKAGE / "references" / "staged-review.md").read_text(encoding="utf-8")

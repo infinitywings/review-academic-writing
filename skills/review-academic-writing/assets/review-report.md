@@ -10,6 +10,8 @@
 
 Not assessed: <not_assessed entries joined with "; ">.
 
+Depth: quick. Not done at this depth: proposed wording and its fidelity audit; masked reading. | Depth: standard. Not done at this depth: masked reading. | Depth: deep.
+
 Records: <included> of <total> blocks read; reader checkpoints: <count per mode, or "none">; candidates: <a> accepted, <q> author questions, <g> merged, <r> rejected; independent challenge: run on all <n> candidates | not run (<no_challenge_reason>); fidelity audits attached: <count of repairs with an audit>.
 
 ## Priority list
@@ -40,6 +42,7 @@ The list shows the 10 most consequential of <N>; all are under Findings.
 
 Rules of the layout:
 
+- The Depth line is one of the three sentences shown, chosen by `depth` in the review. A review that states no depth (one written by 0.21.0 or earlier) has no Depth line.
 - The priority list holds the accepted findings that mislead or hinder, in the order of `priority_list` in the review: at most ten, `misleads` before `hinders`. The sentence under the list appears only when more such findings exist than are listed. When there is none, the list is the one sentence “No finding that misleads or hinders was accepted.”
 - “Questions for the author” lists every author question, those of minor items included (their findings are in the appendix), and is left out when there is none.
 - “Findings” holds every finding that misleads or hinders, accepted or put to the author, exactly once: the priority list first, then the rest in the order of the review. The lines “Proposed wording” and “Question for the author” appear only when the issue has one. When there is no such finding, the section says “None.”

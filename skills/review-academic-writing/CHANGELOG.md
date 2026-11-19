@@ -1,5 +1,37 @@
 # 变更说明
 
+## 未发布
+
+- **三档深度：快速、标准、深入，默认快速（改造计划 R5）。** 以前每次评审都做全套：每条保留的问题都写改稿并做保真审计，再加一轮遮罩阅读。现在分三档，由使用者在开始前选定，报告里写明用的是哪一档、没做什么。日志 schema 仍是 7，0.21.0 写出的日志和评审照旧通过。
+  - **三档各做什么。** 快速（`quick`，默认）：阅读笔记和编辑检查；每节末尾一个前缀读者；独立质疑；决定；修改只记做法，不写改稿，不做保真审计；不做遮罩阅读。标准（`standard`）：在快速的基础上，为每条接受的问题写改稿，并逐条做保真审计。深入（`deep`）：在标准的基础上加一轮带回忆题的遮罩阅读，读者意见不一致的地方加分支提问。
+  - **深度记在最终评审里，不记在范围记录里。** `corrected-run` 逐字节复制开始回执，深度写在那里的话以后就升不了档。要把做完的评审升档，开一个更正运行：升到标准用 `review_steps.py corrected-run --restart-at repairs`，升到深入用 `--restart-at reconcile`（要补回忆题时用 `--restart-at checks`）。
+  - **`review_steps.py`：** 新增常量 `DEPTHS`（每一档省去什么）、`derived_depth(notes)` 和 `check_depth(review, notes)`。`derived_depth`：reconcile 里记录了 `masked-sequential` 检查点就是 `deep`；否则有修改带 `proposed_wording` 或 `audit_path` 就是 `standard`；否则是 `quick`。`check_depth`：`quick` 不能有带改稿的修改，也不能有遮罩检查点；`standard` 不能有遮罩检查点；`deep` 必须有遮罩检查点；拒绝时写明记录支持哪一档。`check-final` 在评审带 `depth` 字段时检查，不带这个字段的评审（0.21.0 写出的）照旧通过。
+  - **`notes_build.py review`：** 生成的评审一定带 `depth`。片段给了就用片段的，没给就用 `derived_depth` 的结果，生成时就按 `check_depth` 检查。
+  - **新增 `notes_build.py repairs --no-wording`：** 用于快速档。每条 `edit` 类修改的 `proposed_wording` 记为 null；片段没给 `wording_withheld_reason` 时填入固定的一句（`Not written: this is a quick review. A standard review adds the wording and its fidelity audit.`）。不读 `--audits` 和 `--compare`。片段里给了 `proposed_wording` 的条目会被拒绝，并指出是哪条候选。
+  - **新增 `notes_build.py section-ends --journal J --index I --out FRAGMENT.json [--max-level N] [--mode fresh-prefix|bounded-request]`：** 生成固定的前缀检查点计划，写成一个 checks 片段。范围内每一节的最后一个正文块（文字或表格）各一个条目，编号 `S01`、`S02`……，锚点引文取该块结尾的若干词，保证在块内只出现一次，`reason` 写明是哪一节的结尾。`--max-level 2` 表示只有 `#` 和 `##` 标题才算一节的开头，适合小节很多的稿件。只需要开始回执；checks 已入库时拒绝；`--out` 已存在时拒绝。输出每个条目的编号、块号、标题和读者读到该处时已读的词数。编辑可以在 checks 入库前删掉片段里的条目，但要在范围说明里写清测了哪些节末。
+  - **报告多一行深度。** 位置在 "Not assessed" 一行之后：`Depth: quick. Not done at this depth: proposed wording and its fidelity audit; masked reading.`、`Depth: standard. Not done at this depth: masked reading.` 或 `Depth: deep.`。文字取自 `DEPTHS`。评审不带 `depth` 时没有这一行。
+  - **`server/orchestrator.py`：** `--masked-windows` 默认值由 4 改为 0，默认不跑遮罩读者，要跑须显式给出；`--masked-budget` 默认值由 250 改为 500。评审里写入 `derived_depth` 算出的深度。这是不兼容改动：依赖旧默认值的调用要补上 `--masked-windows 4`。
+  - **节末规则共用一处。** `review_packets.py` 新增 `heading_level`、`section_ends`、`closing_quote`。`evals/run.py` 原来自带的节末规则删除，改调 `section_ends`。
+  - **文档：** `SKILL.md` 的"选择任务和执行模式"一节加了深度表和升档办法；原来的 quick review 改称抽样评审（范围记录里的 `quick_review`），抽样说的是范围，深度另选；第 3、6、7 节相应修改。`staged-review.md` 新增 "Depth" 一节和字段表的一行；`workflow.md` 的"检查点设计"改为先讲固定计划；`output-contract.md`、`assets/review-report.md`、包内 README 同步更新。
+  - **没有测过的：** 快速档做一次评审要多长时间，没有量过。遮罩读者和前缀读者在测试集（`evals/`）上的对比没有跑。把遮罩阅读移出默认流程，依据是它的调用只能一个接一个地跑，决定了一次运行的时长；不是因为测出了两者效果上的差别。
+- **前缀读者批量并行（改造计划 R6）。** 以前每个前缀检查点要单独生成读者包、单独派发。现在一条命令派发计划里的全部前缀读者，同时跑几个。
+  - **新增 `dispatch_reader.py prefix-batch --events run/events --journal run/journal --index run/index.json --model MODEL [--jobs 4] [--only S01,S03]`**，另有各子命令共用的运行时选项。它读日志：checks 必须已入库，reconcile 必须还没入库，否则报错并说明是哪一种。"先把 checks 入库再派发读者"这条规则由此写进了命令。
+  - 派发的是已入库的 `checkpoint_plan` 里模式为 `fresh-prefix` 或 `bounded-request` 的条目，按计划顺序。读者画像取日志开始回执里的 `profile`。每个读者包恰好在该条目的锚点引文之后结束，所以引文要落在读者该停下的位置，并且在所在块里只出现一次。
+  - **先全部生成，再派发。** 所有读者包都生成成功之后才发第一个调用。有一条引文在块里出现多次或不在块里时，命令直接停下并指出是哪个计划条目，一个调用都不发。
+  - **并行。** 用线程池同时跑 `--jobs` 个（默认 4，至少 1）。一个条目失败（更正两次仍不合格、读写出错等）只把这一条标为失败，其余照常跑完。有条目失败时退出码为 1。
+  - **重跑不重复调用，也不覆盖文件。** 某个条目已有通过检查的观察、且保存的读者包与这次生成的相同时，标为 `kept`，不再调用。上次失败的条目用 `<编号>r1`、`<编号>r2`……作新标签重跑。两个条目不会用到同一个标签，计划编号像 `P03` 和 `P03b` 这样与更正标签相撞时也是如此。
+  - **输出。** 照常写 `summary.json`，调用按标签排序。另写 `<events>/prefix-batch.json`，每次运行整体重写：`journal`、`snapshot_id`，以及每个前缀条目一行（`plan_id`、`label`、`status`、`packet_path`、`observation_path`、`checkpoint_id`、`issue_count`、`outcome`）。`status` 是 `ok`、`kept`、`failed`；没被 `--only` 选中的条目沿用上次那一行，条件是那一行的读者包仍与当前计划条目生成的一致；不一致或从没跑过的记 `not_run`。这个文件是从各次调用的文件汇总出来的索引，可以重写；各次调用的文件仍然只写一次。
+  - **`notes_build.py reconcile`：** 检查点写成 `{id, plan_id, events_dir, limitation}` 时，如果该目录有 `prefix-batch.json`，且其中这个计划编号的状态是 `ok` 或 `kept`，读者包和观察的文件名取自那一行。
+  - **修了一个旧问题：** 单个 `prefix` 命令在更正一次后写出的是 `P01.packet.json` 和 `P01b.observation.json`，而上面的简写只找 `P01.observation.json`，找不到就报缺文件。现在依次找 `<标签>`、`<标签>b`、`<标签>c` 的观察文件。
+  - **`review_packets.py` 新增 `anchor_stop_offset(block, quote)`：** 返回引文结束处在全文中的位置；引文不在块里或出现多次时报错，提示把引文加长到只指向一处。`server/orchestrator.py` 原来自带的 `anchor_offsets` 删除，改调它；编辑模型给出的计划锚点在块里出现多次时，现在会被退回重写。
+  - **线程安全。** claude、codex、http 三个运行时的 `call` 只用调用内的局部变量和构造时定下的只读设置。`Events.dispatch` 里各线程共用的只有调用列表，已加锁。同一秒内重跑时，`summary-<时间>.json` 不再重名。
+  - `prefix` 命令照旧可用，派发单个读者包。
+- **遮罩窗口放宽（改造计划 R7）。** 遮罩阅读改为只在深入档做（见 R5），同时把每个窗口放大，减少调用次数。
+  - `extract_pdf.py case` 的 `--budget` 由必填改为可选，默认 `DEFAULT_WINDOW_WORDS = 500` 词，约 650 个 token。建议范围是每窗 500 到 1000 个 token，约 400 到 750 词。`server/orchestrator.py` 的 `--masked-budget` 默认值用同一个常量。
+  - `assets/prompts/masked.txt` 在讲 `carry_memory` 的一段加了一句要求：每条笔记要脱离原文也能读懂，写明代词和 "the X" 指什么，缩写在笔记里第一次出现时写出全称。笔记上限不变，`memory_limit` 仍是 180。读者包自带的 `instructions` 字段没有改，以前保存的读者包照旧能重放。
+  - `masked-reading.md`：开头写明只用于深入档、须由使用者提出；窗口一段改为每窗约 400 到 750 词；示例命令去掉 `--budget 250`。
+  - **没有测过的：** 新旧窗口大小在测试集（`evals/`）上的对比没有跑，窗口放宽后读者的发现有没有变化，目前不知道。放宽后一次深入档运行能省多少时间也没有量过。
+
 ## 0.21.0（2026-11-16）
 
 - **报告：三级严重程度，最多十条的优先清单，每条问题只出现一次（改造计划 R4）。** 以前的报告太长，小问题太多。这次把报告的形状交给脚本生成和检查，不再靠提示词要求模型。只对 schema 7 日志生效。R4b、R2、R3、R4 四项的新要求都并入还没发布的 schema 7，不另升版本：用此前未发布版本写出的 schema 7 日志在新规则下不能重放，schema 4 到 6 的日志不受影响。

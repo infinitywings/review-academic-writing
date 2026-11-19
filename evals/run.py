@@ -131,10 +131,8 @@ def run_audit(options: argparse.Namespace) -> dict[str, Any]:
 
 
 def checkpoints(index: dict[str, Any]) -> list[str]:
-    """The last block of every section: a body block followed by a heading or by the end of the text."""
-    blocks = index["blocks"]
-    heading = [b["text"].lstrip().startswith("#") for b in blocks]
-    return [b["block_id"] for n, b in enumerate(blocks) if not heading[n] and (n + 1 == len(blocks) or heading[n + 1])]
+    """The last block of every section, by the rule the skill's fixed prefix schedule uses (review_packets.section_ends)."""
+    return [row["block_id"] for row in rp.section_ends(index)]
 
 
 def prefix_one(repeat: int, number: int, block: str, home: Path, options: argparse.Namespace) -> dict[str, Any]:

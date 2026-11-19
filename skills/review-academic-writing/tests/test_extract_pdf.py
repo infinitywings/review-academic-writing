@@ -624,6 +624,25 @@ class ExtractCommandTests(unittest.TestCase):
         self.assertEqual([b for w in case["windows"] for b in w], [b["id"] for b in case["blocks"]])
         self.assertEqual(json.loads(out)["unlisted_references"], ["Figure2", "Table1"])
 
+    def test_case_without_a_budget_uses_the_default_window(self):
+        self.assertEqual(ex.DEFAULT_WINDOW_WORDS, 500)
+        source = self.root / "long.md"
+        source.write_text("\n\n".join(" ".join(f"reading{block}n{word}" for word in range(120)) for block in range(1, 7)) + "\n")
+        clean = self.root / "clean.md"
+        code, out, err = self.run_main(["postprocess", "--input", str(source), "--out", str(clean)])
+        self.assertEqual(code, 0, err)
+        pages = json.loads(out)["pages"]
+        index_path = self.root / "index.json"
+        rp.write_json_atomic(index_path, rp.build_index(clean.read_text()))
+        windows = {}
+        for name, budget in (("default", []), ("narrow", ["--budget", "250"])):
+            path = self.root / f"{name}.json"
+            code, out, err = self.run_main(["case", "--index", str(index_path), "--pages", pages, *budget, "--asset-policy", "strict-prefix", "--out", str(path)])
+            self.assertEqual(code, 0, err)
+            windows[name] = json.loads(path.read_text())["windows"]
+        self.assertEqual(windows["default"], [["B0001", "B0002", "B0003", "B0004"], ["B0005", "B0006"]])
+        self.assertEqual(windows["narrow"], [["B0001", "B0002"], ["B0003", "B0004"], ["B0005", "B0006"]])
+
     def test_case_include_through_the_cli(self):
         source = self.root / "mineru.md"
         source.write_text(INCLUDE_MD)

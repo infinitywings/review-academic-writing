@@ -58,6 +58,9 @@ LIST_ITEM = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+")
 ASSET_REFERENCE = re.compile(r"\b(Fig(?:ure|s)?\.?|Tables?)\s*~?\s*(\d{1,3})\b", re.I)
 HEADER_WORD_LIMIT = 12
 HEADER_REPEAT_PAGES = 3
+# Words per window of a masked case when --budget is not given: about 650 tokens, inside the 500 to 1,000 tokens
+# (roughly 400 to 750 words) a display should hold.
+DEFAULT_WINDOW_WORDS = 500
 
 
 class ExtractError(ValueError):
@@ -1062,7 +1065,7 @@ def _parser() -> argparse.ArgumentParser:
     case = commands.add_parser("case", help="Build a masked_reader case.json from an index and the page sidecar.")
     case.add_argument("--index", required=True)
     case.add_argument("--pages", required=True, help="Page sidecar from postprocess.")
-    case.add_argument("--budget", required=True, type=int, help="Approximate words per window.")
+    case.add_argument("--budget", type=int, default=DEFAULT_WINDOW_WORDS, help=f"Approximate words per window (default {DEFAULT_WINDOW_WORDS}, about 650 tokens; 400 to 750 words keeps a window within 500 to 1,000 tokens).")
     case.add_argument("--asset-policy", required=True, choices=["strict-prefix", "reference-jump"])
     case.add_argument("--assets", help="JSON list of {id: Figure1|Table2, page, path, caption}.")
     case.add_argument("--include", help="Only these blocks: a scope.json (its included_block_ids), a JSON array of block ids, or a text file with one id per line. Windows and asset referenced_by/encountered_by are filtered with them.")
