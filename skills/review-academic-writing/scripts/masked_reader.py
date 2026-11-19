@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 import uuid
@@ -82,6 +83,7 @@ ASSET_POLICIES = ("strict-prefix", "reference-jump")
 BASIS_KINDS = ("explicit", "inferred", "background")
 MEMORY_UNITS = ("words", "characters")
 NOTE_KINDS = ("established", "tentative", "open_question", "qualification")
+SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
 SUPPORT_KINDS = ("stated", "inferred", "background", "undetermined")
 
 
@@ -136,6 +138,49 @@ RECALL_RESPONSE_FORMAT = {
     "source_recognition": RECOGNITION_FORMAT,
 }
 RECALL_OUTCOMES = ("correct", "wrong", "idk")
+
+
+def sentences(text):
+    """The whole sentences of a text block: split after . ! or ? and the whitespace that follows, stripped, nonempty."""
+    return [piece.strip() for piece in SENTENCE_BREAK.split(text) if piece.strip()]
+
+
+def response_schema(packet, exposed):
+    """RESPONSE_FORMAT as a JSON Schema for a constrained decoder: the closed vocabularies, the source ids this event
+    exposes, the `since` values a note may carry, the carried notes that may be dropped, and the lookups the packet
+    allows. A quote from a text block is one of its whole sentences (or empty), so the decoder writes it byte for byte;
+    readers had written straight apostrophes for curly ones, and a frozen response may not be repaired afterwards.
+    Strings carry no length bounds (xgrammar would compile them without a backslash). validate_response stays the
+    authority (lineage, the memory budget)."""
+    def obj(properties, optional=()):
+        return {"type": "object", "properties": properties, "required": [k for k in properties if k not in optional], "additionalProperties": False}
+
+    def one_of(values):
+        return {"type": "string", "enum": sorted(values)}
+
+    text = {"type": "string"}
+    anchors = [one_of(exposed)]
+    for source, block in sorted(exposed.items()):
+        quote = text if block is None else one_of({""} | set(sentences(block)))
+        anchors.append(obj({"source_id": {"const": source}, "quote": quote}, optional=("quote",)))
+    anchor = {"anyOf": anchors}
+    carried = packet["carry_memory"]["notes"]
+    sources = set(exposed) | {source for note in carried for source in note["sources"]}
+    note = obj({"id": text, "kind": one_of(NOTE_KINDS), "text": text, "sources": {"type": "array", "items": one_of(sources), "minItems": 1},
+                "since": {"type": "integer", "enum": sorted({packet["sequence"]} | {note["since"] for note in carried})}})
+    dropped = {"type": "array", "items": obj({"id": one_of(n["id"] for n in carried), "reason": text}), "maxItems": len(carried)} if carried else {"type": "array", "maxItems": 0}
+    actions = [obj({"kind": {"const": "advance"}, "target": {"type": "null"}, "reason": text})]
+    if packet["mode"] == "window" and packet["available_lookup_ids"]:
+        actions.append(obj({"kind": {"const": "lookup"}, "target": one_of(packet["available_lookup_ids"]), "reason": text}))
+    return obj({
+        "understanding": text,
+        "understood": {"type": "array", "items": obj({"claim": text, "basis": one_of(BASIS_KINDS), "anchor": anchor})},
+        "uncertain": {"type": "array", "items": obj({"question": text, "needed_now": {"type": "boolean"}, "anchor": anchor})},
+        "resolved": {"type": "array", "items": obj({"question": text, "change": text})},
+        "next_action": {"anyOf": actions},
+        "carry_memory": obj({"gist": text, "notes": {"type": "array", "items": note}, "dropped": dropped}),
+        "source_recognition": obj({"recognized": {"type": "boolean"}, "description": text}),
+    })
 
 
 def empty_memory():

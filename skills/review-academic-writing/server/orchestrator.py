@@ -5,21 +5,27 @@ Python standard library only. The three core helpers (review_packets, review_ste
 masked_reader) and dispatch_reader are imported as libraries and left unchanged; every
 note they record is validated by them, never by this file. Order:
 
-  index -> scope -> start -> reading (batched) -> checks (batched) -> record
+  index -> scope -> start -> reading (batched) -> checks (batched; --checks-passes passes,
+     the later ones adding only candidates the earlier ones missed) -> record
   -> readers through dispatch_reader (prefix checkpoints from the plan; with
      --masked-windows N also one masked run over the first windows and one branch)
-  -> reconcile -> decisions -> repairs (every proposed wording audited; a failed audit is
+  -> reconcile -> independent challenge of every candidate through dispatch_reader
+     (challenge-input batches; every decision is bound to its challenge file)
+  -> decisions -> repairs (every proposed wording audited; a failed audit is
      re-prompted once, then converted to an author question) -> ready
   -> review.json (check-review, check-final) -> report.md (rendered by notes_build.py
      report from the checked review, without a model call) -> summary.json
 
 The reconcile, decisions, and repairs prompts can only run after 02-checks.receipt.json
 exists; the code asserts the file before dispatching any reader and before each of those
-prompts. When a helper rejects a response, the same step is re-prompted with the helper's
+prompts, and before the challenger is dispatched. When a helper rejects a response, the same step is re-prompted with the helper's
 exact message, at most three times; then the run stops with the journal intact and
-prints what to fix. Every editor call keeps its prompt, raw response, parsed JSON, and
+prints what to fix. Before a response reaches the helper, top-level fields that a re-prompt
+left out are carried from the previous attempt, and an anchor quote that differs from its
+block only in typography, whitespace, or LaTeX markup is replaced by the block's exact
+text; both are logged. Every editor call keeps its prompt, raw response, parsed JSON, and
 provenance under <out>/editor; reader and audit calls keep dispatch_reader's file sets
-under <out>/readers and <out>/audits. The API key is read from the environment variable
+under <out>/readers, <out>/masked, <out>/challenges, and <out>/audits. The API key is read from the environment variable
 the config names and is never written to any file.
 """
 from __future__ import annotations
@@ -50,6 +56,7 @@ import masked_reader as mr  # noqa: E402
 import notes_build as nb  # noqa: E402
 import review_packets as rp  # noqa: E402
 import review_steps as rs  # noqa: E402
+import schemas  # noqa: E402
 
 STEPS = ("scope", "reading", "checks", "reconcile", "decisions", "repairs", "review", "report")
 ATTEMPT_SUFFIXES = ("", "-b", "-c", "-d")  # one prompt plus at most three re-prompts
@@ -148,6 +155,14 @@ def require(condition: bool, message: str) -> None:
         raise Rejected(message)
 
 
+def require_array(response: dict[str, Any], key: str) -> None:
+    # Told only "must be an array", Flash-Next left the field out again on every re-prompt; naming the omission and
+    # the empty answer got it filled in three replays of four.
+    if key not in response:
+        raise Rejected(f"{key} is missing; give it as an array, [] when there are none.")
+    require(isinstance(response[key], list), f"{key} must be an array.")
+
+
 def helper_message(exc: BaseException) -> str:
     return f"The helper rejected it: {exc}"
 
@@ -171,6 +186,32 @@ def dedupe_anchors(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def canonical_anchors(value: Any, blocks: dict[str, dict[str, Any]]) -> tuple[Any, list[dict[str, str]]]:
+    """A copy of a parsed response in which every inexact anchor quote that names one span of its block is that span's exact text, and the rewrites made.
+
+    An anchor is any object with string block_id and quote. Models write straight quotes for curly ones and repair
+    extraction spacing ("34- layer"), while the helpers demand exact substrings. A quote that is already exact, or that
+    folds to no span or to several, is left for the helper to judge.
+    """
+    rewrites: list[dict[str, str]] = []
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        copy = {key: walk(item) for key, item in node.items()}
+        block_id, quote = node.get("block_id"), node.get("quote")
+        if isinstance(block_id, str) and isinstance(quote, str) and block_id in blocks and quote not in blocks[block_id]["text"]:
+            exact = dr.block_span(blocks[block_id]["text"], quote)
+            if exact is not None:
+                copy["quote"] = exact
+                rewrites.append({"block_id": block_id, "quote": quote, "replacement": exact})
+        return copy
+
+    return walk(value), rewrites
+
+
 class Run:
     """One orchestrated review: directories, options, log, and the editor client."""
 
@@ -186,6 +227,7 @@ class Run:
         self.readers = self.out / "readers"
         self.audits = self.out / "audits"
         self.masked = self.out / "masked"
+        self.challenges = self.out / "challenges"
         runtime = llm.EditorRuntime(self.config, None, None)  # validates the config and the key variable before anything is written
         self.out.mkdir(parents=True)
         self.log_path = self.out / "log.jsonl"
@@ -195,6 +237,7 @@ class Run:
         self.reader_calls: list[dict[str, Any]] = []
         self.audit_rows: list[dict[str, Any]] = []
         self.retries = 0
+        self.anchors_canonicalized = 0
         self.index: dict[str, Any] = {}
         self.blocks: dict[str, dict[str, Any]] = {}
         self.profile: dict[str, Any] = {}
@@ -208,6 +251,9 @@ class Run:
         self.branch_summary: dict[str, Any] | None = None
         self.converted: list[str] = []
         self.withheld: list[str] = []
+        self.challenged: dict[str, dict[str, Any]] = {}  # candidate id -> its challenge entry and file, when every batch was answered
+        self.no_challenge_reason: str | None = None
+        self.support: dict[str, int] = {}
 
     # ------------------------------------------------------------ bookkeeping
 
@@ -233,18 +279,41 @@ class Run:
 
     # ------------------------------------------------------------ editor calls with corrections
 
-    def ask(self, step: str, label: str, values: dict[str, Any], accept: Callable[[Any, llm.Call], Any]) -> Any:
+    def effective_response(self, step: str, call: llm.Call, previous: dict[str, Any] | None) -> Any:
+        """The response the helpers judge, which also becomes call.parsed; <label>.response.json keeps the model's own.
+
+        A re-prompted model may return only the top-level fields it changed, so the others are carried from the
+        previous attempt's effective response (the newest value of each field wins). Then anchors are canonicalized.
+        """
+        response = call.parsed
+        if isinstance(response, dict) and previous is not None:
+            carried = [key for key in previous if key not in response]
+            if carried:
+                response = {**previous, **response}
+                self.log("fields_carried", step=step, label=call.label, fields=carried)
+        response, rewrites = canonical_anchors(response, self.blocks)
+        for rewrite in rewrites:
+            self.log("anchor_canonicalized", step=step, label=call.label, **rewrite)
+        self.anchors_canonicalized += len(rewrites)
+        call.parsed = response
+        return response
+
+    def ask(self, step: str, label: str, values: dict[str, Any], accept: Callable[[Any, llm.Call], Any], schema: dict[str, Any] | None = None) -> Any:
         history: list[str] = []
+        previous: dict[str, Any] | None = None
         for number, suffix in enumerate(ATTEMPT_SUFFIXES):
             prompt = render(step, values)
             if history:
                 prompt = with_correction(prompt, history)
-            call = self.client.call(label + suffix, prompt)
+            call = self.client.call(label + suffix, prompt, schema)
             if call.parsed is None:
                 message = f"The response was not one JSON object ({call.parse_error})."
             else:
+                response = self.effective_response(step, call, previous)
+                if isinstance(response, dict):
+                    previous = response
                 try:
-                    value = accept(call.parsed, call)
+                    value = accept(response, call)
                     call.status = "ok"
                     self.log("editor_call", step=step, label=call.label, status="ok", attempt=number + 1)
                     return value
@@ -290,7 +359,7 @@ class Run:
             except rp.ReviewDataError as exc:
                 raise Rejected(helper_message(exc)) from exc
 
-        scope = self.ask("scope", "00-scope", values, accept)
+        scope = self.ask("scope", "00-scope", values, accept, schemas.scope(self.args.task, list(self.blocks)))
         self.write_json(self.out / "scope.json", scope)
         try:
             rs.start_run(self.index, self.profile, scope, self.journal)
@@ -336,7 +405,8 @@ class Run:
                                 "blocks": self.block_rows(batch), "outline_of_all_included_blocks": self.outline()}}
 
             def accept(parsed: Any, call: llm.Call, batch: list[str] = batch) -> list[dict[str, Any]]:
-                require(isinstance(parsed, dict) and isinstance(parsed.get("paragraphs"), list), "The response must be an object with a paragraphs array.")
+                require(isinstance(parsed, dict), "The response must be one JSON object.")
+                require_array(parsed, "paragraphs")
                 require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
                 rows = {}
                 for row in parsed["paragraphs"]:
@@ -354,7 +424,7 @@ class Run:
                 return [rows[i] for i in batch]
 
             label = "01-reading" + (f"-batch{number:02d}" if len(batches) > 1 else "")
-            for row in self.ask("reading", label, values, accept):
+            for row in self.ask("reading", label, values, accept, schemas.reading(batch)):
                 accepted[row["anchor"]["block_id"]] = row
             summaries.append(call_summary(self.client.calls[-1]))
             self.say(f"reading: batch {number}/{len(batches)} accepted")
@@ -404,7 +474,7 @@ class Run:
             def accept(parsed: Any, call: llm.Call, batch: list[str] = batch, remaining: int = remaining) -> dict[str, Any]:
                 require(isinstance(parsed, dict), "The response must be one JSON object.")
                 for key in ("concepts", "passages", "checkpoint_plan", "candidates", "no_candidate"):
-                    require(isinstance(parsed.get(key), list), f"{key} must be an array.")
+                    require_array(parsed, key)
                 require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
                 require(len(parsed["checkpoint_plan"]) <= remaining, f"checkpoint_plan may hold at most {remaining} more entries in this batch.")
                 for row in parsed["checkpoint_plan"]:
@@ -451,7 +521,9 @@ class Run:
                         "reason": provisional.get("no_concepts_reason"), "branch_question": question}
 
             label = "02-checks" + (f"-batch{number:02d}" if len(batches) > 1 else "")
-            result = self.ask("checks", label, values, accept)
+            open_questions = {p["anchor"]["block_id"]: p["open_questions"] for p in open_questions_of(batch)}
+            schema = schemas.checks(batch, self.included, list(self.blocks), remaining, open_questions, masked_ids or self.included)
+            result = self.ask("checks", label, values, accept, schema)
             merged["concepts"] += result["concepts"]
             merged["checkpoint_plan"] += result["plan"]
             merged["candidates"] += result["candidates"]
@@ -464,19 +536,79 @@ class Run:
                 self.branch_question = result["branch_question"]
             summaries.append(call_summary(self.client.calls[-1]))
             self.say(f"checks: batch {number}/{len(batches)} accepted")
-        checks = {"snapshot_id": self.index["snapshot_id"], "summary": " ".join(summaries), "concepts": merged["concepts"]}
-        if not merged["concepts"]:
-            checks["no_concepts_reason"] = " ".join(merged["reasons"]) or "No concept record was relevant."
-        checks.update({"passages": [merged["passages"][i] for i in self.included], "checkpoint_plan": merged["checkpoint_plan"], "candidates": merged["candidates"], "no_candidate": merged["no_candidate"]})
+        def notes_with(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+            checks = {"snapshot_id": self.index["snapshot_id"], "summary": " ".join(summaries), "concepts": merged["concepts"]}
+            if not merged["concepts"]:
+                checks["no_concepts_reason"] = " ".join(merged["reasons"]) or "No concept record was relevant."
+            checks.update({"passages": [merged["passages"][i] for i in self.included], "checkpoint_plan": merged["checkpoint_plan"], "candidates": candidates, "no_candidate": merged["no_candidate"]})
+            return checks
+
+        found = [len(merged["candidates"])]
+        skipped = self.recheck(batches, paraphrases, merged, notes_with, start, notes["reading"], found)
+        checks = notes_with(merged["candidates"])
         try:
             self.record("checks", checks, self.out / "checks.json")
         except rp.ReviewDataError as exc:
             raise StopRun("checks", helper_message(exc), "Each batch passed validation but the merged notes did not; inspect checks.json.") from exc
         if self.branch_question:
             self.write_json(self.out / "branch-question.json", {"id": "Q01", "question": self.branch_question["question"], "selected_with_full_text": True, "reason": self.branch_question["reason"]})
-        self.stages["checks"] = {"status": "recorded", "batches": len(batches), "concepts": len(merged["concepts"]), "candidates": len(merged["candidates"]),
-                                 "checkpoint_plan": len(merged["checkpoint_plan"]), "branch_question": self.branch_question is not None}
+        self.stages["checks"] = {"status": "recorded", "batches": len(batches), "passes": self.args.checks_passes, "candidates_by_pass": found, "rechecks_skipped": skipped,
+                                 "concepts": len(merged["concepts"]), "candidates": len(merged["candidates"]), "checkpoint_plan": len(merged["checkpoint_plan"]),
+                                 "branch_question": self.branch_question is not None}
         self.say(f"checks: recorded ({len(merged['candidates'])} candidates, {len(merged['checkpoint_plan'])} planned checkpoints)")
+
+    def recheck(self, batches: list[list[str]], paraphrases: list[dict[str, Any]], merged: dict[str, Any], notes_with: Callable[[list[dict[str, Any]]], dict[str, Any]],
+                start: dict[str, Any], reading: dict[str, Any], found: list[int]) -> list[str]:
+        """Passes 2.. of the checks stage: each batch again, asking only for the candidates the earlier passes missed.
+
+        The same prompt at temperature 0 would repeat itself, and two single-pass runs of one proposal (11 and 5
+        candidates) raised no problem in common, so later passes see every candidate recorded so far. New candidates
+        continue the numbering; a duplicate is left for the decisions stage to merge. A batch that fails every attempt
+        only loses its additions, so it is skipped (recheck_skipped) and the run goes on. Returns the skipped labels and
+        appends each pass's count of new candidates to `found`.
+        """
+        skipped: list[str] = []
+        for pass_number in range(2, self.args.checks_passes + 1):
+            before = len(merged["candidates"])
+            for number, batch in enumerate(batches, 1):
+                values = {"batch": number, "batches": len(batches), "pass": pass_number, "passes": self.args.checks_passes, "block_range": f"{batch[0]} to {batch[-1]}",
+                          "input": {"snapshot_id": self.index["snapshot_id"], "pass": pass_number, "reader_profile": self.profile, "batch_block_ids": batch,
+                                    "blocks": self.block_rows(batch), "paraphrases_of_all_included_blocks": paraphrases,
+                                    "already_recorded": {"concepts": [{"concept_id": c["concept_id"], "term": c["term"]} for c in merged["concepts"]],
+                                                         "candidates": [{"id": c["id"], "anchor": c["anchor"], "question": c["question"]} for c in merged["candidates"]]}}}
+
+                def accept(parsed: Any, call: llm.Call, batch: list[str] = batch) -> list[dict[str, Any]]:
+                    require(isinstance(parsed, dict), "The response must be one JSON object.")
+                    require_array(parsed, "candidates")
+                    require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
+                    candidates = []
+                    for n, row in enumerate(parsed["candidates"]):
+                        require(isinstance(row, dict), "Each candidate must be an object.")
+                        require(isinstance(row.get("anchor"), dict) and row["anchor"].get("block_id") in batch, f"Each candidate's anchor must be in this batch ({', '.join(batch)}).")
+                        candidates.append({**row, "id": f"C{len(merged['candidates']) + n + 1:02d}"})
+                    every = merged["candidates"] + candidates
+                    try:
+                        rs.validate_notes("checks", notes_with(every), start, self.index, {})
+                    except rp.ReviewDataError as exc:
+                        raise Rejected(helper_message(exc)) from exc
+                    try:
+                        rs.open_question_accounting({"no_candidate": merged["no_candidate"]}, reading, rs.by_id(every, "id", "candidates"))
+                    except rp.ReviewDataError as exc:
+                        raise Rejected(helper_message(exc) + " Ask the question in your own words: the first pass already accounted for the open questions of the reading notes.") from exc
+                    return candidates
+
+                label = f"02-checks-pass{pass_number}" + (f"-batch{number:02d}" if len(batches) > 1 else "")
+                try:
+                    merged["candidates"] += self.ask("recheck", label, values, accept, schemas.recheck(batch, list(self.blocks)))
+                except StopRun as exc:
+                    # A recheck only adds candidates; losing one batch's additions must not cost the first pass.
+                    skipped.append(label)
+                    self.log("recheck_skipped", label=label, message=str(exc))
+                    self.say(f"checks: pass {pass_number}/{self.args.checks_passes} batch {number}/{len(batches)} skipped after every attempt failed")
+                    continue
+                self.say(f"checks: pass {pass_number}/{self.args.checks_passes} batch {number}/{len(batches)} accepted")
+            found.append(len(merged["candidates"]) - before)
+        return skipped
 
     # ------------------------------------------------------------ 3. readers through dispatch_reader
 
@@ -486,7 +618,7 @@ class Run:
         self.log("reader_dispatch", kind=kind, argv=full)
         args = dr._parser().parse_args(full)
         events = dr.Events(Path(args.events), dr.PROMPTS_DIR)
-        handler = {"prefix": dr.run_prefix, "masked": dr.run_masked, "branch": dr.run_branch, "audit": dr.run_audit}[kind]
+        handler = {"prefix": dr.run_prefix, "masked": dr.run_masked, "branch": dr.run_branch, "audit": dr.run_audit, "challenge": dr.run_challenge}[kind]
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
@@ -589,7 +721,7 @@ class Run:
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
             require(isinstance(parsed, dict), "The response must be one JSON object.")
             for key in ("checkpoints", "branches", "observations", "candidates"):
-                require(isinstance(parsed.get(key), list), f"{key} must be an array.")
+                require_array(parsed, key)
             require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
             returned = {}
             for row in parsed["checkpoints"]:
@@ -623,32 +755,94 @@ class Run:
                 raise Rejected(helper_message(exc)) from exc
             return reconcile
 
-        reconcile = self.ask("reconcile", "03-reconcile", values, accept)
+        schema = schemas.reconcile(self.included, list(self.blocks), [row["id"] for row in prefix_rows], [row["sequence"] for row in masked["events"]] if masked else [],
+                                   [branch["id"]] if branch else [], rs.string_leaves(self.profile))
+        reconcile = self.ask("reconcile", "03-reconcile", values, accept, schema)
         self.stages["reconcile"] = {"status": "recorded", "checkpoints": len(reconcile["checkpoints"]), "branches": len(reconcile["branches"]),
                                     "observations": len(reconcile["observations"]), "candidates_added": len(reconcile["candidates"])}
         self.say(f"reconcile: recorded ({len(reconcile['observations'])} observations, {len(reconcile['candidates'])} candidates added)")
+
+    def step_challenge(self) -> None:
+        """Put every candidate to an independent challenger before the decisions stage (staged-review.md, section 5).
+
+        review_steps.challenge_inputs writes the challenger's input files from the recorded candidates (id, anchor, and
+        the reader's question; none of the editor's reasons), --challenge-batch candidates each, and dispatch_reader.py
+        challenge runs each file with the reader config: a fresh call that sees the manuscript and the reader profile.
+        When every batch is answered, each decision is bound to its candidate's challenge file. When a batch still fails
+        after dispatch_reader's corrections, no candidate is challenged and the decisions notes say why in
+        no_challenge_reason, since a schema 7 journal records every candidate's challenge or none; the run goes on, as
+        it does when a reader fails.
+        """
+        self.assert_checks_frozen("challenge")
+        try:
+            prepared = rs.challenge_inputs(self.journal, self.index, self.challenges / "inputs", self.args.challenge_batch)
+        except rp.ReviewDataError as exc:
+            raise StopRun("challenge", helper_message(exc), "The candidates could not be prepared for the challenger; inspect the journal.") from exc
+        self.support = {row["candidate_id"]: row["reader_sources"] for row in prepared["support"]}
+        answered: list[Path] = []
+        failed: list[str] = []
+        for number, input_path in enumerate(prepared["inputs"], 1):
+            label = f"CH{number:02d}"
+            out_path = self.challenges / f"{label}.challenge.json"
+            summary = self.dispatch("challenge", ["--events", str(self.challenges / label), "--input", input_path, "--index", str(self.out / "index.json"),
+                                                  "--profile", str(self.out / "reader-profile.json"), "--out", str(out_path), "--label", label])
+            if summary["ok"] and out_path.is_file():
+                answered.append(out_path)
+            else:
+                failed.append(label)
+            self.say(f"challenge {label}: {summary['outcome']}")
+        if failed:
+            self.no_challenge_reason = (f"The independent challenger did not return a valid answer for {', '.join(failed)} after dispatch_reader.py's corrections "
+                                        f"(see {self.challenges}); a schema 7 journal records a challenge for every candidate or for none, so none is recorded.")
+            self.log("challenge_failed", failed=failed)
+        else:
+            for path in answered:
+                for entry in rp.load_json(path)["challenges"]:
+                    self.challenged[entry["candidate_id"]] = {**entry, "challenge_path": str(path), "disputed": rp.challenge_disputes(entry)}
+        verdicts = {verdict: sum(1 for e in self.challenged.values() if e["verdict"] == verdict) for verdict in sorted(rp.CHALLENGE_VERDICTS)}
+        status = "failed" if failed else ("challenged" if prepared["inputs"] else "no candidates")
+        self.stages["challenge"] = {"status": status, "batches": len(prepared["inputs"]), "failed": failed, "candidates": prepared["candidates"],
+                                    "verdicts": verdicts, "disputed": [key for key, e in self.challenged.items() if e["disputed"]]}
+        self.log("challenge_done", status=status, batches=len(prepared["inputs"]), failed=failed)
+        self.say(f"challenge: {status} ({prepared['candidates']} candidates in {len(prepared['inputs'])} batch(es))")
 
     def step_decisions(self) -> None:
         self.assert_checks_frozen("decisions")
         _start, notes = self.start_and_notes()
         candidates = [{**c, "stage": "checks"} for c in notes["checks"]["candidates"]] + [{**c, "stage": "reconcile"} for c in notes["reconcile"]["candidates"]]
+        challenges = None
+        if self.no_challenge_reason is None:
+            challenges = [{k: self.challenged[c["id"]][k] for k in ("candidate_id", "verdict", "answer", "answer_position", "duplicate_of", "reason", "disputed")} for c in candidates]
         values = {"input": {"snapshot_id": self.index["snapshot_id"], "candidates": candidates, "observations": notes["reconcile"]["observations"],
+                            "support": [{"candidate_id": c["id"], "reader_sources": self.support.get(c["id"], 0)} for c in candidates],
+                            "challenges": challenges, "no_challenge_reason": self.no_challenge_reason,
                             "paraphrases": [{"block_id": p["anchor"]["block_id"], "paraphrase": p["paraphrase"]} for p in notes["reading"]["paragraphs"]],
                             "blocks": self.block_rows(self.included)}}
 
+        def bind(row: Any) -> Any:
+            """The controller, not the model, names each decision's challenge file."""
+            if not isinstance(row, dict):
+                return row
+            row = {k: v for k, v in row.items() if k != "challenge_path"}
+            if row.get("candidate_id") in self.challenged:
+                row["challenge_path"] = self.challenged[row["candidate_id"]]["challenge_path"]
+            return row
+
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
-            require(isinstance(parsed, dict) and isinstance(parsed.get("decisions"), list), "The response must be an object with a decisions array.")
+            require(isinstance(parsed, dict), "The response must be one JSON object.")
+            require_array(parsed, "decisions")
             require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
-            # The orchestrator does not run the independent challenge yet (dispatch_reader.py challenge); a schema 7 journal must say so.
-            decisions = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"], "decisions": parsed["decisions"],
-                         "no_challenge_reason": "server/orchestrator.py does not run the independent challenge yet"}
+            decisions = {"snapshot_id": self.index["snapshot_id"], "summary": parsed["summary"]}
+            if self.no_challenge_reason is not None:
+                decisions["no_challenge_reason"] = self.no_challenge_reason
+            decisions["decisions"] = [bind(row) for row in parsed["decisions"]]
             try:
                 self.record("decisions", decisions, self.out / "decisions.json")
             except rp.ReviewDataError as exc:
                 raise Rejected(helper_message(exc)) from exc
             return decisions
 
-        decisions = self.ask("decisions", "04-decisions", values, accept)
+        decisions = self.ask("decisions", "04-decisions", values, accept, schemas.decisions([c["id"] for c in candidates], list(self.blocks), challenges is not None))
         counts = {status: sum(1 for d in decisions["decisions"] if d["status"] == status) for status in ("accepted", "needs_author", "rejected", "merged")}
         self.stages["decisions"] = {"status": "recorded", **counts}
         self.say("decisions: recorded (" + ", ".join(f"{v} {k}" for k, v in counts.items()) + ")")
@@ -664,7 +858,8 @@ class Run:
 
     def validate_repairs(self, parsed: Any, wanted: list[str], start: dict[str, Any], notes: dict[str, Any], others: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
         """Check a repairs response for the candidates in `wanted`; `others` holds already accepted rows for the rest."""
-        require(isinstance(parsed, dict) and isinstance(parsed.get("repairs"), list), "The response must be an object with a repairs array.")
+        require(isinstance(parsed, dict), "The response must be one JSON object.")
+        require_array(parsed, "repairs")
         require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
         rows: dict[str, dict[str, Any]] = {}
         for row in parsed["repairs"]:
@@ -747,7 +942,7 @@ class Run:
         retained = self.retained()
         wanted = [r["decision"]["candidate_id"] for r in retained]
         base_input = {"snapshot_id": self.index["snapshot_id"], "retained": retained, "blocks": self.block_rows(self.included)}
-        rows = self.ask("repairs", "05-repairs", {"input": base_input}, lambda parsed, call: self.validate_repairs(parsed, wanted, start, notes))
+        rows = self.ask("repairs", "05-repairs", {"input": base_input}, lambda parsed, call: self.validate_repairs(parsed, wanted, start, notes), schemas.repairs(wanted, list(self.blocks)))
         summary = self.client.calls[-1].parsed["summary"]
         audits: dict[str, dict[str, Any]] = {}
         compared: dict[str, dict[str, Any]] = {}
@@ -767,7 +962,8 @@ class Run:
                 retry_input["audit_feedback"] = feedback
             if edit_feedback:
                 retry_input["edit_feedback"] = edit_feedback
-            revised = self.ask("repairs", "05-repairs-audit", {"input": retry_input}, lambda parsed, call: self.validate_repairs(parsed, retry, start, notes, rows))
+            revised = self.ask("repairs", "05-repairs-audit", {"input": retry_input}, lambda parsed, call: self.validate_repairs(parsed, retry, start, notes, rows),
+                               schemas.repairs(retry, list(self.blocks)))
             for key in retry:
                 rows[key] = revised[key]
                 if rows[key].get("proposed_wording") is not None:
@@ -834,7 +1030,8 @@ class Run:
         support = rs.candidate_support(notes, self.blocks, self.index["snapshot_id"])
 
         def accept(parsed: Any, call: llm.Call) -> dict[str, Any]:
-            require(isinstance(parsed, dict) and isinstance(parsed.get("issue_order"), list), "The response must be an object with issue_order.")
+            require(isinstance(parsed, dict), "The response must be one JSON object.")
+            require_array(parsed, "issue_order")
             require(isinstance(parsed.get("summary"), str) and parsed["summary"].strip(), "summary must be a nonempty string.")
             require(isinstance(parsed.get("scope_note"), str) and parsed["scope_note"].strip(), "scope_note must be a nonempty string: what was read and what was left out.")
             require(sorted(parsed["issue_order"]) == sorted(repairs) and len(parsed["issue_order"]) == len(repairs), f"issue_order must list exactly {', '.join(repairs)} once each.")
@@ -858,7 +1055,7 @@ class Run:
                 raise Rejected(helper_message(exc)) from exc
             return review
 
-        review = self.ask("review", "06-review", values, accept)
+        review = self.ask("review", "06-review", values, accept, schemas.review(list(repairs)))
         self.write_json(self.out / "review.json", review)
         self.stages["review"] = {"status": "checked", "issues": len(review["issues"])}
         self.log("review_checked", issues=len(review["issues"]))
@@ -879,14 +1076,15 @@ class Run:
     def statistics(self) -> dict[str, Any]:
         editor = self.client.totals()
         readers = {"calls": len(self.reader_calls), "seconds": round(sum(r["seconds"] or 0 for r in self.reader_calls), 1), "cost_usd": round(sum(r["cost_usd"] or 0 for r in self.reader_calls), 5),
-                   "by_kind": {kind: sum(1 for r in self.reader_calls if r["kind"] == kind) for kind in ("prefix", "masked", "branch", "audit")}}
-        return {"editor": editor, "readers": readers, "calls": editor["calls"] + readers["calls"], "seconds": round(time.monotonic() - self.started, 1), "retries": self.retries}
+                   "by_kind": {kind: sum(1 for r in self.reader_calls if r["kind"] == kind) for kind in ("prefix", "masked", "branch", "challenge", "audit")}}
+        return {"editor": editor, "readers": readers, "calls": editor["calls"] + readers["calls"], "seconds": round(time.monotonic() - self.started, 1), "retries": self.retries,
+                "anchors_canonicalized": self.anchors_canonicalized}
 
     def write_summary(self, ok: bool, outcome: str, failure: dict[str, Any] | None = None) -> dict[str, Any]:
         editor_config, reader_config = llm.load_config(self.config), llm.load_config(self.reader_config)
         summary = {"ok": ok, "outcome": outcome, "manuscript": str(self.manuscript), "snapshot_id": self.index.get("snapshot_id"), "out": str(self.out),
                    "editor": {"base_url": editor_config.get("base_url"), "model": editor_config.get("model")}, "readers_config": {"base_url": reader_config.get("base_url"), "model": reader_config.get("model")},
-                   "options": {"batch_blocks": self.args.batch_blocks, "prefix_checkpoints": self.args.prefix_checkpoints, "masked_windows": self.args.masked_windows, "masked_budget": self.args.masked_budget},
+                   "options": {"batch_blocks": self.args.batch_blocks, "checks_passes": self.args.checks_passes, "challenge_batch": self.args.challenge_batch, "prefix_checkpoints": self.args.prefix_checkpoints, "masked_windows": self.args.masked_windows, "masked_budget": self.args.masked_budget},
                    "stages": self.stages, "editor_calls": [c.row() for c in self.client.calls], "reader_calls": self.reader_calls, "audits": self.audit_rows,
                    "totals": self.statistics(), "failure": failure, "recorded_at": utc_now()}
         self.write_json(self.out / "summary.json", summary)
@@ -900,6 +1098,7 @@ class Run:
             self.step_checks()
             self.step_readers()
             self.step_reconcile()
+            self.step_challenge()
             self.step_decisions()
             self.step_repairs()
             self.step_ready()
@@ -937,14 +1136,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--masked-budget", type=int, default=ep.DEFAULT_WINDOW_WORDS, help=f"Approximate words per masked window (default {ep.DEFAULT_WINDOW_WORDS}).")
     run.add_argument("--max-events", type=int, default=40, help="Maximum masked reader calls, corrections included (default 40).")
     run.add_argument("--prefix-checkpoints", type=int, default=3, help="Maximum prefix checkpoints the checks plan may request (default 3).")
-    run.add_argument("--batch-blocks", type=int, default=40, help="Blocks per reading and checks prompt (default 40).")
+    run.add_argument("--batch-blocks", type=int, default=20, help="Blocks per reading and checks prompt (default 20).")
+    run.add_argument("--checks-passes", type=int, default=3, help="Passes of the checks stage; passes after the first only add candidates the earlier ones missed (default 3).")
+    run.add_argument("--challenge-batch", type=int, default=10, help="Candidates per independent challenger call (default 10).")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    for name in ("masked_windows", "masked_budget", "max_events", "prefix_checkpoints", "batch_blocks"):
-        if getattr(args, name) < 0 or (name in ("masked_budget", "max_events", "batch_blocks") and getattr(args, name) <= 0):
+    for name in ("masked_windows", "masked_budget", "max_events", "prefix_checkpoints", "batch_blocks", "checks_passes", "challenge_batch"):
+        if getattr(args, name) < 0 or (name in ("masked_budget", "max_events", "batch_blocks", "checks_passes", "challenge_batch") and getattr(args, name) <= 0):
             print(json.dumps({"ok": False, "error": {"code": "cli_error", "message": f"--{name.replace('_', '-')} must be a positive integer."}}), file=sys.stderr)
             return 2
     try:

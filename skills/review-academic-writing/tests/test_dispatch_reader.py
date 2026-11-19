@@ -212,6 +212,23 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertFalse((self.events / "P1b.prompt.txt").exists())
         self.assertIn("rejected", (self.events / "P1.invalid-reason.txt").read_text())
 
+    def test_prefix_inexact_quote_gets_an_anchor_correction(self):
+        index = rp.build_index(TEXT)
+        packet = rp.build_packet(index, PROFILE, through_block="B0002")
+        packet_path = self.root / "P1.packet.json"
+        rp.write_json_atomic(packet_path, packet)
+        observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+        observation.update({"understanding": "Counts of agreement rose.", "issues": []})
+        inexact = dict(observation, cannot_place=[{"anchor": {"block_id": "B0002", "quote": "COUNTS of agreement"}, "note": "Which agreement?"}])
+        exact = dict(observation, cannot_place=[{"anchor": {"block_id": "B0002", "quote": "counts of agreement"}, "note": "Which agreement?"}])
+        self.responses(json.dumps(inexact), json.dumps(exact))
+        code, out, err = self.main(["prefix", "--events", str(self.events), "--packet", str(packet_path), "--label", "P1"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Anchor note from the controller", self.prompt(2))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_anchor"), ("P1b", "ok")])
+        self.assertEqual(json.loads((self.events / "P1b.check.json").read_text())["cannot_place_count"], 1)
+
     def prefix_observation(self, text, understanding):
         """A packet through B0002 of `text` saved as P1.packet.json, and a reader's answer to it with the given understanding."""
         packet = rp.build_packet(rp.build_index(text), PROFILE, through_block="B0002")
@@ -312,7 +329,7 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertEqual(recorded["carry_memory"]["notes"][0]["text"], "Counts are reported.")
 
     def test_resumed_run_after_a_rejection_uses_a_resume_label(self):
-        unseen = dict(N2, sources=["B2"])  # B2 is not yet seen at event 1: the helper rejects it outright
+        unseen = dict(N2, sources=["B2"], since=1)  # B2 is not yet seen at event 1: the helper rejects it outright
         self.responses(masked_response([N1, unseen]), masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
         code, out, err = self.masked()
         self.assertNotEqual(code, 0)
@@ -593,7 +610,7 @@ class DispatchReaderTests(unittest.TestCase):
         self.assertIn("--max-restarts must be a non-negative integer.", json.loads(err)["error"]["message"])
 
     def test_helper_rejection_is_not_restarted(self):
-        unseen = dict(N2, sources=["B2"])
+        unseen = dict(N2, sources=["B2"], since=1)  # a new note at event 1, citing B2, which is not yet seen
         self.responses(masked_response([N1, unseen]), masked_response([N1]), masked_response([N1, N2], claim_source="B2"))
         code, out, err = self.masked("--until-complete")
         self.assertEqual(code, 1, err)
@@ -704,6 +721,22 @@ class DispatchReaderTests(unittest.TestCase):
         summary = json.loads((self.events / "summary.json").read_text())
         self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C05", "invalid_format"), ("C05b", "ok")])
         self.assertIn("changed: claim_strength", summary["outcome"])
+
+    def test_a_preserved_audit_with_empty_notes_is_corrected_before_it_is_recorded(self):
+        request = {"candidate_id": "C02", "original": [{"block_id": "B0002", "quote": "Counts rose."}], "proposed_wording": "Counts increased.", "basis": []}
+        request_path = self.root / "C02.input.json"
+        request_path.write_text(json.dumps(request))
+        empty = {"candidate_id": "C02", "proposed_wording": "Counts increased.", "original": request["original"], "verdict": "preserved",
+                 "checks": {**{k: "same" for k in dr.AUDIT_CHECKS}, "hedges": []}, "notes": " ", "auditor": {"mode": "", "agent_id": ""}}
+        explained = dict(empty, notes="Only the verb changes; rose and increased state the same rise.")
+        self.responses(json.dumps(empty), json.dumps(explained))
+        out_path = self.root / "C02.audit.json"
+        code, out, err = self.main(["audit", "--events", str(self.events), "--input", str(request_path), "--out", str(out_path)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("notes must be a nonempty string", self.prompt(2))
+        self.assertEqual(json.loads(out_path.read_text())["notes"], "Only the verb changes; rose and increased state the same rise.")
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("C02", "invalid_format"), ("C02b", "ok")])
 
     # ------------------------------------------------------------ challenge
 
@@ -1166,6 +1199,14 @@ def completion(text, number=1, prompt_tokens=200, completion_tokens=50):
     return 200, {}, json.dumps(body).encode("utf-8")
 
 
+
+def reasoning_completion(content, reasoning, number=1):
+    """A vLLM-style answer whose message carries the model's reasoning; content may be None."""
+    status, headers, payload = completion("", number)
+    body = json.loads(payload)
+    body["choices"][0]["message"].update({"content": content, "reasoning": reasoning})
+    return status, headers, json.dumps(body).encode("utf-8")
+
 class FakeChatServer:
     """A chat-completions endpoint in a thread; answers come from a script, one entry per request."""
 
@@ -1308,6 +1349,101 @@ class HttpRuntimeTests(unittest.TestCase):
         self.assertEqual([(r["label"], r["status"], r["session_id"], r["exit_code"]) for r in summary["calls"]], [("P1", "ok", "chatcmpl-0001", None)])
         self.assertEqual(summary["totals"]["cost_usd"], 0)
         self.assertIn("P1 passed check-observation with 1 issue(s).", out)
+
+    def test_control_tokens_travel_as_lookalikes_and_quotes_come_back_exact(self):
+        text = "# Reasoning study\n\nThe model closes its reasoning with </think> and then answers.\n\nWe define the answer later.\n"
+        packet = rp.build_packet(rp.build_index(text), PROFILE, through_block="B0002")
+        self.packet_path = self.root / "reasoning.packet.json"
+        rp.write_json_atomic(self.packet_path, packet)
+        observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+        observation.update({"understanding": "The model stops reasoning at a tag.", "issues": [{"id": "R1", "category": "unavailable_prerequisite", "anchor": {"block_id": "B0002", "quote": "closes its reasoning with </think> and"}, "reader_question": "What does </think> do?", "consequence": "The mechanism is unclear.", "severity": "major", "confidence": "high"}]})
+        answered = json.dumps(observation).replace("</think>", "‹/think›", 1).replace("</think>", "\\u2039/think\\u203a")
+        self.server.script = [completion(answered)]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        sent = self.user_prompt(1)
+        self.assertNotIn("</think>", sent)
+        self.assertIn("The model closes its reasoning with ‹/think› and then answers.", sent)
+        self.assertEqual(json.loads((self.events / "P1.observation.json").read_text()), observation)
+        self.assertEqual(json.loads((self.events / "P1.cli.json").read_text())["choices"][0]["message"]["content"], answered)
+        self.assertEqual(self.provenance("P1")["control_tokens"], {"shielded": 2, "restored": 2})
+        self.assertIn("P1 passed check-observation with 1 issue(s).", out)
+
+    def test_reasoning_that_leaks_ahead_of_the_json_is_set_aside(self):
+        leaked = "so the reader would stop at counts of agreement.\n\n"
+        answer = leaked + json.dumps(self.observation)
+        self.server.script = [reasoning_completion(answer, "Block B0002 uses agreement before defining it")]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertEqual((self.events / "P1.response.raw").read_text(), json.dumps(self.observation))
+        self.assertEqual(json.loads((self.events / "P1.observation.json").read_text()), self.observation)
+        self.assertEqual(json.loads((self.events / "P1.cli.json").read_text())["choices"][0]["message"]["content"], answer)
+        provenance = self.provenance("P1")
+        self.assertEqual((provenance["leaked_reasoning_chars"], provenance["thinking_off_retry"]), (len(leaked), None))
+        self.assertIn("P1 passed check-observation with 1 issue(s).", out)
+
+    def test_an_answer_with_no_json_after_reasoning_is_asked_again_without_thinking(self):
+        first = reasoning_completion("The tag ‹/think› in B0002 ends the reasoning, so", "Looking at B0002", 1)
+        self.server.script = [first, completion(json.dumps(self.observation), 2)]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        bodies = [r["body"] for r in self.server.requests]
+        self.assertNotIn("chat_template_kwargs", bodies[0])
+        self.assertEqual(bodies[1]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(bodies[1]["messages"], bodies[0]["messages"])
+        self.assertEqual(json.loads((self.events / "P1.observation.json").read_text()), self.observation)
+        provenance = self.provenance("P1")
+        retry = provenance["thinking_off_retry"]
+        self.assertEqual((retry["reason"], retry["accepted"], retry["set_aside_status"]), ("the answer held no JSON object", True, 200))
+        self.assertEqual(retry["set_aside_response"], json.loads(first[2]))
+        self.assertEqual((provenance["response_id"], provenance["input_tokens"], provenance["output_tokens"]), ("chatcmpl-0002", 400, 100))
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "ok")])
+
+    def test_an_endpoint_that_refuses_the_thinking_switch_falls_back_to_the_correction(self):
+        refused = (400, {}, json.dumps({"error": {"message": "unknown field chat_template_kwargs"}}).encode("utf-8"))
+        self.server.script = [reasoning_completion(None, "Looking at B0002", 1), refused, completion(json.dumps(self.observation), 3)]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.server.requests), 3)
+        provenance = self.provenance("P1")
+        self.assertEqual(provenance["error"], "response has no choices[0].message.content")
+        retry = provenance["thinking_off_retry"]
+        self.assertEqual((retry["reason"], retry["accepted"], retry["set_aside_status"]), ("the answer was empty", False, 400))
+        self.assertNotIn("chat_template_kwargs", self.server.requests[2]["body"])
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([r["label"] for r in summary["calls"]], ["P1", "P1b"])
+        self.assertEqual(summary["calls"][1]["status"], "ok")
+
+    def test_an_inexact_quote_is_corrected_with_the_blocks_own_text(self):
+        text = "# Depth study\n\nDeeper \u201cplain\u201d networks have higher training error.\n\nWe explain why later.\n"
+        packet = rp.build_packet(rp.build_index(text), PROFILE, through_block="B0002")
+        self.packet_path = self.root / "quotes.packet.json"
+        rp.write_json_atomic(self.packet_path, packet)
+        observation = {k: packet[k] for k in ("snapshot_id", "checkpoint_id", "prefix_sha256", "packet_sha256")}
+        observation.update({"understanding": "Deeper networks train worse.", "issues": [{"id": "R1", "category": "unavailable_prerequisite", "anchor": {"block_id": "B0002", "quote": "Deeper \u201cplain\u201d networks"}, "reader_question": "What is a plain network?", "consequence": "The comparison is unclear.", "severity": "major", "confidence": "high"}]})
+        straight = json.loads(json.dumps(observation))
+        straight["issues"][0]["anchor"]["quote"] = 'Deeper "plain" networks'
+        self.server.script = [completion(json.dumps(straight), 1), completion(json.dumps(observation), 2)]
+        code, out, err = self.prefix()
+        self.assertEqual(code, 0, err)
+        correction = self.user_prompt(2)
+        self.assertIn("Anchor note from the controller", correction)
+        self.assertIn('B0002 has "Deeper \u201cplain\u201d networks" where you wrote "Deeper \\"plain\\" networks"', correction)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("P1", "invalid_anchor"), ("P1b", "ok")])
+
+    def test_a_carried_note_with_a_changed_since_gets_a_memory_correction(self):
+        self.server.script = [completion(masked_response([N1]), 1), completion(masked_response([dict(N1, since=2), N2], claim_source="B2"), 2),
+                              completion(masked_response([N1, N2], claim_source="B2"), 3)]
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        correction = self.user_prompt(3)
+        self.assertIn("Memory note from the controller", correction)
+        self.assertIn("Carried note n1 must keep since=1", correction)
+        summary = json.loads((self.events / "summary.json").read_text())
+        self.assertEqual([(r["label"], r["status"]) for r in summary["calls"]], [("E01", "ok"), ("E02", "invalid_since"), ("E02b", "ok")])
 
     def test_masked_loop_over_http_runs_two_windows(self):
         self.server.script = [completion(masked_response([N1]), 1), completion(masked_response([N1, N2], claim_source="B2"), 2)]
@@ -1465,6 +1601,70 @@ class HttpRuntimeTests(unittest.TestCase):
         self.assertEqual(json.loads(out_path.read_text())["auditor"], {"mode": "bounded-request", "agent_id": "http-0007"})
         self.assertEqual(self.server.requests[0]["body"]["messages"][0]["content"], "You are the auditor described in the user's message. Return only the JSON the message asks for, with no code fence and no commentary.")
         self.assertTrue(self.user_prompt(1).startswith("You are an independent auditor of scientific meaning, checking a rewrite that someone else submitted."))
+
+    def test_a_raw_tab_inside_a_json_string_is_parsed(self):
+        # A constrained decoder lets one through when a model writes \therefore with a single backslash.
+        self.assertEqual(dr.parse_result('{"quote": "so $A \therefore B$"}'), ({"quote": "so $A \therefore B$"}, None, False))
+
+    def sentence_case(self):
+        case = {**CASE, "blocks": [{"id": "B1", "text": "We call that purpose the device\u2019s usage. It reads \u201cclear\u201d too!\nNext line", "page": 1, "kind": "text"}, CASE["blocks"][1]]}
+        self.case_path.write_text(json.dumps(case))
+        notes = {"id": "n1", "kind": "established", "text": "Usage is defined.", "sources": ["B1"], "since": 1}
+        first = json.loads(masked_response([notes]))
+        first["understood"][0]["anchor"]["quote"] = "It reads \u201cclear\u201d too!"
+        return json.dumps(first), masked_response([notes, N2], claim_source="B2")
+
+    def test_masked_over_http_with_json_schema_offers_whole_sentences_as_the_only_quotes(self):
+        self.write_config(json_schema=True)
+        self.server.script = [completion(text, n) for n, text in enumerate(self.sentence_case(), 1)]
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        body = self.server.requests[0]["body"]
+        self.assertEqual(sorted(body["response_format"]), ["json_schema", "type"])
+        self.assertEqual((body["response_format"]["type"], body["response_format"]["json_schema"]["name"], body["response_format"]["json_schema"]["strict"]), ("json_schema", "response", True))
+        schema = body["response_format"]["json_schema"]["schema"]
+        self.assertEqual(json.loads((self.events / "E01.schema.json").read_text(encoding="utf-8")), schema)
+        anchors = schema["properties"]["understood"]["items"]["properties"]["anchor"]["anyOf"]
+        self.assertEqual(anchors, [{"type": "string", "enum": ["B1"]},
+                                   {"type": "object", "properties": {"source_id": {"const": "B1"}, "quote": {"type": "string", "enum": ["", "It reads \u201cclear\u201d too!", "Next line", "We call that purpose the device\u2019s usage."]}},
+                                    "required": ["source_id"], "additionalProperties": False}])
+        self.assertEqual(self.provenance("E01")["request"]["response_format"], {"type": "json_schema", "name": "response", "schema_sha256": dr.sha256_bytes(dr.encoded(schema))})
+        second = self.server.requests[1]["body"]["response_format"]["json_schema"]["schema"]
+        self.assertEqual(second["properties"]["carry_memory"]["properties"]["dropped"]["items"]["properties"]["id"], {"type": "string", "enum": ["n1"]})
+        self.assertEqual(second["properties"]["carry_memory"]["properties"]["notes"]["items"]["properties"]["since"], {"type": "integer", "enum": [1, 2]})
+
+    def test_without_json_schema_the_masked_request_is_json_mode_and_no_schema_file_is_written(self):
+        self.server.script = [completion(text, n) for n, text in enumerate(self.sentence_case(), 1)]
+        code, out, err = self.masked()
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r["body"]["response_format"] for r in self.server.requests], [{"type": "json_object"}, {"type": "json_object"}])
+        self.assertEqual(sorted(p.name for p in self.events.glob("*.schema.json")), [])
+
+    def test_audit_over_http_with_json_schema_fixes_the_copied_fields_and_each_hedge(self):
+        self.write_config(json_schema=True)
+        request = {"candidate_id": "C04", "original": [{"block_id": "B0002", "quote": "Counts may rise \u2019soon\u2019."}], "proposed_wording": "Counts may increase \u2019soon\u2019.", "basis": []}
+        request_path = self.root / "C04.input.json"
+        request_path.write_text(json.dumps(request))
+        verdict = {"candidate_id": "C04", "proposed_wording": request["proposed_wording"], "original": request["original"], "verdict": "preserved",
+                   "checks": {**{k: "same" for k in dr.AUDIT_CHECKS}, "hedges": [{"id": "H1", "term": "may", "status": "kept", "kept_as": "may increase"}]}, "notes": "No property changed."}
+        self.server.script = [completion(json.dumps(verdict), 3)]
+        code, out, err = self.main(["audit", "--runtime", "http", "--config", str(self.config), "--events", str(self.events), "--input", str(request_path), "--out", str(self.root / "C04.audit.json")])
+        self.assertEqual(code, 0, err)
+        schema = self.server.requests[0]["body"]["response_format"]["json_schema"]["schema"]
+        self.assertEqual(json.loads((self.events / "C04.schema.json").read_text(encoding="utf-8")), schema)
+        self.assertEqual(list(schema["properties"]), ["candidate_id", "proposed_wording", "original", "verdict", "checks", "notes", "auditor"])
+        self.assertEqual(schema["required"], ["candidate_id", "proposed_wording", "original", "verdict", "checks", "notes"])
+        self.assertEqual([schema["properties"][k] for k in ("candidate_id", "proposed_wording", "original")],
+                         [{"const": "C04"}, {"const": "Counts may increase \u2019soon\u2019."}, {"const": [{"block_id": "B0002", "quote": "Counts may rise \u2019soon\u2019."}]}])
+        self.assertEqual(schema["properties"]["verdict"], {"type": "string", "enum": ["changed", "preserved", "undetermined"]})
+        checks = schema["properties"]["checks"]
+        self.assertEqual(checks["required"], [*dr.AUDIT_CHECKS, "hedges"])
+        self.assertEqual(checks["properties"]["claim_strength"], {"type": "string", "enum": ["changed", "not_applicable", "same"]})
+        self.assertEqual(checks["properties"]["hedges"], {"type": "array", "minItems": 1, "maxItems": 1, "items": {"anyOf": [
+            {"type": "object", "properties": {"id": {"const": "H1"}, "term": {"const": "may"}, "status": {"type": "string", "enum": ["kept", "removed", "strengthened"]},
+                                              "kept_as": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+             "required": ["id", "term", "status", "kept_as"], "additionalProperties": False}]}})
+        self.assertEqual(json.loads((self.root / "C04.audit.json").read_text())["checks"]["hedges"], verdict["checks"]["hedges"])
 
     def test_http_runtime_needs_config_and_rejects_effort(self):
         code, out, err = self.main(["prefix", "--runtime", "http", "--events", str(self.events), "--packet", str(self.packet_path)])
